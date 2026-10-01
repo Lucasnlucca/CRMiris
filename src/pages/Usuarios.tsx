@@ -27,6 +27,7 @@ import { databases, client } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 import { api } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { createNewUser, deleteUser as removeUser, toggleUserStatus } from '../lib/userManagement';
 
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
 
@@ -295,34 +296,27 @@ export default function Usuarios() {
         throw new Error('Preencha todos os campos obrigatórios.');
       }
       if (newUser.password.length < 8) {
-        throw new Error('A senha deve ter pelo menos 8 caracteres (requisito do Appwrite).');
+        throw new Error('A senha deve ter pelo menos 8 caracteres (requisito de segurança do Appwrite).');
       }
 
-      const res = await fetch('http://localhost:3008/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser),
+      const createdUser = await createNewUser(newUser);
+
+      setUsers((prev) => {
+        if (prev.some((u) => u.id === createdUser.id)) return prev;
+        return [...prev, createdUser];
       });
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || `Erro HTTP ${res.status}`);
-      }
-
-      if (data.user) {
-        const newU: UserHydra = {
-          id: data.user.$id || data.user.id,
-          name: data.user.name,
-          email: data.user.email,
-          role: data.user.role,
-          is_active: data.user.is_active,
-          is_online: data.user.is_online,
-          created_at: data.user.created_at,
-        };
-        setUsers((prev) => {
-          if (prev.some((u) => u.id === newU.id)) return prev;
-          return [...prev, newU];
-        });
+      // Conceder permissões padrão de menu para o novo usuário
+      try {
+        await Promise.all(ALL_MENUS.map((menu) => 
+          databases.createDocument(DATABASE_ID, 'user_menu_permissions', ID.unique(), {
+            user_id: createdUser.id,
+            menu_id: menu.id,
+            has_access: true,
+          })
+        ));
+      } catch (permErr) {
+        console.warn('Erro ao configurar permissões padrão:', permErr);
       }
 
       setCreateMessage('Usuário criado com sucesso!');
@@ -342,10 +336,7 @@ export default function Usuarios() {
   const handleDeleteUser = async (userId: string, userName: string) => {
     if (!window.confirm(`Tem certeza que deseja excluir o usuário "${userName}"?`)) return;
     try {
-      const res = await fetch(`http://localhost:3008/api/users/${userId}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error('Erro ao excluir usuário');
+      await removeUser(userId);
       await loadUsers();
     } catch (error: any) {
       alert(error.message || 'Erro ao excluir usuário');
@@ -354,13 +345,8 @@ export default function Usuarios() {
 
   const handleToggleStatus = async (userId: string, currentStatus: boolean) => {
     try {
-      const res = await fetch(`http://localhost:3008/api/users/${userId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_active: !currentStatus }),
-      });
-      if (!res.ok) throw new Error('Erro ao alterar status');
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, is_active: !currentStatus } : u));
+      const newStatus = await toggleUserStatus(userId, currentStatus);
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, is_active: newStatus } : u));
     } catch (error: any) {
       alert(error.message || 'Erro ao alterar status');
     }

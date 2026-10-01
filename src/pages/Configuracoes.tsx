@@ -5,6 +5,7 @@ import { databases } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
 import { useAuth } from '../context/AuthContext';
+import { createNewUser, deleteUser as removeUser } from '../lib/userManagement';
 
 interface NewUserForm {
   name: string;
@@ -169,19 +170,10 @@ export default function Configuracoes() {
         throw new Error('Preencha todos os campos obrigatórios.');
       }
       if (newUser.password.length < 8) {
-        throw new Error('A senha deve ter pelo menos 8 caracteres (requisito do Appwrite).');
+        throw new Error('A senha deve ter pelo menos 8 caracteres (requisito de segurança do Appwrite).');
       }
 
-      const res = await fetch('http://localhost:3008/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || `Erro HTTP ${res.status}`);
-      }
+      await createNewUser(newUser);
 
       setUserMessage('Usuário criado com sucesso!');
       setNewUser({ name: '', email: '', password: '', role: 'colaborador' });
@@ -200,10 +192,7 @@ export default function Configuracoes() {
   const handleDeleteUser = async (userId: string, userName: string) => {
     if (!window.confirm(`Tem certeza que deseja excluir o usuário "${userName}"?`)) return;
     try {
-      const res = await fetch(`http://localhost:3008/api/users/${userId}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error('Erro ao excluir usuário');
+      await removeUser(userId);
       await loadTeamUsers();
     } catch (error: any) {
       alert(error.message || 'Erro ao excluir usuário');
