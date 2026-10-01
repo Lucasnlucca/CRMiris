@@ -1,0 +1,46 @@
+.button {
+  position: relative;
+  overflow: hidden;
+  height: 45px;
+  width: 100%;
+  border-radius: 10px;
+
+  /* cor inicial (escura) */
+  background: #135233;
+
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 15px;
+}
+
+.button-content {
+  position: relative;
+  z-index: 2;
+}
+
+.button::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+
+  transform: scaleX(0);
+  transform-origin: left;
+
+  border-radius: inherit;
+
+  /* gradiente do hover (igual imagem) */
+  background: linear-gradient(
+    135deg,
+    #043b5c,
+    #4dbb84
+  );
+
+  transition: transform 0.45s ease;
+  z-index: 1;
+}
+
+.button:hover::before {
+  transform: scaleX(1);
+}

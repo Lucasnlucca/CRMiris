@@ -1,0 +1,255 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-main-light: #edf0f5;
+    --bg-main-dark: #090d15;
+    --surface-light: #ffffff;
+    --surface-dark: #121824;
+    --border-light: #e2e8f0;
+    --border-dark: rgba(255, 255, 255, 0.08);
+  }
+
+  html {
+    font-size: 100%;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: #edf0f5;
+    color: #1e293b;
+  }
+
+  .dark body {
+    background-color: #090d15;
+    color: #f1f5f9;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    letter-spacing: -0.02em;
+  }
+}
+
+@layer components {
+  /* Ultra-modern Glassmorphism */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(226, 232, 240, 0.8);
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05);
+  }
+
+  .dark .glass-card {
+    background: rgba(18, 24, 36, 0.75);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  }
+
+  .glass-panel {
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(226, 232, 240, 0.9);
+  }
+
+  .dark .glass-panel {
+    background: rgba(15, 21, 32, 0.88);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* Sleek modern button */
+  .btn-gradient-primary {
+    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 100%);
+    color: white;
+    box-shadow: 0 2px 10px 0 rgba(99, 102, 241, 0.25);
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .btn-gradient-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px 0 rgba(79, 70, 229, 0.45);
+    filter: brightness(1.05);
+  }
+  .btn-gradient-primary:active {
+    transform: translateY(0);
+  }
+
+  .btn-gradient-success {
+    background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+    color: white;
+    box-shadow: 0 2px 10px 0 rgba(16, 185, 129, 0.25);
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .btn-gradient-success:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px 0 rgba(16, 185, 129, 0.45);
+    filter: brightness(1.05);
+  }
+}
+
+@layer utilities {
+  /* Custom Slim Scrollbars */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(156, 163, 175, 0.3);
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(156, 163, 175, 0.5);
+  }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Micro animations */
+  .drag-ghost {
+    opacity: 0.4;
+    transform: scale(0.96) rotate(1deg);
+  }
+
+  .drag-over-column {
+    background: rgba(59, 130, 246, 0.06);
+    border-color: rgba(59, 130, 246, 0.5) !important;
+    box-shadow: 0 0 24px rgba(59, 130, 246, 0.12);
+  }
+
+  .dark .drag-over-column {
+    background: rgba(59, 130, 246, 0.1);
+    border-color: rgba(96, 165, 250, 0.6) !important;
+    box-shadow: 0 0 28px rgba(59, 130, 246, 0.2);
+  }
+}
+
+@keyframes cardFloat {
+  0%   { transform: rotate(-1deg) translateY(-4px); }
+  50%  { transform: rotate(1deg) translateY(-6px); }
+  100% { transform: rotate(-1deg) translateY(-4px); }
+}
+
+.card-dragging {
+  animation: cardFloat 1.2s ease-in-out infinite;
+  box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.3), 0 8px 16px -6px rgba(0, 0, 0, 0.2) !important;
+  cursor: grabbing !important;
+  z-index: 9999 !important;
+  transform-origin: center center;
+}
+
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+.animate-pulse-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+/* ==========================================================================
+   CONFIGURAÇÃO DE IMPRESSÃO PROFISSIONAL (@media print & @page A4)
+   Contratos e Dossiê de Auditoria (Lei 14.063/2020 e MP 2.200-2/2001)
+   ========================================================================== */
+@page {
+  size: A4 portrait;
+  margin: 15mm 12mm;
+}
+
+@media print {
+  /* Configuração Base de Impressão */
+  html,
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Ocultar elementos interativos, card lateral de assinatura e botões */
+  #area-assinatura,
+  .print-hidden,
+  .no-print,
+  button,
+  input,
+  textarea,
+  select,
+  nav,
+  header,
+  [role="dialog"] {
+    display: none !important;
+  }
+
+  /* Expansão para largura total da página A4 */
+  .print-full-width,
+  .print-page-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  /* Quebra de página obrigatória para o Certificado de Auditoria ao final */
+  .print-break-before,
+  #certificado-assinatura-print {
+    break-before: page !important;
+    page-break-before: always !important;
+  }
+
+  /* Prevenção de títulos e cabeçalhos órfãos no rodapé da folha */
+  h1, h2, h3, h4, h5, h6,
+  .print-avoid-break-after {
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  /* Prevenção de quebra dentro de cláusulas, itens e cards */
+  .print-avoid-break,
+  .clause-item,
+  tr,
+  table,
+  .print-card {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  /* Quebra segura de metadados longos (e-mails, user-agent e hashes SHA-256) */
+  .print-break-words,
+  .break-words {
+    word-break: break-word !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  .print-break-all,
+  .break-all {
+    word-break: break-all !important;
+    overflow-wrap: anywhere !important;
+  }
+}
