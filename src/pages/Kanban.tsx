@@ -4,7 +4,7 @@ import { databases } from '../lib/appwrite';
 import { Query } from 'appwrite';
 import { Task } from '../types';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const COLLECTION_ID = 'tasks';
 
 export default function Kanban() {

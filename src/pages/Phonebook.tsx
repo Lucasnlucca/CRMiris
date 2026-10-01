@@ -3,7 +3,7 @@ import { Search, Plus, Pencil, Trash2, X, Phone, Smartphone, MessageSquare } fro
 import { databases } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const COLLECTION_ID = 'phonebook';
 
 interface PhonebookEntry {

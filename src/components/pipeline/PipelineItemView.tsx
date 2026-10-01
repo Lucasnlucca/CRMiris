@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { X, ChevronRight, Check, CreditCard as Edit3, Paperclip, MessageSquare, Clock, DollarSign, Building2, Sparkles, CheckCircle2 } from "lucide-react";
 import { databases, storage, client } from '../../lib/appwrite';
 import { Query, ID } from 'appwrite';
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from "../../context/AuthContext";
 import {
   PipelineDeal, PipelineColumn, PipelineUser,

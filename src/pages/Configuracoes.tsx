@@ -3,7 +3,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useState, useEffect } from 'react';
 import { databases } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from '../context/AuthContext';
 import { createNewUser, deleteUser as removeUser } from '../lib/userManagement';
 

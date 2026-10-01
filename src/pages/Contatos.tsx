@@ -4,7 +4,7 @@ import type { Client, PersonType } from '../types';
 import { databases, client } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 
 export function parseLegalRepresentative(notes?: string): { name: string; cpf: string; cleanNotes: string } {
   if (!notes) return { name: '', cpf: '', cleanNotes: '' };

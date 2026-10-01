@@ -39,7 +39,7 @@ import {
   ContractAuditDossier,
 } from '../utils/auditTrail';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const COLLECTION_CONTRACTS = 'crm_contracts';
 
 export interface ContractItem {

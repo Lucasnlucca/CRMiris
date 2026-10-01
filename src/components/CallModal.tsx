@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Mic, MicOff, Volume2, VolumeX, X, Move, Delete } from 'lucide-react';
 import { databases } from '../lib/appwrite';
 import { ID } from 'appwrite';
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { sipClient } from '../lib/sipClient';
 import { useAuth } from '../context/AuthContext';
 

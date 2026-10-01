@@ -29,7 +29,7 @@ import { api } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { createNewUser, deleteUser as removeUser, toggleUserStatus } from '../lib/userManagement';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 
 interface UserHydra {
   id: string;

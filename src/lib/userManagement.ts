@@ -1,9 +1,9 @@
 import { Client, Account, ID, Query } from 'appwrite';
 import { databases } from './appwrite';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
-const appwriteUrl = import.meta.env.VITE_APPWRITE_URL || 'https://cloud.appwrite.io/v1';
-const appwriteProjectId = import.meta.env.VITE_APPWRITE_PROJECT_ID || 'replace-with-your-project-id';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
+const appwriteUrl = import.meta.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+const appwriteProjectId = import.meta.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
 
 export interface CreateUserData {
   name: string;

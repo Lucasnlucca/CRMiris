@@ -1,3 +1,8 @@
+providers = []
+
+[variables]
+NODE_ENV = "production"
+
 [phases.setup]
 nixPkgs = ["nodejs_20"]
 
@@ -8,4 +13,4 @@ cmds = ["npm install"]
 cmds = ["npm run build"]
 
 [start]
-cmd = "npm run preview -- --host 0.0.0.0 --port 80"
+cmd = "npm run preview -- --host 0.0.0.0 --port 4173"

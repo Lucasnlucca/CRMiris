@@ -6,7 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { downloadProposalDocx } from '../utils/proposalDocx';
 import { FileText, Printer } from 'lucide-react';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const COLLECTION_PROPOSALS = 'crm_proposals';
 const COLLECTION_ITEMS = 'crm_proposal_items';
 

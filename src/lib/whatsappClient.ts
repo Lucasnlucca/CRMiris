@@ -2,7 +2,7 @@ import { api } from './api';
 import { databases } from './appwrite';
 import { Query, ID } from 'appwrite';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 
 export interface WhatsappContact {
   id: string;

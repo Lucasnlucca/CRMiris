@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Search, Filter, Trash2, CreditCard as Edit2, X, Check, Flag, Calendar, Paperclip, Building2, Clock, Sparkles, AlertTriangle, User } from "lucide-react";
 import { databases, client } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from "../context/AuthContext";
 import PipelineItemView from "../components/pipeline/PipelineItemView";
 import QuickAddCard from "../components/pipeline/QuickAddCard";

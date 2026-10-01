@@ -12,7 +12,7 @@ import { account, databases, setTenantUserId } from '../lib/appwrite';
 import { api, rest } from '../lib/api';
 
 // Configurações do banco do Appwrite (você deverá definir isso no .env depois)
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const USERS_COLLECTION = 'users_hydra';
 
 interface User {

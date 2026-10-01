@@ -47,7 +47,7 @@ import { useAuth } from '../context/AuthContext';
 import { parseLegalRepresentative, encodeNotesWithLegalRep } from './Contatos';
 import { parseAuditDossier } from '../utils/auditTrail';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'default';
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const COLLECTION_CONTRACTS = 'crm_contracts';
 
 // ─── Interfaces & Tipagens de Cláusulas ────────────────────────────────────────
