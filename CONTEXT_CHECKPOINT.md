@@ -1,25 +1,29 @@
 # Checkpoint de Contexto - Iris Horizon CRM Multi-tenant
 
-> **Data do Checkpoint:** 29 de Setembro de 2026  
+> **Data do Checkpoint:** 02 de Outubro de 2026  
 > **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado)  
-> **Servidor Local:** Ativo em `http://localhost:5173/` (Vite dev server)
+> **Repositório Oficial:** [https://github.com/Lucasnlucca/CRMiris.git](https://github.com/Lucasnlucca/CRMiris.git) (Branch: `main`)  
+> **Ambiente Local:** Ativo em `http://localhost:5173/` (Vite dev server)  
+> **Ambiente de Produção (Easypanel):** [https://sites-lvplataform.grtbdz.easypanel.host/](https://sites-lvplataform.grtbdz.easypanel.host/)  
 
 ---
 
-## 1. Visão Geral da Arquitetura & Tecnologias
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS.
-- **Backend / BaaS:** Appwrite (Database, Auth, Storage, Realtime).
-- **Diretório do Projeto:** `c:\Users\Usuario\Documents\projetos\ProjetoCRMMultitenet`
-- **Variáveis de Ambiente:** Configuradas em [.env](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/.env) (`VITE_APPWRITE_ENDPOINT`, `VITE_APPWRITE_PROJECT_ID`, `VITE_APPWRITE_DATABASE_ID`).
-- **Node.js:** Instalado em `C:\Program Files\nodejs`. Para rodar comandos no PowerShell, usar:
-  ```powershell
-  $env:PATH = "C:\Program Files\nodejs;" + $env:PATH; npm run dev
-  ```
+## 1. Arquitetura & Infraestrutura
+
+- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide Icons.
+- **Backend / BaaS:** Appwrite 1.8.1 (Database, Auth, Storage, Realtime).
+  - **Endpoint Oficial:** `https://bancosupa-appwrite.grtbdz.easypanel.host/v1`
+  - **Project ID:** `6a6cac620021f4c64b3f`
+  - **Database ID:** `crm_db`
+- **Deploy de Produção:** Easypanel rodando container Docker multi-stage (Node 20 builder + Nginx Alpine).
+- **Segurança de Sessão & Cookies:** Nginx configurado com proxy reverso interno para `/v1/` e `/v1/realtime`, garantindo cookies de sessão *first-party* (mesma origem), eliminando o bloqueio de cookies de terceiros e problemas de `SameSite=None` sem `Secure` nos navegadores modernos.
+- **Plataformas Autorizadas no Appwrite:** `localhost` e `sites-lvplataform.grtbdz.easypanel.host` registradas como Web Platforms no Appwrite Console.
 
 ---
 
-## 2. Padrão Visual Adotado (Design System)
-O sistema foi completamente desvinculado do antigo estilo Perfex CRM (PHP 2012) e padronizado na linguagem visual **Attio / Linear / HubSpot Modern**:
+## 2. Padrão Visual (Design System)
+
+Linguagem visual inspirada em **Attio / Linear / HubSpot Modern**:
 - **Background Principal:** `#0b0f17` (Obsidian escuro profundo)
 - **Cards & Superfícies:** `#121824` com bordas sutis `border-slate-800`
 - **Cores de Destaque:** Índigo / Violeta (`from-indigo-600 to-indigo-700`) para CTAs e ações primárias
@@ -28,60 +32,58 @@ O sistema foi completamente desvinculado do antigo estilo Perfex CRM (PHP 2012) 
 
 ---
 
-## 3. Resumo das Últimas Modificações Realizadas
+## 3. Resumo das Alterações Recentes
 
-### A. Módulo de Itens & Serviços ([CrmItems.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/CrmItems.tsx))
-- **Scorecard de Catálogo:** Métricas no topo com Total de Itens, Serviços Ativos, Produtos Físicos e Ticket Médio Unitário.
-- **Visual Switcher Duplo:**
-  - *Grid de Cards Visuais:* Catálogo com badges de tipo, tags de unidade (*un, mês, ano, hora, ramal, licença*), alíquotas fiscais e valores em destaque.
-  - *Tabela Executiva de Alta Densidade:* Listagem compacta para gestão ágil.
-- **Filtro de Categorias:** Pílulas interativas com contadores (*Todos, Telecom, Cloud, Suporte, Hardware, Software, Consultoria, Outros*).
-- **ItemModal:** Modal de criação e edição com validação, inputs limpos e prévia de impostos.
-- **Persistência:** Coleção `crm_items` no Appwrite.
+### A. Publicação & Versionamento no GitHub
+- Inicializado repositório Git local com branch `main` e MinGit configurado no ambiente.
+- Auditoria de segurança e blindagem de dados sensíveis:
+  - Criação do [.env.example](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/.env.example) com o template do Appwrite.
+  - Atualização do [.gitignore](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/.gitignore) para ignorar scripts administrativos de banco (`setup-*.js`, `update-db.js`, `test-*.js`, `add_*.js`, etc.) que continham chaves mestras de servidor, além de arquivos `.docx` e credenciais locais.
+  - Código fonte commitado e sincronizado com o repositório remoto **`Lucasnlucca/CRMiris`**.
 
-### B. Módulo de Propostas Comerciais ([Propostas.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Propostas.tsx))
-- **Executive Metrics Scorecard:** Pipeline Ativo, Receita Aprovada, Win Rate (%) dinâmico, Propostas Pendentes e Ticket Médio.
-- **Visual Switcher Duplo:**
-  - *Tabela Executiva:* Exibição limpa com avatares de clientes, status e alertas de vencimento.
-  - *Pipeline Kanban:* Visualização em colunas por estágio de negociação com somatórios financeiros.
-- **ProposalEditorModal:** Editor em 3 abas organizadas:
-  1. *Cliente & Informações:* Vínculo com base de clientes e prazos.
-  2. *Itens & Precificação:* Inserção direta via catálogo de itens, cálculo ao vivo de descontos (% e R$), impostos e ajustes.
-  3. *Termos & Condições:* Apresentação e notas contratuais.
-- **ProposalDocumentModal:** Documento executivo formatado com ações de 1 clique:
-  - Compartilhar via WhatsApp com mensagem formatada.
-  - Copiar resumo comercial formal.
-  - Imprimir / Exportar PDF oficial.
-  - Aprovação / Recusa instantânea com atualização de status no banco.
-- **Persistência:** Coleções `crm_proposals` e `crm_proposal_items` no Appwrite.
+### B. Módulo de Gestão de Usuários (Fix "Failed to fetch")
+- Identificadas chamadas legadas a `http://localhost:3008/api/users` em [Usuarios.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Usuarios.tsx) e [Configuracoes.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Configuracoes.tsx).
+- Criado o módulo [userManagement.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/userManagement.ts) integrando diretamente com o Appwrite:
+  - **Criação de Usuário:** Cria conta no Appwrite Auth via cliente desacoplado (sem encerrar a sessão do admin logado) e salva o perfil na coleção `users_hydra`.
+  - **Permissões de Menu:** Inicializa as permissões padrão em `user_menu_permissions`.
+  - **Exclusão & Alternância de Status:** Executados diretamente nas coleções do Appwrite (`databases.deleteDocument` e `databases.updateDocument`).
 
-### C. Visualizador Externo de Propostas ([ProposalPreview.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/ProposalPreview.tsx))
-- Página que o cliente final acessa via link público, atualizada com identidade Iris Horizon, responsividade e layout preparado para impressão em folha A4.
+### C. Dockerfile & Nginx para Deploy no Easypanel
+- Criado [Dockerfile](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/Dockerfile) multi-stage leve e de alta performance:
+  - Stage 1: Build com `node:20-alpine` (`npm install && npm run build`).
+  - Stage 2: Servidor `nginx:alpine` com exposição das portas `80`, `3000` e `4173` para compatibilidade total com os *health checks* do Easypanel.
+- Criado [nginx.conf](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nginx.conf):
+  - Suporte a SPA (`try_files $uri $uri/ /index.html`), evitando erros 404 em refresh de rotas.
+  - Endpoint de saúde `/healthz`.
+  - Proxy reverso `/v1/` e `/v1/realtime` redirecionando para o Appwrite com reescrita de domínio de cookies.
+- Criado [nixpacks.toml](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nixpacks.toml) e atualizado `package.json` com `packageManager` e `engines` para eliminar o bug do `npm-9_x` do builder automático.
 
-### D. Painel Geral ([Dashboard.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Dashboard.tsx))
-- KPIs executivos com gráfico interativo de volume, funil de conversão comercial, negócios recentes e atalhos de discagem VOIP.
+### D. Resolução do Loop de Login em Produção
+- **Causa:** O Appwrite no Easypanel enviava o cookie de sessão cross-domain com `SameSite=None` sem a flag `Secure`, levando os navegadores modernos a descartarem o cookie imediatamente.
+- **Correção:** 
+  1. O Nginx agora faz proxy de `/v1/` para o Appwrite no mesmo domínio do frontend (`sites-lvplataform.grtbdz.easypanel.host/v1`).
+  2. [appwrite.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/appwrite.ts) atualizado para detectar ambiente de produção e usar a rota relativa `/v1`.
+  3. Cookies de sessão tornam-se de primeira parte (*First-Party*), 100% aceitos por qualquer navegador sem bloqueios de privacidade.
+  4. Plataforma Web `sites-lvplataform.grtbdz.easypanel.host` cadastrada no Appwrite Console.
 
-### F. Remoção de Módulos Legados: WhatsApp & Canais e Telefonia / Discador
-- **Remoção de Canais & Discador:** Telas e rotas de `canais` e `dsvoice` (SIP WebRTC/VoIP) foram removidas da navegação e do roteador.
-- **Sidebar ([Sidebar.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/components/Sidebar.tsx)):** A seção "COMUNICAÇÃO & VOZ" foi reorganizada para "SUPORTE & ATENDIMENTO", mantendo a Central de Chamados (`dstrack`) e o Catálogo de Contatos (`recursos-catalogo`).
-- **Dashboard ([Dashboard.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Dashboard.tsx)):**
-  - Card 4 migrado de "Interações WhatsApp" para métrica executiva "Propostas Geradas".
-  - Gráfico migrado para "Evolução do Pipeline & Negócios" (baseado em oportunidades do CRM).
-  - Widget lateral atualizado para "Clientes Recentes" (consumindo base de clientes real).
-  - Barra de conectividade limpa de instâncias do WhatsApp API e PBX SIP.
-- **Configurações ([Configuracoes.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Configuracoes.tsx)):** Abas e formulários de WhatsApp API (Evolution/Meta) e Telefonia SIP removidos.
-- **Contatos & Catálogo ([Contatos.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Contatos.tsx) & [Phonebook.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Phonebook.tsx)):** Removidos botões de discador SIP e ações diretas de chamada telefônica.
-- **App ([App.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/App.tsx)):** `CallModal`, cliente SIP e ouvintes de WebRTC removidos do ciclo de vida global.
+### E. Módulo de Contratos & Assinatura Digital Jurídica
+- Trilha de auditoria probatória em [auditTrail.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/utils/auditTrail.ts) e hash SHA-256 (Lei Federal nº 14.063/2020 e MP nº 2.200-2/2001).
+- Visualizador de assinatura externa em [ContractSignPreview.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/ContractSignPreview.tsx).
+- Gerador e exportador de minutas contratuais para `.docx` ([contractDocx.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/utils/contractDocx.ts)).
+- Handler de servidor em [signContractHandler.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/server/signContractHandler.ts) para captura autoritativa de rede (IP real, porta, timestamp UTC).
 
 ---
 
 ## 4. Status de Compilação & Integridade
-- `npm run build`: **Sucesso (0 erros, 1.524 módulos processados, bundle otimizado)**.
-- Dev Server ativo em `http://localhost:5173/` com Hot Module Replacement em tempo real.
+
+- `npm run build`: **Sucesso (0 erros, 1.531 módulos processados, bundle otimizado)**.
+- Dev Server local ativo na porta `5173`.
+- Produção sincronizada no GitHub (`commit 6e8c92d`) e conectada ao Easypanel.
 
 ---
 
-## 5. Sugestões de Próximos Passos
-1. **Módulo de Clientes & Contatos:** Modernizar a listagem e ficha cadastral para padrão executivo.
-2. **Módulo de Faturas / Cobranças:** Padronizar faturas com o mesmo design das propostas.
-3. **Relatórios Comerciais:** Painel dedicado com gráficos avançados de performance da equipe de vendas.
+## 5. Próximos Passos Sugeridos
+
+1. **Validação do Login & Testes com Usuários Reais:** Testar criação de propostas, itens e contratos no ambiente de produção.
+2. **Módulo de Faturas / Cobranças:** Padronizar faturas no mesmo layout executivo de propostas e contratos.
+3. **Módulo de Clientes:** Enriquecer a ficha cadastral do cliente com histórico completo de propostas e contratos assinados.
