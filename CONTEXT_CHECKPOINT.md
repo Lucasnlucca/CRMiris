@@ -59,12 +59,13 @@ Linguagem visual inspirada em **Attio / Linear / HubSpot Modern**:
 - Criado [nixpacks.toml](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nixpacks.toml) e atualizado `package.json` com `packageManager` e `engines` para eliminar o bug do `npm-9_x` do builder automático.
 
 ### D. Resolução do Loop de Login em Produção
-- **Causa:** O Appwrite no Easypanel enviava o cookie de sessão cross-domain com `SameSite=None` sem a flag `Secure`, levando os navegadores modernos a descartarem o cookie imediatamente.
+- **Causa Raiz Identificada:** O Appwrite no Easypanel enviava o cookie de sessão cross-domain com `SameSite=None` sem a flag `Secure`. Pelas regras de segurança da IETF e de todos os navegadores modernos (Chrome, Edge, Firefox, Safari), **qualquer cookie com `SameSite=None` sem `Secure` é imediatamente e silenciosamente descartado/rejeitado**. Ao efetuar o login, a sessão era criada com status 201, mas o cookie era descartado pelo navegador, fazendo a chamada subsequente `account.get()` retornar 401 Unauthorized e jogar o usuário de volta para a tela de login.
 - **Correção:** 
   1. O Nginx agora faz proxy de `/v1/` para o Appwrite no mesmo domínio do frontend (`sites-lvplataform.grtbdz.easypanel.host/v1`).
-  2. [appwrite.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/appwrite.ts) atualizado para detectar ambiente de produção e usar a rota relativa `/v1`.
-  3. Cookies de sessão tornam-se de primeira parte (*First-Party*), 100% aceitos por qualquer navegador sem bloqueios de privacidade.
-  4. Plataforma Web `sites-lvplataform.grtbdz.easypanel.host` cadastrada no Appwrite Console.
+  2. Adicionada a diretiva `proxy_cookie_flags ~ secure samesite=lax;` no `nginx.conf`, garantindo que todo cookie de sessão emitido receba a flag `Secure` e `SameSite=Lax`.
+  3. [appwrite.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/appwrite.ts) atualizado para detectar ambiente de produção e usar a rota relativa `/v1`.
+  4. Cookies de sessão tornam-se de primeira parte (*First-Party*) com `Secure` e `SameSite=Lax`, 100% aceitos e mantidos por qualquer navegador sem bloqueios de privacidade.
+  5. Plataforma Web `sites-lvplataform.grtbdz.easypanel.host` cadastrada no Appwrite Console.
 
 ### E. Módulo de Contratos & Assinatura Digital Jurídica
 - Trilha de auditoria probatória em [auditTrail.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/utils/auditTrail.ts) e hash SHA-256 (Lei Federal nº 14.063/2020 e MP nº 2.200-2/2001).
