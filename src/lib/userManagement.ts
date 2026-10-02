@@ -1,8 +1,13 @@
 import { Client, Account, ID, Query } from 'appwrite';
 import { databases } from './appwrite';
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
-const appwriteUrl = import.meta.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+const isLocalhost =
+    typeof window !== 'undefined' &&
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+const appwriteUrl = isLocalhost
+    ? (import.meta.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1')
+    : (typeof window !== 'undefined' ? `${window.location.origin}/v1` : 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1');
 const appwriteProjectId = import.meta.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
 
 export interface CreateUserData {
