@@ -52,6 +52,17 @@ const {
   enterPrivilegedOperation,
 } = require('./maintenanceGuard.cjs');
 
+const {
+  WritePolicyEngine,
+  CircuitBreaker,
+  validatePolicyConfiguration,
+  SANDBOX_PILOT_CLIENTS_RULES,
+  createAuditLog,
+} = require('./writePolicyEngine.cjs');
+
+// Instanciação com regras estritas de menor privilégio para o Sandbox (Fase 5H.1)
+const writePolicyEngine = new WritePolicyEngine(SANDBOX_PILOT_CLIENTS_RULES, { enabled: true });
+
 // Proteção contra DoS: Limite de payload e Rate Limiter
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
 const ipRateLimits = new Map();
@@ -337,12 +348,17 @@ const server = http.createServer(async (req, res) => {
           }
 
           const userTeams = [];
+          const userRoles = [];
           if (userId) {
             for (const t of knownTeams) {
               try {
                 const mems = await adminTeams.listMemberships(t);
-                if (mems.memberships.some((m) => m.userId === userId)) {
+                const mem = mems.memberships.find((m) => m.userId === userId);
+                if (mem) {
                   userTeams.push(t);
+                  if (Array.isArray(mem.roles)) {
+                    mem.roles.forEach((r) => { if (r && !userRoles.includes(r)) userRoles.push(r); });
+                  }
                 }
               } catch (e) {}
             }
@@ -353,6 +369,13 @@ const server = http.createServer(async (req, res) => {
           // Em sandbox de teste (crm_isolated_test): 'superadmins' ou 'test_team_superadmins'.
           const isSuperAdminTeam = (t) => databaseId === 'crm_db' ? (t === 'superadmins') : (t === 'superadmins' || t === 'test_team_superadmins');
           const isSuper = userTeams.some((t) => isSuperAdminTeam(t));
+
+          if (isSuper && !userRoles.includes('superadmin')) {
+            userRoles.push('superadmin');
+          }
+          if (userRoles.length === 0 && userTeams.length > 0) {
+            userRoles.push('agent');
+          }
 
           let authoritativeTenantId = '';
           if (body.targetTenantId) {
@@ -402,6 +425,48 @@ const server = http.createServer(async (req, res) => {
               );
               return;
             }
+          }
+
+          // AVALIAÇÃO CENTRAL DE POLÍTICA DE MENOR PRIVILÉGIO (WRITE POLICY ENGINE)
+          const policyCheck = writePolicyEngine.evaluate({
+            databaseId,
+            collectionId: body.collectionId,
+            action: body.action,
+            tenantId: authoritativeTenantId,
+            userId,
+            userRoles,
+            data: body.data,
+            documentId: body.documentId,
+            clientIp,
+          });
+
+          if (!policyCheck.allowed) {
+            const auditLog = createAuditLog({
+              clientIp,
+              userId,
+              userRole: userRoles.join(','),
+              tenantId: authoritativeTenantId,
+              databaseId,
+              collectionId: body.collectionId,
+              action: body.action,
+              documentId: body.documentId,
+              decision: policyCheck.code === 503 ? 'CIRCUIT_TRIPPED' : 'DENIED',
+              reason: policyCheck.reason,
+              statusCode: policyCheck.code || 403,
+              payloadSample: body.data,
+            });
+            console.warn('[AUDIT_REJECTED]', JSON.stringify(auditLog));
+
+            res.statusCode = policyCheck.code || 403;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: policyCheck.reason,
+                code: policyCheck.code || 403,
+              })
+            );
+            return;
           }
 
           const collectionId = body.collectionId;
@@ -512,4 +577,6 @@ if (require.main === module) {
   });
 }
 
+server.writePolicyEngine = writePolicyEngine;
 module.exports = server;
+

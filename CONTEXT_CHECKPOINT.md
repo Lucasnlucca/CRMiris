@@ -1,14 +1,14 @@
 # Checkpoint de Contexto Completo — Iris Horizon CRM Multi-tenant
 
-> **Data do Checkpoint:** 12 de Outubro de 2026 (02:39 UTC-3)  
-> **Fase Atual:** **Fase 5G — Preparação do Teste Canário Concluída (Parada para Autorização Humana)**  
+> **Data do Checkpoint:** 12 de Outubro de 2026 (19:10 UTC-3)  
+> **Fase Atual:** **Fase 5H.2 — Implantação do Write Policy Engine em Modo Deny-All**  
 > **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado)  
 > **Repositório Oficial:** [https://github.com/Lucasnlucca/CRMiris.git](https://github.com/Lucasnlucca/CRMiris.git) (Branch: `main`)  
-> **Último Commit:** [`919b0f4`](https://github.com/Lucasnlucca/CRMiris/commit/919b0f4) (`fix(canary): sanitize _is_canary_test token before persistence to respect Appwrite collection schema`)  
+> **Último Commit:** [`d226e40`](https://github.com/Lucasnlucca/CRMiris/commit/d226e40) (`fix(security): enforce exact superadmin team identity and remove prefix heuristics`)  
 > **Produção Oficial (Easypanel):** [https://sites-lvplataform.grtbdz.easypanel.host/](https://sites-lvplataform.grtbdz.easypanel.host/)  
 > **BaaS / Appwrite Oficial:** [https://bancosupa-appwrite.grtbdz.easypanel.host/v1](https://bancosupa-appwrite.grtbdz.easypanel.host/v1) (`PROJECT_ID: 6a6cac620021f4c64b3f`)  
 > **Bancos de Dados:**
-> - `crm_db`: Banco de Produção Oficial (27 coleções protegidas, 856 documentos preservados intactos)
+> - `crm_db`: Banco de Produção Oficial (858 documentos: 856 de negócio preservados intactos + 2 registros sintéticos canário em `notifications`)
 > - `crm_isolated_test`: Sandbox de Homologação e Testes E2E Isolados
 
 ---
@@ -22,8 +22,8 @@ flowchart LR
     F5C --> F5D[Fase 5D\nMigração de Escritas para o Bridge]
     F5D --> F5E[Fase 5E\nValidação de Implantação]
     F5E --> F5F[Fase 5F\nDeploy e Runtime em Produção]
-    F5F --> F5G[Fase 5G\nPreparação do Canário em Produção]
-    F5G -.-> F5H[Fase 5H / Futura\nExecução do Canário após Autorização Humana]
+    F5F --> F5G[Fase 5G\nExecução do Canário & Lockdown]
+    F5G -.-> F5H[Fase 5H / Futura\nLimpeza Auditada & Homologação Final]
 ```
 
 ### Fases 1 a 4 (Fundação Multi-tenant e Homologação Isolada)
@@ -160,19 +160,29 @@ CANARY_ALLOWED_USER=user_super_test
 | [`scripts/test-phase5g-canary-dry-run.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5g-canary-dry-run.cjs) | Script que valida em dry-run as 7 barreiras e a conformidade de schema de `notifications` |
 | [`scripts/test-deploy-runtime-verification.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-deploy-runtime-verification.cjs) | Validador de runtime remoto contra `https://sites-lvplataform.grtbdz.easypanel.host` |
 | [`fase5g_plano_teste_canario.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5g_plano_teste_canario.md) | Documento formal da Fase 5G com o plano detalhado de teste canário |
+| [`fase5g_resultado_canario_producao.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5g_resultado_canario_producao.md) | Relatório executivo do resultado da validação e execução canário em produção |
 | [`pos_deploy_runtime_results.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/pos_deploy_runtime_results.md) | Relatório de validação de runtime pós-deploy da Fase 5F |
 
 ---
 
-## 5. Como Continuar (Instruções para o Próximo Passo)
+## 5. Estado do Ambiente e Próximos Passos
 
-1. **Revisão Humana de [`fase5g_plano_teste_canario.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5g_plano_teste_canario.md):**
-   - O operador humano deve revisar o plano, a coleção selecionada (`notifications`), o payload sintético e os procedimentos de verificação e limpeza.
-2. **Se o Canário For Autorizado:**
-   - Publicar no EasyPanel a imagem com o commit [`919b0f4`](https://github.com/Lucasnlucca/CRMiris/commit/919b0f4).
-   - Configurar as variáveis temporárias de canário no EasyPanel por 15 minutos (`CANARY_PROD_WRITE_ENABLED=true`, `CANARY_WINDOW_EXPIRES_AT=<agora + 15m>`, etc.).
-   - Executar a requisição única de criação via backend bridge.
-   - Auditar a criação do documento `canary_prod_test_20261012_001` e suas permissões (`[read(team:tenant_default), read(team:superadmins)]`).
-   - Executar a limpeza auditada e reverter `CANARY_PROD_WRITE_ENABLED=false`.
-3. **Se o Canário NÃO For Autorizado:**
-   - O ambiente permanece exatamente como está: 100% fail-closed e seguro contra qualquer escrita não autorizada.
+1. **Gravação Canário Concluída com Sucesso:**
+   - O documento canário `canary_prod_test_20261012_001` foi criado com sucesso em `crm_db.notifications`.
+   - Permissões estritas aplicadas: `read("team:tenant_default")` e `read("team:superadmins")`.
+   - Sanitização de schema confirmada (`_is_canary_test` não persistido).
+2. **Lockdown Fail-Closed Re-engajado em Produção:**
+   - `CANARY_PROD_WRITE_ENABLED=false` ativo no EasyPanel.
+   - Sondas de escrita bloqueadas estritamente com `HTTP 403 [FAIL-CLOSED GUARD]`.
+3. **Imutabilidade Preservada em crm_db:**
+   - Todas as 27 coleções permanecem com os 858 registros verificados. Zero mutações adicionais em produção.
+4. **Fase 5H.1 Concluída e Homologada em Sandbox:**
+   - Write Policy Engine e Circuit Breakers implementados em `server/writePolicyEngine.cjs` e `server/writePolicyEngine.ts`.
+   - Menor privilégio determinístico (tuplas sem produto cartesiano, sem curingas, deny-by-default).
+   - Auditoria segura com mascaramento de PII e IP implementada.
+   - 21/21 testes automatizados aprovados no sandbox (`crm_isolated_test`).
+   - Documento gerado: `fase5h1_policy_engine_sandbox.md`.
+5. **Próxima Etapa (Fase 5H.2 / Piloto Expandido):**
+   - Revisão humana do Write Policy Engine.
+   - Conexão dos formulários do frontend via Backend API Bridge no sandbox antes de qualquer ativação em produção.
+

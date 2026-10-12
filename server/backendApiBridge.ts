@@ -17,6 +17,9 @@
 import { Client, Databases, Users, Teams, Account, Permission, Role, ID } from 'node-appwrite';
 import { assertNotUnderMaintenance, enterPrivilegedOperation } from './maintenanceGuard';
 import { handleSignContractServer } from './signContractHandler';
+import { WritePolicyEngine, SANDBOX_PILOT_CLIENTS_RULES } from './writePolicyEngine';
+
+export const writePolicyEngine = new WritePolicyEngine(SANDBOX_PILOT_CLIENTS_RULES, { enabled: true });
 
 // Configurações do Ambiente do Servidor
 const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
@@ -141,7 +144,7 @@ async function resolveUserTenantAndRole(
   userId: string,
   requestedTenantId?: string,
   targetDatabaseId: string = 'crm_db'
-): Promise<{ authoritativeTenantId: string; isSuperAdmin: boolean; userTeams: string[] }> {
+): Promise<{ authoritativeTenantId: string; isSuperAdmin: boolean; userTeams: string[]; userRoles: string[] }> {
   // Obter memberships do usuário
   // Como o Teams API lista memberships por Team, verificamos os times conhecidos
   const knownTeams = [
@@ -157,12 +160,17 @@ async function resolveUserTenantAndRole(
   }
 
   const userTeams: string[] = [];
+  const userRoles: string[] = [];
 
   for (const teamId of knownTeams) {
     try {
       const list = await adminTeams.listMemberships(teamId);
-      if (list.memberships.some((m) => m.userId === userId)) {
+      const mem = list.memberships.find((m) => m.userId === userId);
+      if (mem) {
         userTeams.push(teamId);
+        if (Array.isArray(mem.roles)) {
+          mem.roles.forEach((r) => { if (r && !userRoles.includes(r)) userRoles.push(r); });
+        }
       }
     } catch (e) {
       // Time inexistente ou erro transitório
@@ -178,6 +186,13 @@ async function resolveUserTenantAndRole(
       : (t === 'superadmins' || t === 'test_team_superadmins');
 
   const isSuperAdmin = userTeams.some(isSuperAdminTeam);
+
+  if (isSuperAdmin && !userRoles.includes('superadmin')) {
+    userRoles.push('superadmin');
+  }
+  if (userRoles.length === 0 && userTeams.length > 0) {
+    userRoles.push('agent');
+  }
 
   let authoritativeTenantId = '';
 
@@ -208,7 +223,7 @@ async function resolveUserTenantAndRole(
     }
   }
 
-  return { authoritativeTenantId, isSuperAdmin, userTeams };
+  return { authoritativeTenantId, isSuperAdmin, userTeams, userRoles };
 }
 
 /**
@@ -386,7 +401,7 @@ export async function executeAuthoritativeWrite(
     }
 
     // 3. RESOLUÇÃO AUTORITATIVA DE TENANT E PAPÉIS
-    const { authoritativeTenantId, isSuperAdmin } = await resolveUserTenantAndRole(
+    const { authoritativeTenantId, isSuperAdmin, userRoles } = await resolveUserTenantAndRole(
       adminTeams,
       userId,
       targetTenantId,
@@ -411,6 +426,26 @@ export async function executeAuthoritativeWrite(
           message: canaryCheck.reason,
         };
       }
+    }
+
+    // 3.8. AVALIAÇÃO CENTRAL DE POLÍTICA DE MENOR PRIVILÉGIO (WRITE POLICY ENGINE)
+    const policyCheck = writePolicyEngine.evaluate({
+      databaseId: databaseId!,
+      collectionId,
+      action,
+      tenantId: authoritativeTenantId,
+      userId,
+      userRoles,
+      data,
+      documentId,
+      clientIp: req.socket?.remoteAddress || '127.0.0.1',
+    });
+
+    if (!policyCheck.allowed) {
+      throw {
+        statusCode: policyCheck.code || 403,
+        message: policyCheck.reason,
+      };
     }
 
     // 4. SANITIZAÇÃO DO PAYLOAD
