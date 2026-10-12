@@ -1,90 +1,178 @@
-# Checkpoint de Contexto - Iris Horizon CRM Multi-tenant
+# Checkpoint de Contexto Completo — Iris Horizon CRM Multi-tenant
 
-> **Data do Checkpoint:** 02 de Outubro de 2026  
+> **Data do Checkpoint:** 12 de Outubro de 2026 (02:39 UTC-3)  
+> **Fase Atual:** **Fase 5G — Preparação do Teste Canário Concluída (Parada para Autorização Humana)**  
 > **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado)  
 > **Repositório Oficial:** [https://github.com/Lucasnlucca/CRMiris.git](https://github.com/Lucasnlucca/CRMiris.git) (Branch: `main`)  
-> **Ambiente Local:** Ativo em `http://localhost:5173/` (Vite dev server)  
-> **Ambiente de Produção (Easypanel):** [https://sites-lvplataform.grtbdz.easypanel.host/](https://sites-lvplataform.grtbdz.easypanel.host/)  
+> **Último Commit:** [`919b0f4`](https://github.com/Lucasnlucca/CRMiris/commit/919b0f4) (`fix(canary): sanitize _is_canary_test token before persistence to respect Appwrite collection schema`)  
+> **Produção Oficial (Easypanel):** [https://sites-lvplataform.grtbdz.easypanel.host/](https://sites-lvplataform.grtbdz.easypanel.host/)  
+> **BaaS / Appwrite Oficial:** [https://bancosupa-appwrite.grtbdz.easypanel.host/v1](https://bancosupa-appwrite.grtbdz.easypanel.host/v1) (`PROJECT_ID: 6a6cac620021f4c64b3f`)  
+> **Bancos de Dados:**
+> - `crm_db`: Banco de Produção Oficial (27 coleções protegidas, 856 documentos preservados intactos)
+> - `crm_isolated_test`: Sandbox de Homologação e Testes E2E Isolados
 
 ---
 
-## 1. Arquitetura & Infraestrutura
+## 1. Linha do Tempo e Evolução das Fases
 
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS + Lucide Icons.
-- **Backend / BaaS:** Appwrite 1.8.1 (Database, Auth, Storage, Realtime).
-  - **Endpoint Oficial:** `https://bancosupa-appwrite.grtbdz.easypanel.host/v1`
-  - **Project ID:** `6a6cac620021f4c64b3f`
-  - **Database ID:** `crm_db`
-- **Deploy de Produção:** Easypanel rodando container Docker multi-stage (Node 20 builder + Nginx Alpine).
-- **Segurança de Sessão & Cookies:** Nginx configurado com proxy reverso interno para `/v1/` e `/v1/realtime`, garantindo cookies de sessão *first-party* (mesma origem), eliminando o bloqueio de cookies de terceiros e problemas de `SameSite=None` sem `Secure` nos navegadores modernos.
-- **Plataformas Autorizadas no Appwrite:** `localhost` e `sites-lvplataform.grtbdz.easypanel.host` registradas como Web Platforms no Appwrite Console.
+```mermaid
+flowchart LR
+    F5A[Fase 5A\nAuditoria e Gate] --> F5B[Fase 5B\nMigração de Segurança em Produção]
+    F5B --> F5C[Fase 5C\nHomologação Read-Only]
+    F5C --> F5D[Fase 5D\nMigração de Escritas para o Bridge]
+    F5D --> F5E[Fase 5E\nValidação de Implantação]
+    F5E --> F5F[Fase 5F\nDeploy e Runtime em Produção]
+    F5F --> F5G[Fase 5G\nPreparação do Canário em Produção]
+    F5G -.-> F5H[Fase 5H / Futura\nExecução do Canário após Autorização Humana]
+```
+
+### Fases 1 a 4 (Fundação Multi-tenant e Homologação Isolada)
+- Modelagem de isolamento multi-tenant (`tenant_id` autoritativo por registro).
+- Resolução dos conflitos visuais e autenticação por sessão e JWT.
+- Homologação de isolamento e rehearsal na base sandbox `crm_isolated_test`.
+
+### Fase 5A (Pré-Voo de Produção, Snapshots e Fechamento de Escritas)
+- **Fase 5A.1:** Reconciliação dos 3 usuários legítimos (`lucas`, `Danilo`, `teste`) e validação da contagem de documentos.
+- **Fase 5A.2:** Auditoria profunda de grants e bloqueio de criação direta em collections.
+- **Fase 5A.3:** Bloqueio global de escrita e geração do snapshot T-0 imutável (`snapshot_t0_summary.json`, 27 collections, 856 documentos, SHA-256 verificado).
+- **Fase 5A.4:** Bloqueio do backend e auditoria de tráfego.
+- **Fase 5A.5:** Adoção final da **Diretriz A** como arquitetura mandatória de segurança: remoção completa de permissões de escrita direta a clientes em nível de collection (`permissions: []`) e ativação de `documentSecurity: true`.
+
+### Fase 5B (Migração de Segurança em Produção)
+- Executada com autorização humana em `crm_db`.
+- Todas as 27 collections receberam `permissions: []` e `documentSecurity: true`.
+- Zero documentos criados, alterados ou perdidos (contagem estrita mantida em exatamente 856 documentos).
+- Relatório: `fase5b_relatorio_pos_migracao.md`.
+
+### Fase 5C (Homologação Pós-Migração)
+- Auditoria somente leitura de produção: provou que clientes comuns não conseguem executar `createDocument`, `updateDocument` ou `deleteDocument` diretamente via Client SDK.
+- Relatório: `fase5c_homologacao_pos_migracao.md`.
+
+### Fase 5D (Integração Frontend -> Backend API Bridge)
+- Criação do cliente autoritativo [`src/lib/backendApiBridge.ts`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/backendApiBridge.ts) e adaptação das operações de escrita do CRM para roteamento via backend autorizado (`/api/crm/write`).
+- Relatório: `fase5d_integracao_backend_frontend.md`.
+
+### Fase 5E (Validação da Implantação do Servidor Standalone)
+- Implementação de `server/server.cjs` com rate limiting em memória, limite de payload (5MB), validação de JWT via Appwrite Account API e travas fail-closed contra produção.
+- Relatório: `fase5e_validacao_implantacao_backend.md`.
+
+### Fase 5F (Deploy Controlado e Validação de Runtime em Produção)
+- **Commits Implantados:**
+  - `3fbbed2`: Runner dual-process Node.js + Nginx Alpine via `server/entrypoint.sh`.
+  - `5f9e8ac`: Resolução de colisão de portas (Node roda internamente em `127.0.0.1:3001` via `BRIDGE_PORT=3001`, Nginx escuta em `80`, `3000`, `4173` e proxy reverso para `/api/`).
+  - `af1c313`: Ordem de avaliação de autenticação: JWT verificado antes do guard para retornar HTTP 401 em requisições anônimas e HTTP 403 com guard ativo.
+- **Validação Live em Produção (`https://sites-lvplataform.grtbdz.easypanel.host`):**
+  - `GET /healthz` -> HTTP 200 OK (Nginx).
+  - `GET /api/healthz` -> HTTP 200 OK (Backend bridge JSON: `{"status":"UP","service":"crm-backend-api-bridge",...}`).
+  - `POST /api/crm/write` sem auth -> HTTP 401 Unauthorized.
+  - `POST /api/crm/write` autenticado para `crm_db` com canário desativado -> HTTP 403 Forbidden (`[FAIL-CLOSED GUARD]`).
+  - Imutabilidade comprovada: exatos 856 documentos preservados em `crm_db` (0 divergências).
+- Relatórios: `deploy_backend_bridge_runtime.md` e `pos_deploy_runtime_results.md`.
+
+### Fase 5G (Preparação do Teste Canário em Produção — ATUAL)
+- **Objetivo:** Preparar uma única operação canário de escrita em `crm_db`, **SEM EXECUTAR** nesta etapa.
+- **Auditoria das Sete Barreiras de `validateProductionCanaryGuard`:**
+  1. Chave de ativação: `CANARY_PROD_WRITE_ENABLED === 'true'`.
+  2. Janela temporal: `CANARY_WINDOW_EXPIRES_AT` com timestamp ISO e expiração automática em 15 min.
+  3. Ação: `action === 'create'`.
+  4. Coleção: `collectionId === 'notifications'`.
+  5. Tenant: `tenantId === 'tenant_default'`.
+  6. Usuário: `userId === 'user_super_test'`.
+  7. Marcador e prefixo: `data._is_canary_test === true` e `documentId.startsWith('canary_')`.
+- **Coleção Escolhida:** `notifications` (0 documentos no baseline T-0, isolada de faturamento, vendas, Kanban, propostas e automações; no frontend o sino filtra estritamente por `Query.equal('user_id', user.id)`).
+- **Compatibilidade de Schema e Commit `919b0f4`:**
+  - Como o Appwrite Databases valida estritamente todos os campos recebidos em `createDocument`, e nenhum schema de `crm_db` possui o atributo `_is_canary_test` (e alterações de schema estão proibidas):
+  - O bridge valida o token `_is_canary_test: true` no guard e em seguida executa `delete docData._is_canary_test;` antes de chamar `adminDb.createDocument`.
+  - Fix commitado e publicado na branch `main`: [`919b0f4`](https://github.com/Lucasnlucca/CRMiris/commit/919b0f4).
+- **Dry-run Validado:** Script [`scripts/test-phase5g-canary-dry-run.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5g-canary-dry-run.cjs) aprovado com **10/10 PASS**.
+- **Entrega Formal:** Artefato [`fase5g_plano_teste_canario.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5g_plano_teste_canario.md).
+- **Estado de Produção:** `CANARY_PROD_WRITE_ENABLED=false` e `ALLOW_PROD_BUSINESS_WRITES=false`. Nenhuma gravação efetuada.
 
 ---
 
-## 2. Padrão Visual (Design System)
+## 2. Arquitetura de Runtime Implantada
 
-Linguagem visual inspirada em **Attio / Linear / HubSpot Modern**:
-- **Background Principal:** `#0b0f17` (Obsidian escuro profundo)
-- **Cards & Superfícies:** `#121824` com bordas sutis `border-slate-800`
-- **Cores de Destaque:** Índigo / Violeta (`from-indigo-600 to-indigo-700`) para CTAs e ações primárias
-- **Tipografia Numérica & Moedas:** Fonte mono com verde esmeralda (`font-mono text-emerald-400`)
-- **Status & Badges:** Cores semânticas com fundo translúcido e bordas em 20% de opacidade
-
----
-
-## 3. Resumo das Alterações Recentes
-
-### A. Publicação & Versionamento no GitHub
-- Inicializado repositório Git local com branch `main` e MinGit configurado no ambiente.
-- Auditoria de segurança e blindagem de dados sensíveis:
-  - Criação do [.env.example](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/.env.example) com o template do Appwrite.
-  - Atualização do [.gitignore](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/.gitignore) para ignorar scripts administrativos de banco (`setup-*.js`, `update-db.js`, `test-*.js`, `add_*.js`, etc.) que continham chaves mestras de servidor, além de arquivos `.docx` e credenciais locais.
-  - Código fonte commitado e sincronizado com o repositório remoto **`Lucasnlucca/CRMiris`**.
-
-### B. Módulo de Gestão de Usuários (Fix "Failed to fetch")
-- Identificadas chamadas legadas a `http://localhost:3008/api/users` em [Usuarios.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Usuarios.tsx) e [Configuracoes.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/Configuracoes.tsx).
-- Criado o módulo [userManagement.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/userManagement.ts) integrando diretamente com o Appwrite:
-  - **Criação de Usuário:** Cria conta no Appwrite Auth via cliente desacoplado (sem encerrar a sessão do admin logado) e salva o perfil na coleção `users_hydra`.
-  - **Permissões de Menu:** Inicializa as permissões padrão em `user_menu_permissions`.
-  - **Exclusão & Alternância de Status:** Executados diretamente nas coleções do Appwrite (`databases.deleteDocument` e `databases.updateDocument`).
-
-### C. Dockerfile & Nginx para Deploy no Easypanel
-- Criado [Dockerfile](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/Dockerfile) multi-stage leve e de alta performance:
-  - Stage 1: Build com `node:20-alpine` (`npm install && npm run build`).
-  - Stage 2: Servidor `nginx:alpine` com exposição das portas `80`, `3000` e `4173` para compatibilidade total com os *health checks* do Easypanel.
-- Criado [nginx.conf](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nginx.conf):
-  - Suporte a SPA (`try_files $uri $uri/ /index.html`), evitando erros 404 em refresh de rotas.
-  - Endpoint de saúde `/healthz`.
-  - Proxy reverso `/v1/` e `/v1/realtime` redirecionando para o Appwrite com reescrita de domínio de cookies.
-- Criado [nixpacks.toml](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nixpacks.toml) e atualizado `package.json` com `packageManager` e `engines` para eliminar o bug do `npm-9_x` do builder automático.
-
-### D. Resolução do Loop de Login em Produção
-- **Causa Raiz Identificada:** O Appwrite no Easypanel enviava o cookie de sessão cross-domain com `SameSite=None` sem a flag `Secure`. Pelas regras de segurança da IETF e de todos os navegadores modernos (Chrome, Edge, Firefox, Safari), **qualquer cookie com `SameSite=None` sem `Secure` é imediatamente e silenciosamente descartado/rejeitado**. Ao efetuar o login, a sessão era criada com status 201, mas o cookie era descartado pelo navegador, fazendo a chamada subsequente `account.get()` retornar 401 Unauthorized e jogar o usuário de volta para a tela de login.
-- **Correção:** 
-  1. O Nginx agora faz proxy de `/v1/` para o Appwrite no mesmo domínio do frontend (`sites-lvplataform.grtbdz.easypanel.host/v1`).
-  2. Adicionada a diretiva `proxy_cookie_flags ~ secure samesite=lax;` no `nginx.conf`, garantindo que todo cookie de sessão emitido receba a flag `Secure` e `SameSite=Lax`.
-  3. [appwrite.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/lib/appwrite.ts) atualizado para detectar ambiente de produção e usar a rota relativa `/v1`.
-  4. Cookies de sessão tornam-se de primeira parte (*First-Party*) com `Secure` e `SameSite=Lax`, 100% aceitos e mantidos por qualquer navegador sem bloqueios de privacidade.
-  5. Plataforma Web `sites-lvplataform.grtbdz.easypanel.host` cadastrada no Appwrite Console.
-
-### E. Módulo de Contratos & Assinatura Digital Jurídica
-- Trilha de auditoria probatória em [auditTrail.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/utils/auditTrail.ts) e hash SHA-256 (Lei Federal nº 14.063/2020 e MP nº 2.200-2/2001).
-- Visualizador de assinatura externa em [ContractSignPreview.tsx](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/pages/ContractSignPreview.tsx).
-- Gerador e exportador de minutas contratuais para `.docx` ([contractDocx.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/src/utils/contractDocx.ts)).
-- Handler de servidor em [signContractHandler.ts](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/server/signContractHandler.ts) para captura autoritativa de rede (IP real, porta, timestamp UTC).
+```
+Internet / Usuário
+        │
+        ▼ (Portas 80, 3000, 4173)
+┌────────────────────────────────────────────────────────┐
+│                   Contêiner EasyPanel                  │
+│                                                        │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │                    Nginx                         │  │
+│  │  - /healthz           -> 200 OK                  │  │
+│  │  - /                  -> SPA estática (dist/)    │  │
+│  │  - /v1/*              -> Proxy Appwrite BaaS     │  │
+│  │  - /api/*             -> Proxy para 127.0.0.1:3001│ │
+│  └──────────────────────┬───────────────────────────┘  │
+│                         │                              │
+│                         ▼                              │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │             Node.js Backend Bridge               │  │
+│  │             (server.cjs - Porta 3001)            │  │
+│  │                                                  │  │
+│  │  - /api/healthz       -> JSON 200 OK             │  │
+│  │  - /api/crm/write     -> Escrita Autoritativa    │  │
+│  │    * Rate Limit (120 req/min)                    │  │
+│  │    * Auth JWT Obrigatória (HTTP 401)             │  │
+│  │    * Fail-Closed Guard (HTTP 403 para crm_db)    │  │
+│  │    * validateProductionCanaryGuard (7 barreiras) │  │
+│  │    * Sanitização e Gravação via Server API Key   │  │
+│  └──────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 4. Status de Compilação & Integridade
+## 3. Estado Atual das Variáveis de Ambiente e Configuração
 
-- `npm run build`: **Sucesso (0 erros, 1.531 módulos processados, bundle otimizado)**.
-- Dev Server local ativo na porta `5173`.
-- Produção sincronizada no GitHub (`commit 6e8c92d`) e conectada ao Easypanel.
+### Variáveis no EasyPanel (Produção):
+```env
+VITE_APPWRITE_URL=https://bancosupa-appwrite.grtbdz.easypanel.host/v1
+VITE_APPWRITE_PROJECT_ID=6a6cac620021f4c64b3f
+VITE_APPWRITE_DATABASE_ID=crm_db
+BRIDGE_PORT=3001
+CANARY_PROD_WRITE_ENABLED=false
+ALLOW_PROD_BUSINESS_WRITES=false
+```
+
+### Configuração para Ativação Canário Futura (Apenas se/quando expressamente autorizada):
+```env
+CANARY_PROD_WRITE_ENABLED=true
+CANARY_WINDOW_EXPIRES_AT=2026-10-12T03:00:00.000Z   # Janela curta de 15 min
+CANARY_ALLOWED_ACTION=create
+CANARY_ALLOWED_COLLECTION=notifications
+CANARY_ALLOWED_TENANT=tenant_default
+CANARY_ALLOWED_USER=user_super_test
+```
 
 ---
 
-## 5. Próximos Passos Sugeridos
+## 4. Arquivos Críticos do Projeto
 
-1. **Validação do Login & Testes com Usuários Reais:** Testar criação de propostas, itens e contratos no ambiente de produção.
-2. **Módulo de Faturas / Cobranças:** Padronizar faturas no mesmo layout executivo de propostas e contratos.
-3. **Módulo de Clientes:** Enriquecer a ficha cadastral do cliente com histórico completo de propostas e contratos assinados.
+| Arquivo | Descrição |
+| :--- | :--- |
+| [`server/server.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/server/server.cjs) | Servidor HTTP Node.js autônomo, rate limit, guard canário e escrita autoritativa |
+| [`server/backendApiBridge.ts`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/server/backendApiBridge.ts) | Implementação TypeScript do bridge de escritas e validações de tenant |
+| [`server/entrypoint.sh`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/server/entrypoint.sh) | Script que inicializa Node (`BRIDGE_PORT=3001`) e Nginx em paralelo |
+| [`nginx.conf`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nginx.conf) | Roteamento do Nginx: SPA, `/healthz`, `/v1/` e proxy reverso `/api/` |
+| [`scripts/test-phase5g-canary-dry-run.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5g-canary-dry-run.cjs) | Script que valida em dry-run as 7 barreiras e a conformidade de schema de `notifications` |
+| [`scripts/test-deploy-runtime-verification.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-deploy-runtime-verification.cjs) | Validador de runtime remoto contra `https://sites-lvplataform.grtbdz.easypanel.host` |
+| [`fase5g_plano_teste_canario.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5g_plano_teste_canario.md) | Documento formal da Fase 5G com o plano detalhado de teste canário |
+| [`pos_deploy_runtime_results.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/pos_deploy_runtime_results.md) | Relatório de validação de runtime pós-deploy da Fase 5F |
+
+---
+
+## 5. Como Continuar (Instruções para o Próximo Passo)
+
+1. **Revisão Humana de [`fase5g_plano_teste_canario.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5g_plano_teste_canario.md):**
+   - O operador humano deve revisar o plano, a coleção selecionada (`notifications`), o payload sintético e os procedimentos de verificação e limpeza.
+2. **Se o Canário For Autorizado:**
+   - Publicar no EasyPanel a imagem com o commit [`919b0f4`](https://github.com/Lucasnlucca/CRMiris/commit/919b0f4).
+   - Configurar as variáveis temporárias de canário no EasyPanel por 15 minutos (`CANARY_PROD_WRITE_ENABLED=true`, `CANARY_WINDOW_EXPIRES_AT=<agora + 15m>`, etc.).
+   - Executar a requisição única de criação via backend bridge.
+   - Auditar a criação do documento `canary_prod_test_20261012_001` e suas permissões (`[read(team:tenant_default), read(team:superadmins)]`).
+   - Executar a limpeza auditada e reverter `CANARY_PROD_WRITE_ENABLED=false`.
+3. **Se o Canário NÃO For Autorizado:**
+   - O ambiente permanece exatamente como está: 100% fail-closed e seguro contra qualquer escrita não autorizada.
