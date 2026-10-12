@@ -252,7 +252,21 @@ const server = http.createServer(async (req, res) => {
         try {
           const databaseId = body.databaseId || DEFAULT_DATABASE_ID;
 
-          // TRAVA FAIL-CLOSED PARA PRODUÇÃO (REGRA ABSOLUTA DAS FASES 5E E 5F)
+          // 1. AUTENTICAÇÃO MANDATÓRIA (Rejeição imediata com HTTP 401 se não autenticado)
+          const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+          let jwt = '';
+          if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+            jwt = authHeader.slice(7).trim();
+          }
+
+          if (!jwt && body.action !== 'signContract') {
+            res.statusCode = 401;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: 'Autenticação necessária: token JWT ausente.', code: 401 }));
+            return;
+          }
+
+          // 2. TRAVA FAIL-CLOSED PARA PRODUÇÃO (REGRA ABSOLUTA DAS FASES 5E E 5F)
           const canaryActive = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
           const broadWritesEnabled = process.env.ALLOW_PROD_BUSINESS_WRITES === 'true';
           if (databaseId === 'crm_db' && !canaryActive && !broadWritesEnabled) {
@@ -265,19 +279,6 @@ const server = http.createServer(async (req, res) => {
                 code: 403,
               })
             );
-            return;
-          }
-
-          const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-          let jwt = '';
-          if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-            jwt = authHeader.slice(7).trim();
-          }
-
-          if (!jwt && body.action !== 'signContract') {
-            res.statusCode = 401;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'Autenticação necessária: token JWT ausente.', code: 401 }));
             return;
           }
 

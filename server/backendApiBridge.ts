@@ -317,16 +317,6 @@ export async function executeAuthoritativeWrite(
       databaseId = DEFAULT_DATABASE_ID;
     }
 
-    // TRAVA FAIL-CLOSED: Impede escritas de negócio em crm_db sem autorização humana expressa
-    const canaryActive = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
-    const broadWritesEnabled = process.env.ALLOW_PROD_BUSINESS_WRITES === 'true';
-    if (databaseId === 'crm_db' && !canaryActive && !broadWritesEnabled) {
-      throw {
-        statusCode: 403,
-        message: '[FAIL-CLOSED GUARD] Escritas de negócio em crm_db estão desabilitadas na Fase 5F. Mecanismo canário inativo e sem autorização expressa.',
-      };
-    }
-
     const { adminDb, adminTeams } = getAdminClients();
 
     // 1. FLUXO ESPECIAL: ASSINATURA PÚBLICA DE CONTRATOS
@@ -370,8 +360,18 @@ export async function executeAuthoritativeWrite(
       };
     }
 
-    // 2. AUTENTICAÇÃO MANDATÓRIA DO OPERADOR
+    // 2. AUTENTICAÇÃO MANDATÓRIA DO OPERADOR (HTTP 401 se ausente ou inválido)
     const userId = await authenticateUser(req.headers);
+
+    // 2.5 TRAVA FAIL-CLOSED: Impede escritas de negócio em crm_db sem autorização humana expressa
+    const canaryActive = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
+    const broadWritesEnabled = process.env.ALLOW_PROD_BUSINESS_WRITES === 'true';
+    if (databaseId === 'crm_db' && !canaryActive && !broadWritesEnabled) {
+      throw {
+        statusCode: 403,
+        message: '[FAIL-CLOSED GUARD] Escritas de negócio em crm_db estão desabilitadas na Fase 5F. Mecanismo canário inativo e sem autorização expressa.',
+      };
+    }
 
     // 3. RESOLUÇÃO AUTORITATIVA DE TENANT E PAPÉIS
     const { authoritativeTenantId, isSuperAdmin } = await resolveUserTenantAndRole(
