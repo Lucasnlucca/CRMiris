@@ -357,6 +357,7 @@ const server = http.createServer(async (req, res) => {
           delete docData.$updatedAt;
           delete docData.$permissions;
           delete docData.tenant_id;
+          delete docData._is_canary_test;
 
           // AÇÃO: CREATE
           if (body.action === 'create') {

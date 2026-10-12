@@ -410,6 +410,7 @@ export async function executeAuthoritativeWrite(
     delete sanitizedData.$permissions;
     delete sanitizedData.$databaseId;
     delete sanitizedData.$collectionId;
+    delete sanitizedData._is_canary_test;
 
     // Se o cliente tentou injetar outro tenant_id, rejeita ou anula
     if (sanitizedData.tenant_id && sanitizedData.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
