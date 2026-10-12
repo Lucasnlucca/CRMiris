@@ -40,7 +40,8 @@ loadEnvFile(path.join(__dirname, '../.env'));
 
 const { Client, Databases, Users, Teams, Account, Permission, Role, ID } = require('node-appwrite');
 
-const PORT = process.env.PORT || 3001;
+// Porta interna do Backend Bridge (fixa em 3001 para não colidir com o Nginx nas portas 80/3000/4173)
+const PORT = process.env.BRIDGE_PORT || 3001;
 const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
 const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
 const API_KEY = process.env.APPWRITE_API_KEY || '';

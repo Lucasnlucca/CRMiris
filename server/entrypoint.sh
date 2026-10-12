@@ -8,7 +8,7 @@ echo "=================================================="
 
 # 1. Iniciar o Backend API Bridge Node.js na porta 3001 em background
 echo "[1/2] Iniciando Backend API Bridge (porta 3001)..."
-node /app/server/server.cjs &
+BRIDGE_PORT=3001 node /app/server/server.cjs &
 BRIDGE_PID=$!
 
 # Aguarda inicialização do bridge
