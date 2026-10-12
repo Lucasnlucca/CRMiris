@@ -1,13 +1,12 @@
-import { Navigate, useLocation } from 'react-router-dom';
+import React from 'react';
 import { useAuth } from '../context/AuthContext';
 
 export default function ProtectedRoute({
   children,
 }: {
-  children: JSX.Element;
+  children: React.ReactNode;
 }) {
   const { user, loading } = useAuth();
-  const location = useLocation();
 
   if (loading) {
     return (
@@ -18,8 +17,8 @@ export default function ProtectedRoute({
   }
 
   if (!user) {
-    return <Navigate to="/login" replace state={{ from: location }} />;
+    return null;
   }
 
-  return children;
+  return <>{children}</>;
 }

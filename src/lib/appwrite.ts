@@ -1,4 +1,5 @@
-import { Client, Account, Databases, Storage, Functions, Permission, Role } from 'appwrite';
+import { Client, Account, Databases, Storage, Functions, Permission, Role, Teams } from 'appwrite';
+import { createTenantDatabases } from './tenantDatabases';
 
 const isLocalhost =
     typeof window !== 'undefined' &&
@@ -17,48 +18,40 @@ client
     .setProject(appwriteProjectId);
 
 export const account = new Account(client);
-const rawDatabases = new Databases(client);
+export const teams = new Teams(client);
+export const rawDatabases = new Databases(client);
 
 export let currentTenantUserId: string | null = null;
+export let currentTenantId: string | null = null;
+export let currentIsSuperAdmin: boolean = false;
 
 export function setTenantUserId(id: string | null) {
     currentTenantUserId = id;
 }
 
-const originalCreateDocument = rawDatabases.createDocument.bind(rawDatabases);
+export function setTenantId(id: string | null) {
+    currentTenantId = id;
+}
 
-rawDatabases.createDocument = async function (
-    databaseId: string,
-    collectionId: string,
-    documentId: string,
-    data: any,
-    permissions?: string[]
-) {
-    let finalPermissions = permissions;
-    
-    if ((!permissions || permissions.length === 0) && currentTenantUserId) {
-        finalPermissions = [
-            Permission.read(Role.user(currentTenantUserId)),
-            Permission.update(Role.user(currentTenantUserId)),
-            Permission.delete(Role.user(currentTenantUserId)),
-        ];
-    }
-    
-    try {
-        return await originalCreateDocument(databaseId, collectionId, documentId, data, finalPermissions);
-    } catch (error: any) {
-        if (error?.message && error.message.includes('Document-level permissions are disabled') && finalPermissions !== permissions) {
-            console.warn(`[Appwrite] Segurança em nível de documento desativada para a collection ${collectionId}. Tentando salvar sem permissões customizadas...`);
-            return await originalCreateDocument(databaseId, collectionId, documentId, data, permissions);
-        }
-        throw error;
-    }
-};
+export function setIsSuperAdmin(val: boolean) {
+    currentIsSuperAdmin = val;
+}
 
-export const databases = rawDatabases;
+/**
+ * Cliente centralizado de banco de dados do CRM com injeção automática de tenant_id,
+ * sanitização de consultas e validação de posse de organização.
+ */
+export const databases = createTenantDatabases(
+    rawDatabases,
+    () => currentTenantId,
+    () => currentTenantUserId,
+    () => currentIsSuperAdmin
+);
+
 export const storage = new Storage(client);
 export const functions = new Functions(client);
 
 export const subscribe = (channel: string | string[], callback: (response: any) => void) => {
     return client.subscribe(channel, callback);
 };
+

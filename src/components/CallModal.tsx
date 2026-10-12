@@ -76,29 +76,23 @@ export default function CallModal({
     try {
       callStartTimeRef.current = new Date();
 
-      const { data, error } = await supabase
-        .from('call_history')
-        .insert({
+      const doc = await databases.createDocument(
+        DATABASE_ID,
+        'call_history',
+        ID.unique(),
+        {
           caller_id: user?.id || null,
           contact_type: targetNumber ? 'external' : 'internal',
           contact_id: targetName,
-          contact_name: targetName,
-          phone_number: targetNumber,
           direction,
           status: direction === 'inbound' ? 'incoming' : 'ringing',
           duration: 0,
           started_at: callStartTimeRef.current.toISOString(),
-        })
-        .select('id')
-        .single();
-
-      if (error) {
-        console.error('Error creating call record:', error);
-        return null;
-      }
-
-      setCallRecordId(data.id);
-      return data.id;
+          created_at: callStartTimeRef.current.toISOString(),
+        }
+      );
+      setCallRecordId(doc.$id);
+      return doc.$id;
     } catch (error) {
       console.error('Error creating call record:', error);
       return null;
@@ -193,14 +187,10 @@ export default function CallModal({
         const newDuration = prev + 1;
 
         if (newDuration % 5 === 0 && callRecordId) {
-          supabase
-            .from('call_history')
-            .update({
+          databases
+            .updateDocument(DATABASE_ID, 'call_history', callRecordId, {
               duration: newDuration,
-              updated_at: new Date().toISOString()
             })
-            .eq('id', callRecordId)
-            .then()
             .catch(console.error);
         }
 

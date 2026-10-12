@@ -3,6 +3,7 @@ import { X, ChevronRight, Check, CreditCard as Edit3, Paperclip, MessageSquare, 
 import { databases, storage, client } from '../../lib/appwrite';
 import { Query, ID } from 'appwrite';
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
+const STORAGE_BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments';
 import { useAuth } from "../../context/AuthContext";
 import {
   PipelineDeal, PipelineColumn, PipelineUser,
@@ -298,7 +299,7 @@ export default function PipelineItemView({ deal, columns, users, onClose, onUpda
       checked: false,
       position: checklist.length,
     });
-    setChecklist(prev => [...prev, { id: data.$id, deal_id: deal.id, text, checked: false, position: checklist.length }]);
+    setChecklist(prev => [...prev, { id: data.$id, deal_id: deal.id, text, checked: false, position: checklist.length, created_at: new Date().toISOString() }]);
   }
 
   async function toggleChecklistItem(id: string, checked: boolean) {
@@ -433,7 +434,7 @@ export default function PipelineItemView({ deal, columns, users, onClose, onUpda
                       ? "bg-slate-200/50 dark:bg-white/[0.04] text-slate-700 dark:text-slate-300 border-slate-200/60 dark:border-white/[0.06] hover:bg-slate-200/80 dark:hover:bg-white/[0.08]"
                       : "text-slate-400 dark:text-slate-500 border-transparent hover:bg-slate-200/40 dark:hover:bg-white/[0.04]"
                   }`}
-                  style={{ ringColor: isCurrent ? col.color : "transparent" }}
+                  style={{ borderColor: isCurrent ? col.color : "transparent" }}
                 >
                   <span
                     className="h-2 w-2 rounded-full shrink-0"

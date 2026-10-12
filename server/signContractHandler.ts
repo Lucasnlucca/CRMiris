@@ -15,6 +15,7 @@
  */
 
 import crypto from 'crypto';
+import { assertNotUnderMaintenance, enterPrivilegedOperation } from './maintenanceGuard';
 
 export interface SignContractServerPayload {
   contractId: string;
@@ -79,7 +80,9 @@ export async function handleSignContractServer(
     updateContract: (id: string, data: Record<string, any>) => Promise<any>;
   }
 ): Promise<ServerAuditResult> {
-  const { contractId, signerName, signerDocument, signerEmail, signerPhone, termsAccepted } = req.body;
+  const exitOp = enterPrivilegedOperation();
+  try {
+    const { contractId, signerName, signerDocument, signerEmail, signerPhone, termsAccepted } = req.body;
 
   if (!termsAccepted) {
     throw new Error('O aceite formal das cláusulas contratuais e termos é obrigatório.');
@@ -193,4 +196,7 @@ export async function handleSignContractServer(
     userAgent,
     legalBasis,
   };
+  } finally {
+    exitOp();
+  }
 }

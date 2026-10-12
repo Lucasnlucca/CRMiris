@@ -39,4 +39,7 @@ fix-*.js
 list_*.js
 adjust-*.js
 add_*.js
+.backups/
+scripts/
+fase*.md
 

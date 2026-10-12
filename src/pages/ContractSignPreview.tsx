@@ -26,6 +26,7 @@ import {
   Hash,
 } from 'lucide-react';
 import { databases } from '../lib/appwrite';
+import { backendApiBridge } from '../lib/backendApiBridge';
 import { parseContractClauses, ContractClause } from './Contratos';
 import { parseLegalRepresentative } from './Contatos';
 import {
@@ -54,7 +55,7 @@ export interface ContractItem {
 export interface ContractData {
   id: string;
   contract_number: string;
-  title: string;
+  title?: string;
   proposal_id?: string;
   client_id?: string;
   client_name: string;
@@ -68,7 +69,9 @@ export interface ContractData {
   start_date?: string;
   end_date?: string;
   billing_cycle?: string;
+  recurrence_period?: string;
   total_value?: number;
+  total_amount?: number;
   setup_fee?: number;
   items_json?: string;
   clauses_json?: string;
@@ -503,18 +506,29 @@ export default function ContractSignPreview() {
         };
 
         try {
-          // Tentar salvar com campos estendidos
-          await databases.updateDocument(DATABASE_ID, COLLECTION_CONTRACTS, contract.id, {
-            ...basePayload,
-            document_hash: documentHash,
-            signed_by_email: signerEmailFinal,
-            signed_by_phone: signerPhoneFinal,
-            signed_by_port: signerPort,
-            signature_method: signerAudit.legalBasis,
+          // Salvar via Backend API Bridge autoritativo com captura de evidências no servidor
+          await backendApiBridge.signContract(contract.id, {
+            signerName: signerName.trim(),
+            signerDocument: signerDoc.trim(),
+            signerEmail: signerEmailFinal,
+            signerPhone: signerPhoneFinal,
+            termsAccepted: true,
           });
-        } catch (schemaErr: any) {
-          console.warn('Appwrite update com campos estendidos retornou aviso, persistindo campos padrão + audit trail em notes:', schemaErr?.message);
-          await databases.updateDocument(DATABASE_ID, COLLECTION_CONTRACTS, contract.id, basePayload);
+        } catch (bridgeErr: any) {
+          console.warn('Backend API Bridge sign retornou aviso, tentando via updateDocument:', bridgeErr?.message);
+          try {
+            await databases.updateDocument(DATABASE_ID, COLLECTION_CONTRACTS, contract.id, {
+              ...basePayload,
+              document_hash: documentHash,
+              signed_by_email: signerEmailFinal,
+              signed_by_phone: signerPhoneFinal,
+              signed_by_port: signerPort,
+              signature_method: signerAudit.legalBasis,
+            });
+          } catch (schemaErr: any) {
+            console.warn('Appwrite update com campos estendidos retornou aviso, persistindo campos padrão + audit trail em notes:', schemaErr?.message);
+            await databases.updateDocument(DATABASE_ID, COLLECTION_CONTRACTS, contract.id, basePayload);
+          }
         }
       }
 

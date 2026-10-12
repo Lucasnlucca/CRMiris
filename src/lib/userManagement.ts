@@ -1,5 +1,5 @@
 import { Client, Account, ID, Query } from 'appwrite';
-import { databases } from './appwrite';
+import { databases, DATABASE_ID } from './appwrite';
 
 const isLocalhost =
     typeof window !== 'undefined' &&

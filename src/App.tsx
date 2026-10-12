@@ -2,6 +2,7 @@ import React, { useState, useRef, useLayoutEffect, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { TenantProvider, useTenant } from './context/TenantContext';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import Dashboard from './pages/Dashboard';
@@ -22,6 +23,8 @@ import Contratos from './pages/Contratos';
 import ContractSignPreview from './pages/ContractSignPreview';
 
 function AuthenticatedApp() {
+  const { isAuthorized, loading: tenantLoading, error: tenantError, tenant } = useTenant();
+  const { logout } = useAuth();
   const [currentPage, setCurrentPage] = useState(() => {
     try { return sessionStorage.getItem('currentPage') || 'visao-geral'; } catch { return 'visao-geral'; }
   });
@@ -121,6 +124,47 @@ function AuthenticatedApp() {
     }
   };
 
+  if (tenantLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#edf0f5] dark:bg-[#090d15]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">Carregando ambiente da empresa...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthorized && tenantError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#edf0f5] dark:bg-[#090d15] p-4">
+        <div className="max-w-md w-full bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/[0.1] p-6 text-center shadow-xl">
+          <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Acesso Restrito</h2>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">{tenantError}</p>
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/[0.08] text-slate-700 dark:text-slate-300 text-sm font-semibold hover:bg-slate-200 transition-colors"
+            >
+              Tentar Novamente
+            </button>
+            <button
+              onClick={logout}
+              className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 transition-colors shadow-sm"
+            >
+              Sair da Conta
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex bg-[#edf0f5] dark:bg-[#090d15] text-slate-900 dark:text-slate-100 transition-colors">
       <Sidebar currentPage={currentPage} onPageChange={handlePageChange} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)} />
@@ -132,6 +176,7 @@ function AuthenticatedApp() {
       />
 
       <main
+        key={`${tenant?.id || 'no-tenant'}_${currentPage}`}
         className={`flex-1 ${sidebarCollapsed ? 'ml-[72px]' : 'ml-[270px]'} mt-16 p-4 sm:p-6 lg:p-8 transition-[margin] duration-300 min-w-0`}
       >
         {renderPage()}
@@ -217,9 +262,11 @@ function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <PageErrorBoundary>
-          <AppContent />
-        </PageErrorBoundary>
+        <TenantProvider>
+          <PageErrorBoundary>
+            <AppContent />
+          </PageErrorBoundary>
+        </TenantProvider>
       </AuthProvider>
     </ThemeProvider>
   );

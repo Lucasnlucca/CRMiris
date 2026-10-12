@@ -17,6 +17,7 @@ import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import NotificationBell from './NotificationBell';
+import TenantSelector from './TenantSelector';
 
 interface HeaderProps {
   isSidebarCollapsed?: boolean;
@@ -91,7 +92,10 @@ function Header({
       </div>
 
       {/* Right: Quick Search, VoIP Pill, Actions, Theme & Profile */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2.5">
+        {/* Seletor de Empresa / Tenant */}
+        <TenantSelector />
+
         {/* Live Status indicator */}
         <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-semibold">
           <span className="relative flex h-2 w-2">

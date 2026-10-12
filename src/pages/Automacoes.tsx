@@ -256,7 +256,7 @@ export default function Automacoes() {
       }
 
       const map: Record<string, IntegrationConfigRow> = {};
-      (data || []).forEach((item: IntegrationConfigRow) => {
+      ((data || []) as any[]).forEach((item: IntegrationConfigRow) => {
         map[item.integration_key] = item;
       });
 
@@ -429,7 +429,7 @@ export default function Automacoes() {
         setCurrentConfigId(data.$id);
         setIntegrationMap((prev) => ({
           ...prev,
-          [selectedIntegrationKey]: data as IntegrationConfigRow
+          [selectedIntegrationKey]: data as unknown as IntegrationConfigRow
         }));
       }
 
@@ -518,7 +518,7 @@ export default function Automacoes() {
         setCurrentConfigId(data.$id);
         setIntegrationMap((prev) => ({
           ...prev,
-          [selectedIntegrationKey]: data as IntegrationConfigRow
+          [selectedIntegrationKey]: (data as unknown as IntegrationConfigRow)
         }));
       }
 
@@ -578,7 +578,7 @@ export default function Automacoes() {
       if (data) {
         setIntegrationMap((prev) => ({
           ...prev,
-          [selectedIntegrationKey]: data as IntegrationConfigRow
+          [selectedIntegrationKey]: (data as unknown as IntegrationConfigRow)
         }));
       }
 

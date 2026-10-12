@@ -52,6 +52,66 @@ const COLLECTION_CONTRACTS = 'crm_contracts';
 
 // ─── Interfaces & Tipagens de Cláusulas ────────────────────────────────────────
 
+export interface Contract {
+  id: string;
+  $id?: string;
+  contract_number?: string;
+  title?: string;
+  proposal_id?: string;
+  client_id?: string;
+  client_name?: string;
+  client_document?: string;
+  client_email?: string;
+  client_phone?: string;
+  client_address?: string;
+  provider_name?: string;
+  provider_document?: string;
+  provider_address?: string;
+  start_date?: string;
+  end_date?: string;
+  billing_cycle?: string;
+  total_value?: number;
+  setup_fee?: number;
+  items_json?: string;
+  clauses_json?: string;
+  notes?: string;
+  status?: string;
+  signature_token?: string;
+  signed_at?: string;
+  signed_by_name?: string;
+  signed_by_document?: string;
+  signed_by_email?: string;
+  signed_by_phone?: string;
+  signed_by_ip?: string;
+  signed_by_port?: string;
+  signed_by_user_agent?: string;
+  signature_hash?: string;
+  document_hash?: string;
+  signature_method?: string;
+  created_at?: string;
+  $createdAt?: string;
+  [key: string]: any;
+}
+
+export interface ProposalOption {
+  id: string;
+  subject?: string;
+  to_name?: string;
+  total?: number;
+  [key: string]: any;
+}
+
+export interface ClientOption {
+  id: string;
+  name?: string;
+  fantasy_name?: string;
+  document?: string;
+  email?: string;
+  phone?: string;
+  [key: string]: any;
+}
+
+
 export interface ContractItem {
   name: string;
   description?: string;
@@ -825,7 +885,7 @@ export default function Contratos() {
     const clientProposal = proposals.find(
       (p) =>
         (p.related_id && p.related_id === cl.id) ||
-        (p.to_name && p.to_name.toLowerCase() === cl.name.toLowerCase())
+        (p.to_name && cl.name && p.to_name.toLowerCase() === cl.name.toLowerCase())
     );
 
     if (clientProposal) {
@@ -876,7 +936,7 @@ export default function Contratos() {
         }
       }
     } else {
-      const cl = clients.find((c) => c.name.toLowerCase() === (p.to_name || '').toLowerCase());
+      const cl = clients.find((c) => c.name && c.name.toLowerCase() === (p.to_name || '').toLowerCase());
       if (cl) {
         setFormClientId(cl.id);
         if (cl.document) clientDoc = cl.document;
@@ -1915,7 +1975,7 @@ export default function Contratos() {
                     {proposals.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.status === 'accepted' ? '✅ [ACEITA] ' : `[${p.status.toUpperCase()}] `}
-                        {p.proposal_number || p.id.slice(0, 8)} - {p.to_name || p.subject} ({p.total.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})
+                        {p.proposal_number || p.id.slice(0, 8)} - {p.to_name || p.subject} ({(Number(p.total) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})
                       </option>
                     ))}
                   </select>

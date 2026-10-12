@@ -329,7 +329,6 @@ export async function downloadContractDocx(
           }),
           new TableCell({
             width: { size: 15, type: WidthType.PERCENTAGE },
-            alignment: AlignmentType.CENTER,
             shading: { type: ShadingType.CLEAR, fill: 'F1F5F9' },
             margins: { top: 120, bottom: 120, left: 120, right: 120 },
             borders: tableHeaderBorder,
@@ -337,7 +336,6 @@ export async function downloadContractDocx(
           }),
           new TableCell({
             width: { size: 18, type: WidthType.PERCENTAGE },
-            alignment: AlignmentType.RIGHT,
             shading: { type: ShadingType.CLEAR, fill: 'F1F5F9' },
             margins: { top: 120, bottom: 120, left: 120, right: 120 },
             borders: tableHeaderBorder,
@@ -345,7 +343,6 @@ export async function downloadContractDocx(
           }),
           new TableCell({
             width: { size: 17, type: WidthType.PERCENTAGE },
-            alignment: AlignmentType.RIGHT,
             shading: { type: ShadingType.CLEAR, fill: 'F1F5F9' },
             margins: { top: 120, bottom: 120, left: 120, right: 120 },
             borders: tableHeaderBorder,
@@ -373,7 +370,6 @@ export async function downloadContractDocx(
             }),
             new TableCell({
               width: { size: 15, type: WidthType.PERCENTAGE },
-              alignment: AlignmentType.CENTER,
               shading: { type: ShadingType.CLEAR, fill: bg },
               margins: { top: 100, bottom: 100, left: 120, right: 120 },
               borders: thinBorder,
@@ -381,7 +377,6 @@ export async function downloadContractDocx(
             }),
             new TableCell({
               width: { size: 18, type: WidthType.PERCENTAGE },
-              alignment: AlignmentType.RIGHT,
               shading: { type: ShadingType.CLEAR, fill: bg },
               margins: { top: 100, bottom: 100, left: 120, right: 120 },
               borders: thinBorder,
@@ -389,7 +384,6 @@ export async function downloadContractDocx(
             }),
             new TableCell({
               width: { size: 17, type: WidthType.PERCENTAGE },
-              alignment: AlignmentType.RIGHT,
               shading: { type: ShadingType.CLEAR, fill: bg },
               margins: { top: 100, bottom: 100, left: 120, right: 120 },
               borders: thinBorder,
@@ -478,7 +472,7 @@ export async function downloadContractDocx(
             new ImageRun({
               data: imgBuf,
               transformation: { width: 480, height: 200 },
-            }),
+            } as any),
           ],
         })
       );

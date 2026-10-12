@@ -237,7 +237,6 @@ export async function downloadProposalDocx(
         }),
         new TableCell({
           width: { size: 15, type: WidthType.PERCENTAGE },
-          alignment: AlignmentType.CENTER,
           shading: { type: ShadingType.CLEAR, fill: 'F1F5F9' },
           margins: { top: 140, bottom: 140, left: 120, right: 120 },
           borders: tableHeaderBorder,
@@ -245,7 +244,6 @@ export async function downloadProposalDocx(
         }),
         new TableCell({
           width: { size: 20, type: WidthType.PERCENTAGE },
-          alignment: AlignmentType.RIGHT,
           shading: { type: ShadingType.CLEAR, fill: 'F1F5F9' },
           margins: { top: 140, bottom: 140, left: 120, right: 120 },
           borders: tableHeaderBorder,
@@ -253,7 +251,6 @@ export async function downloadProposalDocx(
         }),
         new TableCell({
           width: { size: 20, type: WidthType.PERCENTAGE },
-          alignment: AlignmentType.RIGHT,
           shading: { type: ShadingType.CLEAR, fill: 'F1F5F9' },
           margins: { top: 140, bottom: 140, left: 120, right: 120 },
           borders: tableHeaderBorder,
@@ -291,7 +288,6 @@ export async function downloadProposalDocx(
           }),
           new TableCell({
             width: { size: 15, type: WidthType.PERCENTAGE },
-            alignment: AlignmentType.CENTER,
             shading: { type: ShadingType.CLEAR, fill: bg },
             margins: { top: 120, bottom: 120, left: 120, right: 120 },
             borders: thinBorder,
@@ -304,7 +300,6 @@ export async function downloadProposalDocx(
           }),
           new TableCell({
             width: { size: 20, type: WidthType.PERCENTAGE },
-            alignment: AlignmentType.RIGHT,
             shading: { type: ShadingType.CLEAR, fill: bg },
             margins: { top: 120, bottom: 120, left: 120, right: 120 },
             borders: thinBorder,
@@ -317,7 +312,6 @@ export async function downloadProposalDocx(
           }),
           new TableCell({
             width: { size: 20, type: WidthType.PERCENTAGE },
-            alignment: AlignmentType.RIGHT,
             shading: { type: ShadingType.CLEAR, fill: bg },
             margins: { top: 120, bottom: 120, left: 120, right: 120 },
             borders: thinBorder,
@@ -440,7 +434,7 @@ export async function downloadProposalDocx(
               new ImageRun({
                 data: imgBuffer,
                 transformation: { width: 480, height: 200 },
-              }),
+              } as any),
             ],
           })
         );
@@ -492,7 +486,7 @@ export async function downloadProposalDocx(
               new ImageRun({
                 data: imgBuffer,
                 transformation: { width: 480, height: 200 },
-              }),
+              } as any),
             ],
           })
         );
@@ -537,7 +531,7 @@ export async function downloadProposalDocx(
           new ImageRun({
             data: footerImageBuffer,
             transformation: { width: 520, height: 160 },
-          }),
+          } as any),
         ],
       })
     );
