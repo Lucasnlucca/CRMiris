@@ -139,7 +139,8 @@ async function authenticateUser(headers: Record<string, string | string[] | unde
 async function resolveUserTenantAndRole(
   adminTeams: Teams,
   userId: string,
-  requestedTenantId?: string
+  requestedTenantId?: string,
+  targetDatabaseId: string = 'crm_db'
 ): Promise<{ authoritativeTenantId: string; isSuperAdmin: boolean; userTeams: string[] }> {
   // Obter memberships do usuário
   // Como o Teams API lista memberships por Team, verificamos os times conhecidos
@@ -168,7 +169,15 @@ async function resolveUserTenantAndRole(
     }
   }
 
-  const isSuperAdmin = userTeams.includes('superadmins') || userTeams.includes('test_team_superadmins');
+  // SuperAdmin por correspondência EXATA de Team ID.
+  // Em produção (crm_db): estritamente 'superadmins'.
+  // No sandbox isolado (crm_isolated_test): 'superadmins' ou 'test_team_superadmins'.
+  const isSuperAdminTeam = (t: string) =>
+    targetDatabaseId === 'crm_db'
+      ? t === 'superadmins'
+      : (t === 'superadmins' || t === 'test_team_superadmins');
+
+  const isSuperAdmin = userTeams.some(isSuperAdminTeam);
 
   let authoritativeTenantId = '';
 
@@ -182,12 +191,15 @@ async function resolveUserTenantAndRole(
       };
     }
   } else {
-    // Escolhe o tenant operacional primário (não superadmins)
-    const operationalTenant = userTeams.find((t) => !t.includes('superadmins'));
+    // Escolhe o tenant operacional primário (excluindo explicitamente os times SuperAdmin)
+    const operationalTenant = userTeams.find((t) => !isSuperAdminTeam(t));
     if (operationalTenant) {
       authoritativeTenantId = operationalTenant;
     } else if (isSuperAdmin) {
-      authoritativeTenantId = 'tenant_default';
+      authoritativeTenantId =
+        targetDatabaseId === 'crm_db'
+          ? 'tenant_default'
+          : (userTeams.includes('test_team_superadmins') ? 'test_team_alpha' : 'tenant_default');
     } else {
       throw {
         statusCode: 403,
@@ -377,7 +389,8 @@ export async function executeAuthoritativeWrite(
     const { authoritativeTenantId, isSuperAdmin } = await resolveUserTenantAndRole(
       adminTeams,
       userId,
-      targetTenantId
+      targetTenantId,
+      databaseId
     );
 
     // 3.5. VALIDAÇÃO CANÁRIO RESTRITA SE O BANCO FOR crm_db
@@ -436,18 +449,25 @@ export async function executeAuthoritativeWrite(
       // (Nenhuma permissão de escrita concedida diretamente a clientes)
       const permissions: string[] = [];
 
+      const superAdminTeamForPerms =
+        databaseId === 'crm_db'
+          ? 'superadmins'
+          : ((authoritativeTenantId === 'test_team_alpha' || authoritativeTenantId === 'test_team_beta')
+              ? 'test_team_superadmins'
+              : 'superadmins');
+
       if (collectionId === 'users_hydra' || collectionId === 'test_users_hydra') {
         // Para perfis de usuário: o próprio usuário pode ler e atualizar seu perfil
         permissions.push(
           Permission.read(Role.user(userId)),
           Permission.update(Role.user(userId)),
           Permission.read(Role.team(authoritativeTenantId)),
-          Permission.read(Role.team(isSuperAdmin ? 'test_team_superadmins' : 'superadmins'))
+          Permission.read(Role.team(superAdminTeamForPerms))
         );
       } else if (isTenantAware) {
         permissions.push(
           Permission.read(Role.team(authoritativeTenantId)),
-          Permission.read(Role.team(authoritativeTenantId.startsWith('test_') ? 'test_team_superadmins' : 'superadmins'))
+          Permission.read(Role.team(superAdminTeamForPerms))
         );
       }
 

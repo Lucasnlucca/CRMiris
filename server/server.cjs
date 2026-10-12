@@ -287,6 +287,41 @@ const server = http.createServer(async (req, res) => {
           const adminDb = new Databases(adminClient);
           const adminTeams = new Teams(adminClient);
 
+          // AÇÃO PÚBLICA: SIGN CONTRACT (Assinatura externa sem exigência de JWT de operador)
+          if (body.action === 'signContract') {
+            const contractId = body.documentId || body.data?.contractId;
+            const signerName = body.data?.signerName || body.data?.signed_by_name || '';
+            const signerDocument = body.data?.signerDocument || body.data?.signed_by_document || '';
+            const termsAccepted = Boolean(body.data?.termsAccepted);
+
+            if (!termsAccepted) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: 'O aceite dos termos é obrigatório.', code: 400 }));
+              return;
+            }
+
+            const contract = await adminDb.getDocument(databaseId, body.collectionId || 'crm_contracts', contractId);
+            const signedAtUtc = new Date().toISOString();
+            const documentHash = crypto.createHash('sha256').update(contract.title || contractId).digest('hex');
+            const signatureHash = crypto.createHash('sha256').update(`${contractId}|${signerDocument}|${signedAtUtc}|${clientIp}`).digest('hex');
+
+            const signed = await adminDb.updateDocument(databaseId, body.collectionId || 'crm_contracts', contractId, {
+              status: 'signed',
+              signed_at: signedAtUtc,
+              signed_by_name: signerName.trim(),
+              signed_by_document: signerDocument.trim(),
+              signed_by_ip: clientIp,
+              document_hash: documentHash,
+              signature_hash: signatureHash,
+            });
+
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: true, action: 'signContract', documentId: contractId, data: signed }));
+            return;
+          }
+
           let userId = null;
           if (jwt) {
             const userClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setJWT(jwt);
@@ -313,14 +348,34 @@ const server = http.createServer(async (req, res) => {
             }
           }
 
-          const isSuper = userTeams.includes('superadmins') || userTeams.includes('test_team_superadmins');
-          let authoritativeTenantId = body.targetTenantId || userTeams.find((t) => !t.includes('superadmins')) || 'tenant_default';
+          // Verificação estrita de SuperAdmin por igualdade exata de ID de Team:
+          // Em crm_db (produção): unicamente o team oficial 'superadmins'.
+          // Em sandbox de teste (crm_isolated_test): 'superadmins' ou 'test_team_superadmins'.
+          const isSuperAdminTeam = (t) => databaseId === 'crm_db' ? (t === 'superadmins') : (t === 'superadmins' || t === 'test_team_superadmins');
+          const isSuper = userTeams.some((t) => isSuperAdminTeam(t));
 
-          if (body.targetTenantId && !userTeams.includes(body.targetTenantId) && !isSuper) {
-            res.statusCode = 403;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'Acesso negado à organização solicitada.', code: 403 }));
-            return;
+          let authoritativeTenantId = '';
+          if (body.targetTenantId) {
+            if (userTeams.includes(body.targetTenantId) || isSuper) {
+              authoritativeTenantId = body.targetTenantId;
+            } else {
+              res.statusCode = 403;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: 'Acesso negado à organização solicitada.', code: 403 }));
+              return;
+            }
+          } else {
+            const operationalTenant = userTeams.find((t) => !isSuperAdminTeam(t));
+            if (operationalTenant) {
+              authoritativeTenantId = operationalTenant;
+            } else if (isSuper) {
+              authoritativeTenantId = databaseId === 'crm_db' ? 'tenant_default' : (userTeams.includes('test_team_superadmins') ? 'test_team_alpha' : 'tenant_default');
+            } else {
+              res.statusCode = 403;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: 'Usuário não vinculado a nenhuma organização ativa.', code: 403 }));
+              return;
+            }
           }
 
           // VALIDAÇÃO CANÁRIO RESTRITA SE O BANCO FOR crm_db
@@ -362,9 +417,12 @@ const server = http.createServer(async (req, res) => {
           // AÇÃO: CREATE
           if (body.action === 'create') {
             docData.tenant_id = authoritativeTenantId;
+            const superAdminTeamForPerms = databaseId === 'crm_db'
+              ? 'superadmins'
+              : ((authoritativeTenantId === 'test_team_alpha' || authoritativeTenantId === 'test_team_beta') ? 'test_team_superadmins' : 'superadmins');
             const permissions = [
               Permission.read(Role.team(authoritativeTenantId)),
-              Permission.read(Role.team(authoritativeTenantId.startsWith('test_') ? 'test_team_superadmins' : 'superadmins')),
+              Permission.read(Role.team(superAdminTeamForPerms)),
             ];
             const created = await adminDb.createDocument(databaseId, collectionId, body.documentId || ID.unique(), docData, permissions);
             res.statusCode = 200;
@@ -402,41 +460,6 @@ const server = http.createServer(async (req, res) => {
             res.statusCode = 200;
             res.setHeader('Content-Type', 'application/json');
             res.end(JSON.stringify({ success: true, action: 'delete', documentId: body.documentId, tenantId: authoritativeTenantId }));
-            return;
-          }
-
-          // AÇÃO: SIGN CONTRACT
-          if (body.action === 'signContract') {
-            const contractId = body.documentId || body.data?.contractId;
-            const signerName = body.data?.signerName || body.data?.signed_by_name || '';
-            const signerDocument = body.data?.signerDocument || body.data?.signed_by_document || '';
-            const termsAccepted = Boolean(body.data?.termsAccepted);
-
-            if (!termsAccepted) {
-              res.statusCode = 400;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: 'O aceite dos termos é obrigatório.', code: 400 }));
-              return;
-            }
-
-            const contract = await adminDb.getDocument(databaseId, collectionId || 'crm_contracts', contractId);
-            const signedAtUtc = new Date().toISOString();
-            const documentHash = crypto.createHash('sha256').update(contract.title || contractId).digest('hex');
-            const signatureHash = crypto.createHash('sha256').update(`${contractId}|${signerDocument}|${signedAtUtc}|${clientIp}`).digest('hex');
-
-            const signed = await adminDb.updateDocument(databaseId, collectionId || 'crm_contracts', contractId, {
-              status: 'signed',
-              signed_at: signedAtUtc,
-              signed_by_name: signerName.trim(),
-              signed_by_document: signerDocument.trim(),
-              signed_by_ip: clientIp,
-              document_hash: documentHash,
-              signature_hash: signatureHash,
-            });
-
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, action: 'signContract', documentId: contractId, data: signed }));
             return;
           }
 
