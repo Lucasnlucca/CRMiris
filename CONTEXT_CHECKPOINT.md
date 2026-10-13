@@ -175,11 +175,13 @@ ALLOW_PROD_BUSINESS_WRITES=false
 | [`scripts/test-phase5h2-production-runtime.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h2-production-runtime.cjs) | Suíte de 15 testes de runtime remoto em produção confirmando modo Deny-All |
 | [`scripts/test-phase5h3-pilot-clients.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h3-pilot-clients.cjs) | Suíte de 13 testes do piloto de Clientes no sandbox (isolamento, menor privilégio e circuit breaker) |
 | [`scripts/test-phase5h4-pilot-production.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h4-pilot-production.cjs) | Suíte automatizada de validação e execução do piloto de Clientes em produção |
+| [`scripts/test-superadmin-policy-panel.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-superadmin-policy-panel.cjs) | Suíte automatizada do Painel SuperAdmin de Políticas e Circuit Breakers (22 testes) |
 | [`fase5h1_policy_engine_sandbox.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h1_policy_engine_sandbox.md) | Relatório formal de homologação da Fase 5H.1 |
 | [`fase5h2_policy_engine_producao_deny_all.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h2_policy_engine_producao_deny_all.md) | Relatório formal de implantação da Fase 5H.2 |
 | [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md) | Relatório formal de preparação e homologação do Piloto de Clientes (Fase 5H.3) |
 | [`fase5h4_piloto_clientes_producao.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_piloto_clientes_producao.md) | Relatório formal de execução do Piloto de Clientes em Produção (Fase 5H.4) |
 | [`fase5h4_preparacao_ativacao_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_preparacao_ativacao_clientes.md) | Relatório formal de preparação, desacoplamento e homologação da ativação de Clientes |
+| [`fase5h5_painel_superadmin_politicas.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h5_painel_superadmin_politicas.md) | Relatório formal de implementação e homologação do Painel SuperAdmin de Políticas (Fase 5H.5) |
 | [`CONTEXT_CHECKPOINT.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/CONTEXT_CHECKPOINT.md) | Checkpoint consolidado e guia definitivo de contexto do repositório |
 
 ---

@@ -7,12 +7,34 @@
  */
 
 import type { Plugin } from 'vite';
-import { executeAuthoritativeWrite } from './backendApiBridge';
+import { executeAuthoritativeWrite, writePolicyEngine } from './backendApiBridge';
+import { handleAdminPolicyRoutes } from './adminPolicyHandler';
+
+const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
+const API_KEY = process.env.APPWRITE_API_KEY || '';
 
 export function crmApiBridgePlugin(): Plugin {
   return {
     name: 'crm-api-bridge-plugin',
     configureServer(server) {
+      // 1. Endpoints de Governança e Disjuntores SuperAdmin: /api/admin/policy
+      server.middlewares.use('/api/admin/policy', async (req, res) => {
+        try {
+          await handleAdminPolicyRoutes(req, res, writePolicyEngine, {
+            ENDPOINT,
+            PROJECT_ID,
+            API_KEY,
+          });
+        } catch (err: any) {
+          const status = err.statusCode || 500;
+          res.statusCode = status;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: err.message, code: status }));
+        }
+      });
+
+      // 2. Endpoint de Escrita do CRM: /api/crm/write
       server.middlewares.use('/api/crm/write', async (req, res) => {
         if (req.method !== 'POST') {
           res.statusCode = 405;

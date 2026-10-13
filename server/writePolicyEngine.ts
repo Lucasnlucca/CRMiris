@@ -344,16 +344,331 @@ export function validatePolicyConfiguration(rules: PolicyRule[]): boolean {
   return true;
 }
 
+export interface KnownModuleDefinition {
+  key: string;
+  prodCollection: string;
+  testCollection: string;
+  name: string;
+  description: string;
+  icon: string;
+  category: string;
+}
+
+export const KNOWN_MODULES: KnownModuleDefinition[] = [
+  {
+    key: 'clients',
+    prodCollection: 'clients',
+    testCollection: 'test_clients',
+    name: 'Clientes & Leads',
+    description: 'Gestão de contas de clientes, leads e contatos comerciais.',
+    icon: 'Users',
+    category: 'Vendas & CRM',
+  },
+  {
+    key: 'pipeline_deals',
+    prodCollection: 'pipeline_deals',
+    testCollection: 'test_deals',
+    name: 'Funil & Oportunidades',
+    description: 'Kanban comercial, cards de oportunidades e estágios de pipeline.',
+    icon: 'GitBranch',
+    category: 'Vendas & CRM',
+  },
+  {
+    key: 'support_tickets',
+    prodCollection: 'support_tickets',
+    testCollection: 'test_support_tickets',
+    name: 'Central de Chamados',
+    description: 'Chamados técnicos, SLA e atendimento de suporte.',
+    icon: 'LifeBuoy',
+    category: 'Suporte & Atendimento',
+  },
+  {
+    key: 'crm_proposals',
+    prodCollection: 'crm_proposals',
+    testCollection: 'test_crm_proposals',
+    name: 'Propostas Comerciais',
+    description: 'Elaboração, precificação e envio de propostas de vendas.',
+    icon: 'FileText',
+    category: 'Vendas & CRM',
+  },
+  {
+    key: 'crm_contracts',
+    prodCollection: 'crm_contracts',
+    testCollection: 'test_crm_contracts',
+    name: 'Contratos Digitais',
+    description: 'Instrumentos jurídicos, hashes e assinaturas eletrônicas.',
+    icon: 'FileCheck2',
+    category: 'Jurídico & Contratos',
+  },
+  {
+    key: 'crm_items',
+    prodCollection: 'crm_items',
+    testCollection: 'test_crm_items',
+    name: 'Itens & Produtos',
+    description: 'Itens faturáveis, planos e tabelas de preços.',
+    icon: 'Package',
+    category: 'Operações',
+  },
+  {
+    key: 'phonebook',
+    prodCollection: 'phonebook',
+    testCollection: 'test_contacts',
+    name: 'Catálogo Telefônico',
+    description: 'Diretório unificado de contatos e telefonia SIP.',
+    icon: 'BookUser',
+    category: 'Comunicação',
+  },
+  {
+    key: 'automation_config',
+    prodCollection: 'automation_config',
+    testCollection: 'test_integration_configs',
+    name: 'Automações & Webhooks',
+    description: 'Gatilhos automáticos, disparos e integrações externas.',
+    icon: 'Sparkles',
+    category: 'Configurações',
+  },
+  {
+    key: 'notifications',
+    prodCollection: 'notifications',
+    testCollection: 'test_notifications',
+    name: 'Notificações do Sistema',
+    description: 'Avisos em tempo real, canários e alertas a usuários.',
+    icon: 'Bell',
+    category: 'Sistema',
+  },
+];
+
+export interface AdminAuditEntry {
+  id: string;
+  timestamp: string;
+  action: string;
+  actorId: string;
+  clientIp: string;
+  targetDatabase: string;
+  targetCollection: string;
+  targetTenant: string;
+  details: Record<string, any>;
+  reason: string;
+}
+
 export class WritePolicyEngine {
   rules: PolicyRule[];
   circuitBreaker: CircuitBreaker;
   active: boolean;
+  adminAuditLog: AdminAuditEntry[];
 
   constructor(initialRules: PolicyRule[] = [], options: { enabled?: boolean; circuitBreakerOptions?: any } = {}) {
     validatePolicyConfiguration(initialRules);
     this.rules = [...initialRules];
     this.circuitBreaker = new CircuitBreaker(options.circuitBreakerOptions);
     this.active = options.enabled !== false;
+    this.adminAuditLog = [];
+  }
+
+  recordAdminAudit(entry: Partial<AdminAuditEntry>): AdminAuditEntry {
+    const logItem: AdminAuditEntry = {
+      id: crypto.randomBytes(8).toString('hex'),
+      timestamp: new Date().toISOString(),
+      action: entry.action || 'ADMIN_ACTION',
+      actorId: entry.actorId || 'unknown_superadmin',
+      clientIp: maskIp(entry.clientIp),
+      targetDatabase: entry.targetDatabase || 'all',
+      targetCollection: entry.targetCollection || 'all',
+      targetTenant: entry.targetTenant || 'all',
+      details: entry.details || {},
+      reason: entry.reason || 'Ação executada no Painel SuperAdmin',
+    };
+    this.adminAuditLog.unshift(logItem);
+    if (this.adminAuditLog.length > 100) {
+      this.adminAuditLog.pop();
+    }
+    console.log('[SUPERADMIN_AUDIT]', JSON.stringify(logItem));
+    return logItem;
+  }
+
+  getAdminAuditLogs(limit = 50): AdminAuditEntry[] {
+    return this.adminAuditLog.slice(0, limit);
+  }
+
+  pauseModuleAdmin(collectionId: string, reason?: string, actorId?: string, clientIp?: string): AdminAuditEntry {
+    const effReason = reason || 'Módulo pausado manualmente pelo SuperAdmin.';
+    this.circuitBreaker.pauseModule(collectionId, effReason);
+    return this.recordAdminAudit({
+      action: 'POLICY_MODULE_PAUSED',
+      actorId,
+      clientIp,
+      targetCollection: collectionId,
+      reason: effReason,
+    });
+  }
+
+  resumeModuleAdmin(collectionId: string, actorId?: string, clientIp?: string): AdminAuditEntry {
+    this.circuitBreaker.resumeModule(collectionId);
+    return this.recordAdminAudit({
+      action: 'POLICY_MODULE_RESUMED',
+      actorId,
+      clientIp,
+      targetCollection: collectionId,
+      reason: 'Módulo retomado pelo SuperAdmin.',
+    });
+  }
+
+  setGlobalLockdownAdmin(active: boolean, reason?: string, actorId?: string, clientIp?: string): AdminAuditEntry {
+    const effReason = reason || (active ? 'Lockdown global acionado pelo SuperAdmin.' : 'Lockdown global encerrado.');
+    this.circuitBreaker.setGlobalLockdown(active, effReason);
+    return this.recordAdminAudit({
+      action: active ? 'POLICY_GLOBAL_LOCKDOWN_ENABLED' : 'POLICY_GLOBAL_LOCKDOWN_DISABLED',
+      actorId,
+      clientIp,
+      reason: effReason,
+    });
+  }
+
+  setRuleActive({
+    databaseId,
+    collectionId,
+    action,
+    tenantId,
+    allowedRoles,
+    enabled,
+    actorId,
+    clientIp,
+    reason,
+  }: {
+    databaseId: string;
+    collectionId: string;
+    action: 'create' | 'update' | 'delete' | 'signContract';
+    tenantId: string;
+    allowedRoles?: string[];
+    enabled: boolean;
+    actorId?: string;
+    clientIp?: string;
+    reason?: string;
+  }) {
+    if (databaseId === 'crm_db' && process.env.ENABLE_PROD_POLICY_MUTATION !== 'true') {
+      throw new Error('[PROD_GUARD] Mutações dinâmicas de regras no banco de produção (crm_db) estão bloqueadas por segurança. Homologue as regras no banco de testes (crm_isolated_test) ou solicite liberação.');
+    }
+
+    if (!databaseId || !collectionId || !action || !tenantId) {
+      throw new Error('[POLICY_MUTATION_ERROR] databaseId, collectionId, action e tenantId são obrigatórios.');
+    }
+
+    if (!['create', 'update', 'delete', 'signContract'].includes(action)) {
+      throw new Error(`[POLICY_MUTATION_ERROR] Ação inválida "${action}". Permitidas: create, update, delete, signContract.`);
+    }
+
+    if (enabled === false) {
+      const idx = this.rules.findIndex(
+        r => r.databaseId === databaseId && r.collectionId === collectionId && r.action === action && r.tenantId === tenantId
+      );
+      if (idx !== -1) {
+        const removed = this.rules.splice(idx, 1)[0];
+        const audit = this.recordAdminAudit({
+          action: 'POLICY_RULE_REVOKED',
+          actorId,
+          clientIp,
+          targetDatabase: databaseId,
+          targetCollection: collectionId,
+          targetTenant: tenantId,
+          details: { action, ruleId: removed.id, allowedRoles: removed.allowedRoles },
+          reason: reason || `Regra revogada para ${action}`,
+        });
+        return { success: true, enabled: false, ruleId: removed.id, audit };
+      }
+      return { success: true, enabled: false, message: 'Nenhuma regra correspondente ativa encontrada para revogar.' };
+    }
+
+    // enabled === true
+    const ruleId = `rule_${databaseId}_${collectionId}_${action}_${tenantId}`;
+    const roles = Array.isArray(allowedRoles) && allowedRoles.length > 0 ? allowedRoles : ['admin', 'superadmin', 'agent'];
+    const newRule: PolicyRule = {
+      id: ruleId,
+      databaseId,
+      collectionId,
+      action,
+      tenantId,
+      allowedRoles: roles,
+      maxPayloadBytes: 256 * 1024,
+      forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+    };
+
+    validatePolicyConfiguration([newRule]);
+
+    this.rules = this.rules.filter(
+      r => !(r.databaseId === databaseId && r.collectionId === collectionId && r.action === action && r.tenantId === tenantId)
+    );
+    this.rules.push(newRule);
+
+    const audit = this.recordAdminAudit({
+      action: 'POLICY_RULE_GRANTED',
+      actorId,
+      clientIp,
+      targetDatabase: databaseId,
+      targetCollection: collectionId,
+      targetTenant: tenantId,
+      details: { action, ruleId: newRule.id, allowedRoles: newRule.allowedRoles },
+      reason: reason || `Regra concedida para ${action}`,
+    });
+
+    return { success: true, enabled: true, ruleId: newRule.id, rule: newRule, audit };
+  }
+
+  getModuleStatus(databaseId: string, collectionId: string, tenantId?: string) {
+    const isGlobal = Boolean(this.circuitBreaker.globalLockdown);
+    const isPaused = this.circuitBreaker.moduleOverrides.has(collectionId);
+    const pauseInfo = this.circuitBreaker.moduleOverrides.get(collectionId);
+
+    const relevantRules = this.rules.filter(
+      r => r.databaseId === databaseId && r.collectionId === collectionId && (!tenantId || r.tenantId === tenantId)
+    );
+
+    const checkAction = (act: 'create' | 'update' | 'delete') => {
+      const rule = relevantRules.find(r => r.action === act);
+      return {
+        allowed: Boolean(rule),
+        roles: rule ? [...rule.allowedRoles] : [],
+        ruleId: rule ? rule.id : undefined,
+      };
+    };
+
+    const actions = {
+      create: checkAction('create'),
+      update: checkAction('update'),
+      delete: checkAction('delete'),
+    };
+
+    let status: 'ACTIVE' | 'CIRCUIT_PAUSED' | 'LOCKED' | 'GLOBAL_LOCKDOWN' = 'LOCKED';
+    if (isGlobal) {
+      status = 'GLOBAL_LOCKDOWN';
+    } else if (isPaused) {
+      status = 'CIRCUIT_PAUSED';
+    } else if (actions.create.allowed || actions.update.allowed || actions.delete.allowed) {
+      status = 'ACTIVE';
+    }
+
+    return {
+      collectionId,
+      databaseId,
+      tenantId: tenantId || 'all',
+      status,
+      isPaused,
+      pauseReason: pauseInfo ? pauseInfo.reason : null,
+      actions,
+      rulesCount: relevantRules.length,
+    };
+  }
+
+  getAllModulesStatus(databaseId: string, tenantId?: string) {
+    const isProd = databaseId === 'crm_db';
+    return KNOWN_MODULES.map(mod => {
+      const activeCollection = isProd ? mod.prodCollection : mod.testCollection;
+      const status = this.getModuleStatus(databaseId, activeCollection, tenantId);
+      return {
+        ...mod,
+        activeCollection,
+        ...status,
+      };
+    });
   }
 
   addRule(rule: PolicyRule) {

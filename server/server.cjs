@@ -62,6 +62,8 @@ const {
   createAuditLog,
 } = require('./writePolicyEngine.cjs');
 
+const { handleAdminPolicyRoutes } = require('./adminPolicyHandler.cjs');
+
 const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
 
 // Controle estrito de ativação do Módulo Clientes em Produção
@@ -214,6 +216,15 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ status: 'UP', service: 'crm-backend-api-bridge', timestamp: new Date().toISOString() }));
     return;
+  }
+
+  // 2.5. Rotas de Governança e Disjuntores SuperAdmin: /api/admin/policy/*
+  if (req.url && req.url.startsWith('/api/admin/policy')) {
+    return handleAdminPolicyRoutes(req, res, writePolicyEngine, {
+      ENDPOINT,
+      PROJECT_ID,
+      API_KEY,
+    });
   }
 
   // 3. Rota de Escrita Autoritativa: /api/crm/write

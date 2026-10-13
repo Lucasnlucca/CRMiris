@@ -14,9 +14,11 @@ import {
   LogOut,
   Sparkles,
   FileCheck2,
+  ShieldAlert,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { useTenant } from '../context/TenantContext';
 import { databases } from '../lib/appwrite';
 import { Query } from 'appwrite';
 
@@ -47,6 +49,7 @@ export default function Sidebar({
   onToggleCollapse,
 }: SidebarProps) {
   const { user, logout } = useAuth();
+  const { isSuperAdmin } = useTenant();
   const [allowedMenus, setAllowedMenus] = useState<Set<string> | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
 
@@ -87,6 +90,7 @@ export default function Sidebar({
   }, [user?.id, user?.role]);
 
   const isMenuAllowed = (menuId: string): boolean => {
+    if (menuId === 'superadmin-policy') return isSuperAdmin;
     if (menuId === 'usuarios' && user?.role !== 'admin') return false;
     if (!allowedMenus || user?.role === 'admin') return true;
     return !allowedMenus.has(menuId);
@@ -121,6 +125,16 @@ export default function Sidebar({
       items: [
         { id: 'administracao', label: 'Configurações', icon: Settings, color: 'text-slate-400' },
         { id: 'usuarios', label: 'Usuários & Acessos', icon: UserCog, color: 'text-sky-400' },
+        ...(isSuperAdmin
+          ? [
+              {
+                id: 'superadmin-policy',
+                label: 'Políticas & Disjuntores',
+                icon: ShieldAlert,
+                color: 'text-amber-400',
+              },
+            ]
+          : []),
       ],
     },
   ];

@@ -21,6 +21,7 @@ import Suporte from './pages/Suporte';
 import ProposalPreview from './pages/ProposalPreview';
 import Contratos from './pages/Contratos';
 import ContractSignPreview from './pages/ContractSignPreview';
+import SuperAdminPolicyPanel from './pages/SuperAdminPolicyPanel';
 
 function AuthenticatedApp() {
   const { isAuthorized, loading: tenantLoading, error: tenantError, tenant } = useTenant();
@@ -109,6 +110,9 @@ function AuthenticatedApp() {
 
       case 'administracao':
         return <Configuracoes />;
+
+      case 'superadmin-policy':
+        return <SuperAdminPolicyPanel onPageChange={handlePageChange} />;
 
       case 'parceiros-afiliados':
         return <PlaceholderPage title="Afiliados" />;
