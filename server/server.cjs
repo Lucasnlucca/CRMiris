@@ -57,11 +57,22 @@ const {
   CircuitBreaker,
   validatePolicyConfiguration,
   SANDBOX_PILOT_CLIENTS_RULES,
+  PROD_PILOT_CLIENTS_RULES,
+  PROD_CLIENTS_RULES,
   createAuditLog,
 } = require('./writePolicyEngine.cjs');
 
-// Instanciação com regras estritas de menor privilégio para o Sandbox (Fase 5H.1)
-const writePolicyEngine = new WritePolicyEngine(SANDBOX_PILOT_CLIENTS_RULES, { enabled: true });
+const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
+
+// Controle estrito de ativação do Módulo Clientes em Produção
+const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE === 'true';
+
+const initialRules = [
+  ...SANDBOX_PILOT_CLIENTS_RULES,
+  ...(ENABLE_PROD_CLIENTS_MODULE ? prodClientsRules : []),
+];
+
+const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true });
 
 // Proteção contra DoS: Limite de payload e Rate Limiter
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
@@ -277,21 +288,8 @@ const server = http.createServer(async (req, res) => {
             return;
           }
 
-          // 2. TRAVA FAIL-CLOSED PARA PRODUÇÃO (REGRA ABSOLUTA DAS FASES 5E E 5F)
-          const canaryActive = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
-          const broadWritesEnabled = process.env.ALLOW_PROD_BUSINESS_WRITES === 'true';
-          if (databaseId === 'crm_db' && !canaryActive && !broadWritesEnabled) {
-            res.statusCode = 403;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(
-              JSON.stringify({
-                success: false,
-                error: '[FAIL-CLOSED GUARD] Escritas de negócio em crm_db estão desabilitadas na Fase 5F. Mecanismo canário inativo e sem autorização expressa.',
-                code: 403,
-              })
-            );
-            return;
-          }
+          // 2. CONTROLE DE AUTORIZAÇÃO DE PRODUÇÃO (FASE 5H)
+          // Governança estrita delegada ao Write Policy Engine (menor privilégio, tuplas determinísticas e deny-by-default).
 
           // Inicializar Clientes Appwrite
           const adminClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
@@ -401,31 +399,8 @@ const server = http.createServer(async (req, res) => {
             }
           }
 
-          // VALIDAÇÃO CANÁRIO RESTRITA SE O BANCO FOR crm_db
-          if (databaseId === 'crm_db') {
-            const canaryCheck = validateProductionCanaryGuard({
-              databaseId,
-              action: body.action,
-              collectionId: body.collectionId,
-              documentId: body.documentId,
-              data: body.data,
-              userId,
-              tenantId: authoritativeTenantId,
-            });
-
-            if (!canaryCheck.allowed) {
-              res.statusCode = canaryCheck.code || 403;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(
-                JSON.stringify({
-                  success: false,
-                  error: canaryCheck.reason,
-                  code: canaryCheck.code || 403,
-                })
-              );
-              return;
-            }
-          }
+          // 3.5. AUTORIZAÇÃO DE PRODUÇÃO EXCLUSIVA VIA WRITE POLICY ENGINE (Fases 5H.3 / 5H.4)
+          // O mecanismo canário da Fase 5G foi aposentado em favor do motor de políticas declarativo.
 
           // AVALIAÇÃO CENTRAL DE POLÍTICA DE MENOR PRIVILÉGIO (WRITE POLICY ENGINE)
           const policyCheck = writePolicyEngine.evaluate({

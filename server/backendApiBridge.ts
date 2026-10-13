@@ -17,9 +17,24 @@
 import { Client, Databases, Users, Teams, Account, Permission, Role, ID } from 'node-appwrite';
 import { assertNotUnderMaintenance, enterPrivilegedOperation } from './maintenanceGuard';
 import { handleSignContractServer } from './signContractHandler';
-import { WritePolicyEngine, SANDBOX_PILOT_CLIENTS_RULES } from './writePolicyEngine';
+import {
+  WritePolicyEngine,
+  SANDBOX_PILOT_CLIENTS_RULES,
+  PROD_PILOT_CLIENTS_RULES,
+  PROD_CLIENTS_RULES,
+} from './writePolicyEngine';
 
-export const writePolicyEngine = new WritePolicyEngine(SANDBOX_PILOT_CLIENTS_RULES, { enabled: true });
+const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
+
+// Controle estrito de ativação do Módulo Clientes em Produção
+const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE === 'true';
+
+const initialRules = [
+  ...SANDBOX_PILOT_CLIENTS_RULES,
+  ...(ENABLE_PROD_CLIENTS_MODULE ? prodClientsRules : []),
+];
+
+export const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true });
 
 // Configurações do Ambiente do Servidor
 const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
@@ -390,15 +405,8 @@ export async function executeAuthoritativeWrite(
     // 2. AUTENTICAÇÃO MANDATÓRIA DO OPERADOR (HTTP 401 se ausente ou inválido)
     const userId = await authenticateUser(req.headers);
 
-    // 2.5 TRAVA FAIL-CLOSED: Impede escritas de negócio em crm_db sem autorização humana expressa
-    const canaryActive = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
-    const broadWritesEnabled = process.env.ALLOW_PROD_BUSINESS_WRITES === 'true';
-    if (databaseId === 'crm_db' && !canaryActive && !broadWritesEnabled) {
-      throw {
-        statusCode: 403,
-        message: '[FAIL-CLOSED GUARD] Escritas de negócio em crm_db estão desabilitadas na Fase 5F. Mecanismo canário inativo e sem autorização expressa.',
-      };
-    }
+    // 2.5 CONTROLE DE AUTORIZAÇÃO DE PRODUÇÃO (FASE 5H)
+    // Governança estrita delegada ao Write Policy Engine (menor privilégio, tuplas determinísticas e deny-by-default).
 
     // 3. RESOLUÇÃO AUTORITATIVA DE TENANT E PAPÉIS
     const { authoritativeTenantId, isSuperAdmin, userRoles } = await resolveUserTenantAndRole(
@@ -408,25 +416,8 @@ export async function executeAuthoritativeWrite(
       databaseId
     );
 
-    // 3.5. VALIDAÇÃO CANÁRIO RESTRITA SE O BANCO FOR crm_db
-    if (databaseId === 'crm_db') {
-      const canaryCheck = validateProductionCanaryGuard({
-        databaseId,
-        action,
-        collectionId,
-        documentId,
-        data,
-        userId,
-        tenantId: authoritativeTenantId,
-      });
-
-      if (!canaryCheck.allowed) {
-        throw {
-          statusCode: canaryCheck.code || 403,
-          message: canaryCheck.reason,
-        };
-      }
-    }
+    // 3.5. AUTORIZAÇÃO DE PRODUÇÃO EXCLUSIVA VIA WRITE POLICY ENGINE (Fases 5H.3 / 5H.4)
+    // O mecanismo canário da Fase 5G foi aposentado em favor do motor de políticas declarativo.
 
     // 3.8. AVALIAÇÃO CENTRAL DE POLÍTICA DE MENOR PRIVILÉGIO (WRITE POLICY ENGINE)
     const policyCheck = writePolicyEngine.evaluate({

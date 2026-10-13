@@ -323,8 +323,21 @@ export function validatePolicyConfiguration(rules: PolicyRule[]): boolean {
       throw new Error(`${prefix} "allowedRoles" deve ser um array não vazio de papéis sem curingas.`);
     }
 
+    // Regra de segurança da Fase 5H.4: Regras para "crm_db" permitidas estritamente sob o escopo aprovado do Piloto
     if (r.databaseId === 'crm_db') {
-      throw new Error(`${prefix} Regras ativas para "crm_db" estão terminantemente proibidas na Fase 5H.2 (modo deny-all obrigatório).`);
+      if (r.collectionId !== 'clients') {
+        throw new Error(`${prefix} Produção restrita: Somente a coleção "clients" é permitida em crm_db no Piloto da Fase 5H.4.`);
+      }
+      if (!['create', 'update'].includes(r.action)) {
+        throw new Error(`${prefix} Produção restrita: Ação "${r.action}" proibida em crm_db durante o Piloto da Fase 5H.4 (exclusão e outras ações bloqueadas).`);
+      }
+      if (r.tenantId !== 'tenant_default') {
+        throw new Error(`${prefix} Produção restrita: Tenant "${r.tenantId}" não autorizado em crm_db (permitido unicamente "tenant_default").`);
+      }
+      const validProdRoles = new Set(['admin', 'superadmin', 'agent']);
+      if (!r.allowedRoles.every(role => validProdRoles.has(role))) {
+        throw new Error(`${prefix} Produção restrita: Papéis inválidos para crm_db. Permitidos: admin, superadmin, agent.`);
+      }
     }
   }
 
@@ -371,13 +384,17 @@ export class WritePolicyEngine {
       return cbCheck;
     }
 
+    // 2. Trava de Produção Imutável (crm_db) — Fail-Closed se não houver regras ativas para crm_db (Modo Deny-All)
     if (databaseId === 'crm_db') {
-      this.circuitBreaker.recordAuthBreach('Tentativa de escrita direta não autorizada em crm_db');
-      return {
-        allowed: false,
-        code: 403,
-        reason: '[FAIL-CLOSED GUARD] Escritas de negócio em crm_db estão terminantemente desabilitadas na Fase 5H.2 (modo Deny-All ativo).',
-      };
+      const hasProdRules = this.rules.some(r => r.databaseId === 'crm_db');
+      if (!hasProdRules) {
+        this.circuitBreaker.recordAuthBreach('Tentativa de escrita direta não autorizada em crm_db sem regras ativas');
+        return {
+          allowed: false,
+          code: 403,
+          reason: '[FAIL-CLOSED GUARD] Escritas de negócio em crm_db estão desabilitadas (modo Deny-All ativo).',
+        };
+      }
     }
 
     if (!databaseId || !collectionId || !action || !tenantId || !userId) {
@@ -520,51 +537,60 @@ export const SANDBOX_PILOT_CLIENTS_RULES: PolicyRule[] = [
 ];
 
 /**
- * Especificação Proposta para o Futuro Piloto de Clientes em Produção (Fase 5H.3)
- * ATENÇÃO: NÃO ATIVA NESTA FASE (5H.2). Nenhuma regra de crm_db é carregada no motor.
- * Mantida isolada como especificação para auditoria humana e planejamento.
+ * Regras Ativas do Piloto do Módulo Clientes em Produção (Fase 5H.4)
+ * Menor privilégio estrito: apenas create e update para tenant_default.
+ * Deleção terminantemente PROIBIDA. Outras coleções terminantemente PROIBIDAS.
+ */
+export const PROD_PILOT_CLIENTS_RULES: PolicyRule[] = [
+  {
+    id: 'rule_prod_default_clients_create_admin',
+    databaseId: 'crm_db',
+    collectionId: 'clients',
+    action: 'create',
+    tenantId: 'tenant_default',
+    allowedRoles: ['admin', 'superadmin'],
+    maxPayloadBytes: 256 * 1024,
+    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+  },
+  {
+    id: 'rule_prod_default_clients_create_agent',
+    databaseId: 'crm_db',
+    collectionId: 'clients',
+    action: 'create',
+    tenantId: 'tenant_default',
+    allowedRoles: ['agent'],
+    maxPayloadBytes: 256 * 1024,
+    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+  },
+  {
+    id: 'rule_prod_default_clients_update_admin',
+    databaseId: 'crm_db',
+    collectionId: 'clients',
+    action: 'update',
+    tenantId: 'tenant_default',
+    allowedRoles: ['admin', 'superadmin'],
+    maxPayloadBytes: 256 * 1024,
+    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+  },
+  {
+    id: 'rule_prod_default_clients_update_agent',
+    databaseId: 'crm_db',
+    collectionId: 'clients',
+    action: 'update',
+    tenantId: 'tenant_default',
+    allowedRoles: ['agent'],
+    maxPayloadBytes: 256 * 1024,
+    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+  },
+];
+
+export const PROD_CLIENTS_RULES: PolicyRule[] = PROD_PILOT_CLIENTS_RULES;
+
+/**
+ * Especificação Completa do Piloto (incluindo especificação inativa de delete para referência futura)
  */
 export const PROD_PILOT_CLIENTS_SPECIFICATION: PolicyRule[] = [
-  {
-    id: 'spec_prod_default_clients_create_admin',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'create',
-    tenantId: 'tenant_default',
-    allowedRoles: ['admin', 'superadmin'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-  {
-    id: 'spec_prod_default_clients_create_agent',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'create',
-    tenantId: 'tenant_default',
-    allowedRoles: ['agent'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-  {
-    id: 'spec_prod_default_clients_update_admin',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'update',
-    tenantId: 'tenant_default',
-    allowedRoles: ['admin', 'superadmin'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-  {
-    id: 'spec_prod_default_clients_update_agent',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'update',
-    tenantId: 'tenant_default',
-    allowedRoles: ['agent'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
+  ...PROD_PILOT_CLIENTS_RULES,
   {
     id: 'spec_prod_default_clients_delete_admin',
     databaseId: 'crm_db',

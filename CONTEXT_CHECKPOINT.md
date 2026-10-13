@@ -1,15 +1,13 @@
 # Checkpoint de Contexto Completo — Iris Horizon CRM Multi-tenant
 
-> **Data do Checkpoint:** 13 de Outubro de 2026 (01:35 UTC-3)  
-> **Fase Atual:** **Fase 5H.3 Concluída — Homologação do Piloto de Clientes no Sandbox Concluída (Parada para Autorização Humana)**  
-> **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado em 6.4s)  
+> **Data do Checkpoint:** 13 de Outubro de 2026 (10:15 UTC-3)  
+> **Fase Atual:** **Fase 5H.4 Concluída — Ativação Controlada do Piloto de Clientes em Produção Concluída (Parada para Revisão Humana)**  
+> **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado em 6.6s)  
 > **Repositório Oficial:** [https://github.com/Lucasnlucca/CRMiris.git](https://github.com/Lucasnlucca/CRMiris.git) (Branch: `main`)  
-> **Último Commit:** [`c4b2496`](https://github.com/Lucasnlucca/CRMiris/commit/c4b2496) (`docs: update context checkpoint to phase 5h.3 complete status`)  
-> **Commit de Código Ativo:** [`7fca02b`](https://github.com/Lucasnlucca/CRMiris/commit/7fca02b) (`feat(security): integrate write policy engine in deny-all mode for production`)  
 > **Produção Oficial (Easypanel):** [https://sites-lvplataform.grtbdz.easypanel.host/](https://sites-lvplataform.grtbdz.easypanel.host/)  
 > **BaaS / Appwrite Oficial:** [https://bancosupa-appwrite.grtbdz.easypanel.host/v1](https://bancosupa-appwrite.grtbdz.easypanel.host/v1) (`PROJECT_ID: 6a6cac620021f4c64b3f`)  
 > **Bancos de Dados:**
-> - `crm_db`: Banco de Produção Oficial (27 coleções protegidas, exatamente 858 documentos: 856 registros legítimos de negócio + 2 canários auditados em `notifications`)
+> - `crm_db`: Banco de Produção Oficial (27 coleções protegidas, exatamente 859 documentos: 856 registros legítimos de negócio + 2 canários auditados em `notifications` + 1 cliente sintético de teste em `clients`)
 > - `crm_isolated_test`: Sandbox de Homologação e Testes E2E Isolados
 
 ---
@@ -27,7 +25,8 @@ flowchart TD
     F5G --> F5H1[Fase 5H.1: Write Policy Engine no Sandbox]
     F5H1 --> F5H2[Fase 5H.2: Write Policy Engine em Produção Deny-All]
     F5H2 --> F5H3[Fase 5H.3: Piloto do Módulo Clientes no Sandbox]
-    F5H3 -.-> F5H4[Fase 5H.4 / Futura: Ativação Controlada em Produção]
+    F5H3 --> F5H4[Fase 5H.4: Ativação Controlada do Piloto em Produção]
+    F5H4 -.-> F5I[Fases Futuras: Expansão Gradual de Módulos]
 ```
 
 ### Fases 1 a 4 (Fundação Multi-tenant e Homologação Isolada)
@@ -97,6 +96,17 @@ flowchart TD
 - **Inviolabilidade de Produção:** Banco `crm_db` com exatamente 858 documentos verificados (zero mutações em produção).
 - Relatório: [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md).
 
+### Fase 5H.4 (Ativação Controlada do Piloto de Clientes em Produção — CONCLUÍDA COM SUCESSO)
+- **Autorização Humana Expressa:** Execução do piloto de criação e edição restrita de um único registro sintético no módulo Clientes em produção (`crm_db.clients`).
+- **Zero Abertura Global:** `ALLOW_PROD_BUSINESS_WRITES=false` preservado. Zero permissões de coleção abertas (`permissions: []`, `documentSecurity: true`).
+- **Aposentadoria do Canário:** Mecanismo canário da Fase 5G desativado em favor da governança estrita e declarativa do **Write Policy Engine**.
+- **Regras Ativadas:** Apenas 4 regras temporárias (`create` e `update` para `admin`, `superadmin` e `agent` na collection `clients`, tenant `tenant_default`). Ação `delete` permaneceu estritamente BLOQUEADA.
+- **Registro Sintético Criado e Persistido:** `$id: "client_pilot_p5h4_20261013_001"`, `tenant_id: "tenant_default"`, permissões `read("team:tenant_default")` e `read("team:superadmins")`. Edição por Agent validada com sucesso.
+- **Bloqueio Contínuo e Isolamento:** Outros módulos (`pipeline_deals`, etc.) e ações não previstas (deleção) rejeitados com HTTP 403.
+- **Retorno Imediato ao Deny-All:** Regras descarregadas ao final do piloto. Sonda pós-teste confirmou rejeição fail-closed com HTTP 403 `[FAIL-CLOSED GUARD]`.
+- **Contagem Pós-Piloto:** Exatamente **859 documentos** (858 anteriores + 1 único registro sintético mantido para auditoria).
+- Relatório: [`fase5h4_piloto_clientes_producao.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_piloto_clientes_producao.md).
+
 
 ---
 
@@ -164,9 +174,11 @@ ALLOW_PROD_BUSINESS_WRITES=false
 | [`scripts/test-phase5h1-policy-engine.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h1-policy-engine.cjs) | Suíte de 21 testes de autorização e circuit breakers no sandbox |
 | [`scripts/test-phase5h2-production-runtime.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h2-production-runtime.cjs) | Suíte de 15 testes de runtime remoto em produção confirmando modo Deny-All |
 | [`scripts/test-phase5h3-pilot-clients.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h3-pilot-clients.cjs) | Suíte de 13 testes do piloto de Clientes no sandbox (isolamento, menor privilégio e circuit breaker) |
+| [`scripts/test-phase5h4-pilot-production.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h4-pilot-production.cjs) | Suíte automatizada de validação e execução do piloto de Clientes em produção |
 | [`fase5h1_policy_engine_sandbox.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h1_policy_engine_sandbox.md) | Relatório formal de homologação da Fase 5H.1 |
 | [`fase5h2_policy_engine_producao_deny_all.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h2_policy_engine_producao_deny_all.md) | Relatório formal de implantação da Fase 5H.2 |
 | [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md) | Relatório formal de preparação e homologação do Piloto de Clientes (Fase 5H.3) |
+| [`fase5h4_piloto_clientes_producao.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_piloto_clientes_producao.md) | Relatório formal de execução do Piloto de Clientes em Produção (Fase 5H.4) |
 | [`CONTEXT_CHECKPOINT.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/CONTEXT_CHECKPOINT.md) | Checkpoint consolidado e guia definitivo de contexto do repositório |
 
 ---
@@ -177,9 +189,10 @@ ALLOW_PROD_BUSINESS_WRITES=false
 - **Total de Coleções:** 27 de 27 coleções intactas.
 - **Coleção de Clientes Confirmada:** ID `clients` (com 19 atributos, `documentSecurity: true`, `permissions: []`).
 - **Permissões:** 100% das 27 coleções com `permissions: []` e `documentSecurity: true`.
-- **Contagem Total de Documentos:** **Exatamente 858 documentos**.
+- **Contagem Total de Documentos:** **Exatamente 859 documentos**.
   - **856 documentos de negócio:** preservados intactos desde o snapshot baseline T-0.
   - **2 documentos técnicos sintéticos:** em `notifications` (`canary_prod_test_20261012_001` e `canary_probe_post_lockdown`).
+  - **1 documento sintético de piloto:** em `clients` (`client_pilot_p5h4_20261013_001`, com tenant_id `tenant_default` e permissões `read("team:tenant_default")`, `read("team:superadmins")`).
 - **Mutações Não-Autorizadas:** ZERO (0).
 
 ### Banco Sandbox (`crm_isolated_test`)
@@ -188,10 +201,10 @@ ALLOW_PROD_BUSINESS_WRITES=false
 
 ---
 
-## 6. Próximo Passo Recomendado (Fase 5H.4 / Ativação Controlada)
+## 6. Próximo Passo Recomendado
 
-O sistema está 100% pronto e aguarda **autorização humana prévia** antes de qualquer uma das seguintes ações:
-1. **Revisão Humana de [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md):** Validação da matriz de permissões (`create`/`update` para agent/admin; `delete` restrito a admin/superadmin).
-2. **Decisão sobre Ativação do Piloto em Produção:** Se e quando autorizada, carregar a regra unicamente para a coleção `clients` no tenant `tenant_default`.
-3. **Plano de Rollback / Contingência:** Manter prontidão dos Circuit Breakers (`pauseModule('clients')` ou `setGlobalLockdown(true)`) para reversão imediata ao Deny-All diante de qualquer anomalia.
+O sistema de produção cumpriu com total conformidade a ativação controlada do piloto e está **100% retornado ao modo Deny-All absoluto**.
+1. **Revisão Humana do Relatório [`fase5h4_piloto_clientes_producao.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_piloto_clientes_producao.md):** Validação dos resultados e das evidências de isolamento.
+2. **Decisão sobre o Registro Sintético:** Autorização formal posterior para higienização/remoção do registro `client_pilot_p5h4_20261013_001` ou manutenção para histórico auditável.
+3. **Planejamento de Expansão de Módulos (Fase 5I):** Definição da ordem de ativação dos próximos módulos (Pipelines, Tarefas, Propostas) com regras idênticas de menor privilégio.
 
