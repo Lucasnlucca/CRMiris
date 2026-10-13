@@ -4,7 +4,7 @@
 > **Fase Atual:** **Fase 5H.3 Concluída — Homologação do Piloto de Clientes no Sandbox Concluída (Parada para Autorização Humana)**  
 > **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado em 6.4s)  
 > **Repositório Oficial:** [https://github.com/Lucasnlucca/CRMiris.git](https://github.com/Lucasnlucca/CRMiris.git) (Branch: `main`)  
-> **Último Commit:** [`a84e000`](https://github.com/Lucasnlucca/CRMiris/commit/a84e000) (`docs: update context checkpoint to phase 5h.2 with commit 7fca02b`)  
+> **Último Commit:** [`c4b2496`](https://github.com/Lucasnlucca/CRMiris/commit/c4b2496) (`docs: update context checkpoint to phase 5h.3 complete status`)  
 > **Commit de Código Ativo:** [`7fca02b`](https://github.com/Lucasnlucca/CRMiris/commit/7fca02b) (`feat(security): integrate write policy engine in deny-all mode for production`)  
 > **Produção Oficial (Easypanel):** [https://sites-lvplataform.grtbdz.easypanel.host/](https://sites-lvplataform.grtbdz.easypanel.host/)  
 > **BaaS / Appwrite Oficial:** [https://bancosupa-appwrite.grtbdz.easypanel.host/v1](https://bancosupa-appwrite.grtbdz.easypanel.host/v1) (`PROJECT_ID: 6a6cac620021f4c64b3f`)  
@@ -26,7 +26,8 @@ flowchart TD
     F5F --> F5G[Fase 5G: Execução Autorizada do Canário e Lockdown]
     F5G --> F5H1[Fase 5H.1: Write Policy Engine no Sandbox]
     F5H1 --> F5H2[Fase 5H.2: Write Policy Engine em Produção Deny-All]
-    F5H2 -.-> F5H3[Fase 5H.3 / Futura: Piloto Controlado do Módulo Clientes]
+    F5H2 --> F5H3[Fase 5H.3: Piloto do Módulo Clientes no Sandbox]
+    F5H3 -.-> F5H4[Fase 5H.4 / Futura: Ativação Controlada em Produção]
 ```
 
 ### Fases 1 a 4 (Fundação Multi-tenant e Homologação Isolada)
