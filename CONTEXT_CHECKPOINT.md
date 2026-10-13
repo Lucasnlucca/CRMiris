@@ -179,6 +179,7 @@ ALLOW_PROD_BUSINESS_WRITES=false
 | [`fase5h2_policy_engine_producao_deny_all.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h2_policy_engine_producao_deny_all.md) | Relatório formal de implantação da Fase 5H.2 |
 | [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md) | Relatório formal de preparação e homologação do Piloto de Clientes (Fase 5H.3) |
 | [`fase5h4_piloto_clientes_producao.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_piloto_clientes_producao.md) | Relatório formal de execução do Piloto de Clientes em Produção (Fase 5H.4) |
+| [`fase5h4_preparacao_ativacao_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h4_preparacao_ativacao_clientes.md) | Relatório formal de preparação, desacoplamento e homologação da ativação de Clientes |
 | [`CONTEXT_CHECKPOINT.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/CONTEXT_CHECKPOINT.md) | Checkpoint consolidado e guia definitivo de contexto do repositório |
 
 ---
