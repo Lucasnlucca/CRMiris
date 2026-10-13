@@ -1,7 +1,7 @@
 # Checkpoint de Contexto Completo — Iris Horizon CRM Multi-tenant
 
-> **Data do Checkpoint:** 12 de Outubro de 2026 (21:05 UTC-3)  
-> **Fase Atual:** **Fase 5H.2 Concluída — Write Policy Engine Implantado em Modo Deny-All (Aguardando Revisão Humana)**  
+> **Data do Checkpoint:** 13 de Outubro de 2026 (01:35 UTC-3)  
+> **Fase Atual:** **Fase 5H.3 Concluída — Homologação do Piloto de Clientes no Sandbox Concluída (Parada para Autorização Humana)**  
 > **Status da Aplicação:** Estável, compilando com 0 erros (`npm run build` validado em 6.4s)  
 > **Repositório Oficial:** [https://github.com/Lucasnlucca/CRMiris.git](https://github.com/Lucasnlucca/CRMiris.git) (Branch: `main`)  
 > **Último Commit:** [`a84e000`](https://github.com/Lucasnlucca/CRMiris/commit/a84e000) (`docs: update context checkpoint to phase 5h.2 with commit 7fca02b`)  
@@ -89,6 +89,14 @@ flowchart TD
 - **Imutabilidade Preservada:** 858 documentos em `crm_db` (zero mutações adicionais).
 - Relatório: [`fase5h2_policy_engine_producao_deny_all.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h2_policy_engine_producao_deny_all.md).
 
+### Fase 5H.3 (Preparação do Piloto do Módulo Clientes — CONCLUÍDA NO SANDBOX)
+- **Confirmação de Collection:** Consulta em modo somente leitura resolveu conclusivamente a divergência entre `clients` e `crm_clients`. O ID real em `crm_db` é `clients` (com 19 atributos e 1 registro existente). A coleção `crm_clients` não existe.
+- **Matriz de Autorização:** Papéis resolvidos no servidor via `adminTeams.listMemberships()`. Operações `create` e `update` permitidas para `admin` e `agent`; operação `delete` permitida unicamente para `admin`/`superadmin` (proibida para `agent`).
+- **Homologação no Sandbox:** 13/13 testes aprovados em [`scripts/test-phase5h3-pilot-clients.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h3-pilot-clients.cjs) no sandbox `crm_isolated_test` (criação, edição, bloqueio de deleção por agent, proteção contra injeção de tenant_id, cross-tenant bloqueado, outros módulos bloqueados, acionamento e retorno de lockdown e pausas).
+- **Inviolabilidade de Produção:** Banco `crm_db` com exatamente 858 documentos verificados (zero mutações em produção).
+- Relatório: [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md).
+
+
 ---
 
 ## 2. Arquitetura de Runtime Ativa
@@ -154,8 +162,10 @@ ALLOW_PROD_BUSINESS_WRITES=false
 | [`nginx.conf`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/nginx.conf) | Roteamento do Nginx: SPA, `/healthz`, `/v1/` e proxy `/api/` |
 | [`scripts/test-phase5h1-policy-engine.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h1-policy-engine.cjs) | Suíte de 21 testes de autorização e circuit breakers no sandbox |
 | [`scripts/test-phase5h2-production-runtime.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h2-production-runtime.cjs) | Suíte de 15 testes de runtime remoto em produção confirmando modo Deny-All |
+| [`scripts/test-phase5h3-pilot-clients.cjs`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/scripts/test-phase5h3-pilot-clients.cjs) | Suíte de 13 testes do piloto de Clientes no sandbox (isolamento, menor privilégio e circuit breaker) |
 | [`fase5h1_policy_engine_sandbox.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h1_policy_engine_sandbox.md) | Relatório formal de homologação da Fase 5H.1 |
 | [`fase5h2_policy_engine_producao_deny_all.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h2_policy_engine_producao_deny_all.md) | Relatório formal de implantação da Fase 5H.2 |
+| [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md) | Relatório formal de preparação e homologação do Piloto de Clientes (Fase 5H.3) |
 | [`CONTEXT_CHECKPOINT.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/CONTEXT_CHECKPOINT.md) | Checkpoint consolidado e guia definitivo de contexto do repositório |
 
 ---
@@ -164,6 +174,7 @@ ALLOW_PROD_BUSINESS_WRITES=false
 
 ### Banco de Produção (`crm_db`)
 - **Total de Coleções:** 27 de 27 coleções intactas.
+- **Coleção de Clientes Confirmada:** ID `clients` (com 19 atributos, `documentSecurity: true`, `permissions: []`).
 - **Permissões:** 100% das 27 coleções com `permissions: []` e `documentSecurity: true`.
 - **Contagem Total de Documentos:** **Exatamente 858 documentos**.
   - **856 documentos de negócio:** preservados intactos desde o snapshot baseline T-0.
@@ -176,9 +187,10 @@ ALLOW_PROD_BUSINESS_WRITES=false
 
 ---
 
-## 6. Próximo Passo Recomendado (Fase 5H.3)
+## 6. Próximo Passo Recomendado (Fase 5H.4 / Ativação Controlada)
 
 O sistema está 100% pronto e aguarda **autorização humana prévia** antes de qualquer uma das seguintes ações:
-1. Revisão formal da especificação `PROD_PILOT_CLIENTS_SPECIFICATION`.
-2. Preparação da ativação controlada do piloto exclusivo para a coleção `clients` no tenant `tenant_default`.
-3. Planejamento do procedimento auditado de expurgo dos 2 registros canário sintéticos quando apropriado.
+1. **Revisão Humana de [`fase5h3_piloto_clientes.md`](file:///c:/Users/Usuario/Documents/projetos/ProjetoCRMMultitenet/fase5h3_piloto_clientes.md):** Validação da matriz de permissões (`create`/`update` para agent/admin; `delete` restrito a admin/superadmin).
+2. **Decisão sobre Ativação do Piloto em Produção:** Se e quando autorizada, carregar a regra unicamente para a coleção `clients` no tenant `tenant_default`.
+3. **Plano de Rollback / Contingência:** Manter prontidão dos Circuit Breakers (`pauseModule('clients')` ou `setGlobalLockdown(true)`) para reversão imediata ao Deny-All diante de qualquer anomalia.
+
