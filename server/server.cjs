@@ -76,6 +76,29 @@ const initialRules = [
 
 const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true });
 
+const { GovernancePersistencePrototype } = require('./governancePersistencePrototype.cjs');
+const {
+  resolveGovernanceConfig,
+  initializeGovernance,
+} = require('./governanceConfig.cjs');
+
+const governanceConfig = resolveGovernanceConfig(process.env, { runtime: 'standalone' });
+
+// Inicialização segura de governança: sem fallback automático, sem persistência quando desabilitada
+initializeGovernance(writePolicyEngine, governanceConfig, {
+  logPrefix: '[SERVER_STARTUP]',
+  createAdapter: (targetDb) => {
+    return new GovernancePersistencePrototype({
+      endpoint: ENDPOINT,
+      projectId: PROJECT_ID,
+      apiKey: API_KEY,
+      databaseId: targetDb,
+    });
+  },
+}).catch((err) => {
+  console.warn('[SERVER_STARTUP] Erro durante inicialização de governança:', err.message);
+});
+
 // Proteção contra DoS: Limite de payload e Rate Limiter
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
 const ipRateLimits = new Map();
@@ -224,6 +247,7 @@ const server = http.createServer(async (req, res) => {
       ENDPOINT,
       PROJECT_ID,
       API_KEY,
+      governanceConfig,
     });
   }
 
@@ -564,5 +588,6 @@ if (require.main === module) {
 }
 
 server.writePolicyEngine = writePolicyEngine;
+server.governanceConfig = governanceConfig;
 module.exports = server;
 

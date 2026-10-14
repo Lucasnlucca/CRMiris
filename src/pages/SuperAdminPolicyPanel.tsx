@@ -110,13 +110,23 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
     const nextState = !statusData.globalLockdown;
     setActionLoading('lockdown');
     try {
-      const res = await toggleGlobalLockdown(nextState, lockdownReason || undefined, databaseId);
+      const res = await toggleGlobalLockdown(
+        nextState,
+        lockdownReason || undefined,
+        databaseId,
+        statusData.stateVersion
+      );
       setSuccessNotice(res.message);
       setShowLockdownModal(false);
       setLockdownReason('');
       await loadData();
     } catch (err: any) {
-      setError(err.message);
+      if (err.statusCode === 409 || err.message?.includes('409') || err.message?.includes('CONCURRENCY_CONFLICT')) {
+        setError('⚠️ Conflito de concorrência: O estado de governança foi alterado por outro SuperAdmin. Os dados mais recentes foram recarregados.');
+        await loadData();
+      } else {
+        setError(err.message || 'Erro ao alterar Lockdown Global.');
+      }
     } finally {
       setActionLoading(null);
     }
@@ -133,11 +143,16 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
     // Retomada direta
     setActionLoading(`pause-${mod.activeCollection}`);
     try {
-      const res = await toggleModulePause(mod.activeCollection, false, undefined, databaseId);
+      const res = await toggleModulePause(mod.activeCollection, false, undefined, databaseId, statusData?.stateVersion);
       setSuccessNotice(res.message);
       await loadData();
     } catch (err: any) {
-      setError(err.message);
+      if (err.statusCode === 409 || err.message?.includes('409') || err.message?.includes('CONCURRENCY_CONFLICT')) {
+        setError('⚠️ Conflito de concorrência: O estado de governança foi alterado por outro SuperAdmin. Os dados mais recentes foram recarregados.');
+        await loadData();
+      } else {
+        setError(err.message || 'Erro ao pausar/retomar módulo.');
+      }
     } finally {
       setActionLoading(null);
     }
@@ -151,14 +166,20 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
         pauseModalTarget.activeCollection,
         true,
         modulePauseReason || 'Pausa operacional preventiva acionada pelo SuperAdmin.',
-        databaseId
+        databaseId,
+        statusData?.stateVersion
       );
       setSuccessNotice(res.message);
       setPauseModalTarget(null);
       setModulePauseReason('');
       await loadData();
     } catch (err: any) {
-      setError(err.message);
+      if (err.statusCode === 409 || err.message?.includes('409') || err.message?.includes('CONCURRENCY_CONFLICT')) {
+        setError('⚠️ Conflito de concorrência: O estado de governança foi alterado por outro SuperAdmin. Os dados mais recentes foram recarregados.');
+        await loadData();
+      } else {
+        setError(err.message || 'Erro ao confirmar pausa do módulo.');
+      }
     } finally {
       setActionLoading(null);
     }
@@ -188,11 +209,17 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
         allowedRoles: ['admin', 'superadmin', 'agent'],
         enabled: nextEnabled,
         reason: `Alteração granular de ${action} pelo painel SuperAdmin`,
+        expectedVersion: statusData?.stateVersion,
       });
       setSuccessNotice(res.message);
       await loadData();
     } catch (err: any) {
-      setError(err.message);
+      if (err.statusCode === 409 || err.message?.includes('409') || err.message?.includes('CONCURRENCY_CONFLICT')) {
+        setError('⚠️ Conflito de concorrência: O estado de governança foi alterado por outro SuperAdmin. Os dados mais recentes foram recarregados.');
+        await loadData();
+      } else {
+        setError(err.message || 'Erro ao alterar regra granular.');
+      }
     } finally {
       setActionLoading(null);
     }
@@ -236,6 +263,9 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 border border-emerald-400/30 text-emerald-300">
                 Disjuntor: {statusData?.circuitBreakerState || 'CLOSED'}
               </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/20 border border-blue-400/30 text-blue-300">
+                <Database className="w-3.5 h-3.5" /> Estado Durável: v{statusData?.stateVersion ?? 1}
+              </span>
             </div>
             <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
               Controle Operacional — Write Policy Engine
@@ -243,6 +273,11 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
             <p className="text-sm text-slate-300 max-w-2xl">
               Governança autoritativa em tempo real com menor privilégio estrito, interrupção imediata por módulo e salvaguarda fail-closed.
             </p>
+            {statusData?.updatedAt && (
+              <p className="text-xs text-indigo-300/80 font-mono">
+                Sincronizado: {new Date(statusData.updatedAt).toLocaleTimeString()} {statusData.updatedBy ? `(por ${statusData.updatedBy})` : ''}
+              </p>
+            )}
           </div>
 
           {/* Botão de Lockdown Global */}

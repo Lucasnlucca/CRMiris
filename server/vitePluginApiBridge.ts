@@ -7,24 +7,76 @@
  */
 
 import type { Plugin } from 'vite';
+import fs from 'fs';
+import path from 'path';
 import { executeAuthoritativeWrite, writePolicyEngine } from './backendApiBridge';
 import { handleAdminPolicyRoutes } from './adminPolicyHandler';
+import { GovernancePersistenceAdapter } from './governancePersistenceAdapter';
 
-const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
-const API_KEY = process.env.APPWRITE_API_KEY || '';
+function getEnvValue(key: string): string {
+  if (process.env[key]) return process.env[key]!;
+  try {
+    const envLocal = path.resolve(process.cwd(), '.env.local');
+    if (fs.existsSync(envLocal)) {
+      const lines = fs.readFileSync(envLocal, 'utf8').split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+          const idx = trimmed.indexOf('=');
+          const k = trimmed.slice(0, idx).trim();
+          const v = trimmed.slice(idx + 1).trim();
+          if (k === key) return v;
+        }
+      }
+    }
+  } catch {}
+  return '';
+}
+
+import { resolveGovernanceConfig, initializeGovernance } from './governanceConfig';
 
 export function crmApiBridgePlugin(): Plugin {
   return {
     name: 'crm-api-bridge-plugin',
     configureServer(server) {
+      const endpoint = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || getEnvValue('VITE_APPWRITE_URL') || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+      const projectId = process.env.VITE_APPWRITE_PROJECT_ID || getEnvValue('VITE_APPWRITE_PROJECT_ID') || '6a6cac620021f4c64b3f';
+      const apiKey = process.env.APPWRITE_API_KEY || getEnvValue('APPWRITE_API_KEY');
+
+      // No Vite de desenvolvimento local, a governança é resolvida explicitamente como sandbox
+      const viteEnv = {
+        ...process.env,
+        GOVERNANCE_ENVIRONMENT: process.env.GOVERNANCE_ENVIRONMENT || 'sandbox',
+        GOVERNANCE_DATABASE_ID: process.env.GOVERNANCE_DATABASE_ID || 'crm_isolated_test',
+        ENABLE_SANDBOX_GOVERNANCE_PERSISTENCE: process.env.ENABLE_SANDBOX_GOVERNANCE_PERSISTENCE || (apiKey ? 'true' : 'false'),
+      };
+
+      const governanceConfig = resolveGovernanceConfig(viteEnv, { runtime: 'vite' });
+
+      if (apiKey && !writePolicyEngine.persistenceAdapter) {
+        initializeGovernance(writePolicyEngine, governanceConfig, {
+          logPrefix: '[VITE_BRIDGE]',
+          createAdapter: (targetDb) => {
+            return new GovernancePersistenceAdapter({
+              endpoint,
+              projectId,
+              apiKey,
+              databaseId: targetDb,
+            });
+          },
+        }).catch((err) => {
+          console.warn('[VITE_BRIDGE] Aviso ao inicializar governança no Vite:', err.message);
+        });
+      }
+
       // 1. Endpoints de Governança e Disjuntores SuperAdmin: /api/admin/policy
       server.middlewares.use('/api/admin/policy', async (req, res) => {
         try {
           await handleAdminPolicyRoutes(req, res, writePolicyEngine, {
-            ENDPOINT,
-            PROJECT_ID,
-            API_KEY,
+            ENDPOINT: endpoint,
+            PROJECT_ID: projectId,
+            API_KEY: apiKey,
+            governanceConfig,
           });
         } catch (err: any) {
           const status = err.statusCode || 500;

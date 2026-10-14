@@ -5,6 +5,7 @@
  */
 
 import crypto from 'crypto';
+import { isSandboxGovernanceDatabase } from './governanceConfig';
 
 export interface PolicyRule {
   id: string;
@@ -456,13 +457,68 @@ export class WritePolicyEngine {
   circuitBreaker: CircuitBreaker;
   active: boolean;
   adminAuditLog: AdminAuditEntry[];
+  persistenceAdapter?: any;
+  initializedDatabases: Set<string>;
+  stateVersion: number;
+  lastDurableSyncAt: string | null;
+  lastDurableSyncBy: string | null;
 
-  constructor(initialRules: PolicyRule[] = [], options: { enabled?: boolean; circuitBreakerOptions?: any } = {}) {
+  constructor(initialRules: PolicyRule[] = [], options: { enabled?: boolean; circuitBreakerOptions?: any; persistenceAdapter?: any } = {}) {
     validatePolicyConfiguration(initialRules);
     this.rules = [...initialRules];
     this.circuitBreaker = new CircuitBreaker(options.circuitBreakerOptions);
     this.active = options.enabled !== false;
     this.adminAuditLog = [];
+    this.persistenceAdapter = options.persistenceAdapter || null;
+    this.initializedDatabases = new Set();
+    this.stateVersion = 1;
+    this.lastDurableSyncAt = null;
+    this.lastDurableSyncBy = null;
+    // Fase 5H.13: banco de governança autoritativo e gate de configuração
+    this.governanceDatabaseId = null;
+    this.governanceGate = null;
+  }
+
+  governanceDatabaseId: string | null = null;
+  governanceGate: { open: boolean; code?: number; reasonCode?: string; reason?: string } | null = null;
+
+  bindGovernanceDatabase(databaseId: string) {
+    if (!databaseId || typeof databaseId !== 'string') {
+      throw new Error('[GOVERNANCE_BIND_ERROR] Identificador de banco de governança inválido.');
+    }
+    if (this.governanceDatabaseId && this.governanceDatabaseId !== databaseId) {
+      throw new Error('[GOVERNANCE_BIND_ERROR] Motor já vinculado a outro banco de governança; redirecionamento proibido.');
+    }
+    this.governanceDatabaseId = databaseId;
+  }
+
+  setGovernanceGate(gate: { open: boolean; code?: number; reasonCode?: string; reason?: string } | null) {
+    this.governanceGate = gate ? { ...gate, open: Boolean(gate.open) } : null;
+  }
+
+  assertGovernanceTarget(databaseId: string) {
+    if (this.governanceGate && !this.governanceGate.open) {
+      const err: any = new Error(this.governanceGate.reason || '[GOVERNANCE_FAIL_CLOSED] Governança indisponível.');
+      err.statusCode = 503;
+      throw err;
+    }
+    if (this.governanceDatabaseId && databaseId !== this.governanceDatabaseId) {
+      const err: any = new Error('[GOVERNANCE_TARGET_MISMATCH] Destino de governança diverge da configuração autoritativa do servidor.');
+      err.statusCode = 403;
+      throw err;
+    }
+  }
+
+  enterDurableFailClosed(databaseId?: string, reason?: string) {
+    this.circuitBreaker.globalLockdown = true;
+    this.circuitBreaker.state = 'OPEN';
+    this.circuitBreaker.tripReason = reason || 'Fail-Closed por falha de sincronização de governança.';
+    if (databaseId) {
+      this.rules = this.rules.filter(r => r.databaseId !== databaseId);
+    }
+    this.stateVersion = 0;
+    this.lastDurableSyncAt = new Date().toISOString();
+    this.lastDurableSyncBy = 'system_fail_closed';
   }
 
   recordAdminAudit(entry: Partial<AdminAuditEntry>): AdminAuditEntry {
@@ -613,6 +669,218 @@ export class WritePolicyEngine {
     return { success: true, enabled: true, ruleId: newRule.id, rule: newRule, audit };
   }
 
+  attachPersistenceAdapter(adapter: any) {
+    this.persistenceAdapter = adapter;
+  }
+
+  async syncFromDurable(databaseId: string = this.governanceDatabaseId || '') {
+    if (!this.persistenceAdapter) {
+      return { synced: false, reason: 'Nenhum adaptador de persistência acoplado.' };
+    }
+    if (!databaseId) {
+      const err: any = new Error('[GOVERNANCE_TARGET_MISSING] Banco de governança não configurado; nenhuma seleção automática é realizada.');
+      err.statusCode = 503;
+      throw err;
+    }
+    this.assertGovernanceTarget(databaseId);
+    let syncRes: any;
+    try {
+      syncRes = await this.persistenceAdapter.syncPolicyEngineFromDurableState(this, databaseId);
+    } catch (err: any) {
+      this.enterDurableFailClosed(databaseId, `Fail-Closed: falha ao revalidar governança durável (${err?.message || 'erro'})`);
+      throw err;
+    }
+    this.initializedDatabases.add(databaseId);
+    this.stateVersion = syncRes.stateVersion;
+    this.lastDurableSyncAt = syncRes.updatedAt || new Date().toISOString();
+    this.lastDurableSyncBy = syncRes.updatedBy || 'unknown';
+    return syncRes;
+  }
+
+  async setGlobalLockdownAdminPersistent(params: {
+    databaseId: string;
+    active: boolean;
+    reason?: string;
+    actorId?: string;
+    clientIp?: string;
+    expectedVersion?: number;
+  }) {
+    const { databaseId, active, reason, actorId, clientIp, expectedVersion } = params;
+    this.assertGovernanceTarget(databaseId);
+    if (!this.persistenceAdapter) {
+      this.setGlobalLockdownAdmin(active, reason, actorId, clientIp);
+      return { success: true, globalLockdown: active, stateVersion: this.stateVersion };
+    }
+
+    this.persistenceAdapter.assertSandboxSafety(databaseId);
+    let expVer = expectedVersion;
+    if (typeof expVer !== 'number') {
+      const current = await this.persistenceAdapter.loadGovernanceState(databaseId);
+      expVer = current.stateVersion;
+    }
+
+    const effReason = reason || (active ? 'Lockdown global acionado pelo SuperAdmin.' : 'Lockdown global encerrado.');
+    const saveRes = await this.persistenceAdapter.saveGovernanceStateAtomic({
+      databaseId,
+      expectedVersion: expVer,
+      stateUpdates: {
+        globalLockdown: Boolean(active),
+        tripReason: effReason,
+      },
+      actorId,
+    });
+
+    this.setGlobalLockdownAdmin(active, effReason, actorId, clientIp);
+    this.stateVersion = saveRes.stateVersion;
+    this.lastDurableSyncAt = saveRes.updatedAt;
+    this.lastDurableSyncBy = saveRes.updatedBy;
+
+    return {
+      success: true,
+      globalLockdown: Boolean(active),
+      stateVersion: saveRes.stateVersion,
+      updatedAt: saveRes.updatedAt,
+    };
+  }
+
+  async pauseModuleAdminPersistent(params: {
+    databaseId: string;
+    collectionId: string;
+    paused: boolean;
+    reason?: string;
+    actorId?: string;
+    clientIp?: string;
+    expectedVersion?: number;
+  }) {
+    const { databaseId, collectionId, paused, reason, actorId, clientIp, expectedVersion } = params;
+    this.assertGovernanceTarget(databaseId);
+    if (!this.persistenceAdapter) {
+      if (paused) {
+        this.pauseModuleAdmin(collectionId, reason, actorId, clientIp);
+      } else {
+        this.resumeModuleAdmin(collectionId, actorId, clientIp);
+      }
+      return { success: true, collectionId, paused, stateVersion: this.stateVersion };
+    }
+
+    this.persistenceAdapter.assertSandboxSafety(databaseId);
+    const current = await this.persistenceAdapter.loadGovernanceState(databaseId);
+    const expVer = typeof expectedVersion === 'number' ? expectedVersion : current.stateVersion;
+
+    const updatedPauses = { ...current.modulePauses };
+    const effReason = reason || (paused ? 'Módulo pausado manualmente pelo SuperAdmin.' : '');
+    if (paused) {
+      updatedPauses[collectionId] = { paused: true, reason: effReason };
+    } else {
+      delete updatedPauses[collectionId];
+    }
+
+    const saveRes = await this.persistenceAdapter.saveGovernanceStateAtomic({
+      databaseId,
+      expectedVersion: expVer,
+      stateUpdates: { modulePauses: updatedPauses },
+      actorId,
+    });
+
+    if (paused) {
+      this.pauseModuleAdmin(collectionId, effReason, actorId, clientIp);
+    } else {
+      this.resumeModuleAdmin(collectionId, actorId, clientIp);
+    }
+    this.stateVersion = saveRes.stateVersion;
+    this.lastDurableSyncAt = saveRes.updatedAt;
+    this.lastDurableSyncBy = saveRes.updatedBy;
+
+    return {
+      success: true,
+      collectionId,
+      paused,
+      stateVersion: saveRes.stateVersion,
+      updatedAt: saveRes.updatedAt,
+    };
+  }
+
+  async setRuleActivePersistent(params: {
+    databaseId: string;
+    collectionId: string;
+    action: 'create' | 'update' | 'delete' | 'signContract';
+    tenantId: string;
+    allowedRoles?: string[];
+    enabled: boolean;
+    actorId?: string;
+    clientIp?: string;
+    reason?: string;
+    expectedVersion?: number;
+  }) {
+    const { databaseId, collectionId, action, tenantId, allowedRoles, enabled, actorId, clientIp, reason, expectedVersion } = params;
+    this.assertGovernanceTarget(databaseId);
+    if (!this.persistenceAdapter) {
+      const res = this.setRuleActive({ databaseId, collectionId, action, tenantId, allowedRoles, enabled, actorId, clientIp, reason });
+      return { ...res, stateVersion: this.stateVersion };
+    }
+
+    this.persistenceAdapter.assertSandboxSafety(databaseId);
+    const current = await this.persistenceAdapter.loadGovernanceState(databaseId);
+    const expVer = typeof expectedVersion === 'number' ? expectedVersion : current.stateVersion;
+
+    let updatedRules = Array.isArray(current.activeRules) ? [...current.activeRules] : [];
+    let targetRule: PolicyRule | null = null;
+
+    if (!enabled) {
+      updatedRules = updatedRules.filter(
+        r => !(r.databaseId === databaseId && r.collectionId === collectionId && r.action === action && r.tenantId === tenantId)
+      );
+    } else {
+      const ruleId = `rule_${databaseId}_${collectionId}_${action}_${tenantId}`;
+      const roles = Array.isArray(allowedRoles) && allowedRoles.length > 0 ? allowedRoles : ['admin', 'superadmin', 'agent'];
+      targetRule = {
+        id: ruleId,
+        databaseId,
+        collectionId,
+        action,
+        tenantId,
+        allowedRoles: roles,
+        maxPayloadBytes: 256 * 1024,
+        forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+      };
+      validatePolicyConfiguration([targetRule]);
+
+      updatedRules = updatedRules.filter(
+        r => !(r.databaseId === databaseId && r.collectionId === collectionId && r.action === action && r.tenantId === tenantId)
+      );
+      updatedRules.push(targetRule);
+    }
+
+    const saveRes = await this.persistenceAdapter.saveGovernanceStateAtomic({
+      databaseId,
+      expectedVersion: expVer,
+      stateUpdates: { activeRules: updatedRules },
+      actorId,
+    });
+
+    const inMemRes = this.setRuleActive({
+      databaseId,
+      collectionId,
+      action,
+      tenantId,
+      allowedRoles,
+      enabled,
+      actorId,
+      clientIp,
+      reason,
+    });
+
+    this.stateVersion = saveRes.stateVersion;
+    this.lastDurableSyncAt = saveRes.updatedAt;
+    this.lastDurableSyncBy = saveRes.updatedBy;
+
+    return {
+      ...inMemRes,
+      stateVersion: saveRes.stateVersion,
+      updatedAt: saveRes.updatedAt,
+    };
+  }
+
   getModuleStatus(databaseId: string, collectionId: string, tenantId?: string) {
     const isGlobal = Boolean(this.circuitBreaker.globalLockdown);
     const isPaused = this.circuitBreaker.moduleOverrides.has(collectionId);
@@ -693,6 +961,27 @@ export class WritePolicyEngine {
 
   evaluate(ctx: PolicyEvaluationContext): PolicyEvaluationResult {
     const { databaseId, collectionId, action, tenantId, userId, userRoles, data, documentId } = ctx;
+
+    // 0.a Gate de configuração de governança: configuração ausente/inválida => Deny-All
+    if (this.governanceGate && !this.governanceGate.open) {
+      return {
+        allowed: false,
+        code: this.governanceGate.code || 503,
+        reason: this.governanceGate.reason || '[GOVERNANCE_FAIL_CLOSED] Configuração de governança indisponível. Operações protegidas bloqueadas.',
+      };
+    }
+
+    // 0.b Salvaguarda Fail-Closed para persistência durável
+    if (this.persistenceAdapter) {
+      const syncTarget = this.governanceDatabaseId || (isSandboxGovernanceDatabase(databaseId) ? databaseId : null);
+      if (syncTarget && !this.initializedDatabases.has(syncTarget)) {
+        return {
+          allowed: false,
+          code: 503,
+          reason: '[FAIL-CLOSED GUARD] Motor de políticas ainda não sincronizado com o estado persistente de governança.',
+        };
+      }
+    }
 
     const cbCheck = this.circuitBreaker.check(collectionId, action);
     if (!cbCheck.allowed) {

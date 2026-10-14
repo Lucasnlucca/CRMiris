@@ -51,6 +51,9 @@ export interface PolicyStatusResponse {
   success: boolean;
   databaseId: string;
   tenantId: string;
+  stateVersion?: number;
+  updatedAt?: string;
+  updatedBy?: string;
   globalLockdown: boolean;
   circuitBreakerState: 'CLOSED' | 'OPEN' | 'HALF_OPEN';
   tripReason: string | null;
@@ -94,7 +97,10 @@ export async function fetchPolicyStatus(databaseId = 'crm_isolated_test', tenant
 
   const data = await res.json();
   if (!res.ok || !data.success) {
-    throw new Error(data.error || `Erro HTTP ${res.status} ao carregar status de políticas.`);
+    const err: any = new Error(data.error || `Erro HTTP ${res.status} ao carregar status de políticas.`);
+    err.statusCode = res.status;
+    err.currentVersion = data.currentVersion;
+    throw err;
   }
 
   return data;
@@ -103,17 +109,25 @@ export async function fetchPolicyStatus(databaseId = 'crm_isolated_test', tenant
 /**
  * Dispara ou encerra o Lockdown Global de todas as operações de escrita
  */
-export async function toggleGlobalLockdown(active: boolean, reason?: string, databaseId = 'crm_isolated_test') {
+export async function toggleGlobalLockdown(
+  active: boolean,
+  reason?: string,
+  databaseId = 'crm_isolated_test',
+  expectedVersion?: number
+) {
   const headers = await getAuthHeaders();
   const res = await fetch('/api/admin/policy/lockdown', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ active, reason, databaseId }),
+    body: JSON.stringify({ active, reason, databaseId, expectedVersion }),
   });
 
   const data = await res.json();
   if (!res.ok || !data.success) {
-    throw new Error(data.error || `Erro HTTP ${res.status} ao alterar Lockdown Global.`);
+    const err: any = new Error(data.error || `Erro HTTP ${res.status} ao alterar Lockdown Global.`);
+    err.statusCode = res.status;
+    err.currentVersion = data.currentVersion;
+    throw err;
   }
 
   return data;
@@ -122,17 +136,26 @@ export async function toggleGlobalLockdown(active: boolean, reason?: string, dat
 /**
  * Pausa ou retoma um módulo específico via Circuit Breaker
  */
-export async function toggleModulePause(collectionId: string, paused: boolean, reason?: string, databaseId = 'crm_isolated_test') {
+export async function toggleModulePause(
+  collectionId: string,
+  paused: boolean,
+  reason?: string,
+  databaseId = 'crm_isolated_test',
+  expectedVersion?: number
+) {
   const headers = await getAuthHeaders();
   const res = await fetch('/api/admin/policy/module-pause', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ collectionId, paused, reason, databaseId }),
+    body: JSON.stringify({ collectionId, paused, reason, databaseId, expectedVersion }),
   });
 
   const data = await res.json();
   if (!res.ok || !data.success) {
-    throw new Error(data.error || `Erro HTTP ${res.status} ao pausar/retomar módulo.`);
+    const err: any = new Error(data.error || `Erro HTTP ${res.status} ao pausar/retomar módulo.`);
+    err.statusCode = res.status;
+    err.currentVersion = data.currentVersion;
+    throw err;
   }
 
   return data;
@@ -149,6 +172,7 @@ export async function toggleGranularRule({
   allowedRoles = ['admin', 'superadmin', 'agent'],
   enabled,
   reason,
+  expectedVersion,
 }: {
   databaseId?: string;
   collectionId: string;
@@ -157,6 +181,7 @@ export async function toggleGranularRule({
   allowedRoles?: string[];
   enabled: boolean;
   reason?: string;
+  expectedVersion?: number;
 }) {
   const headers = await getAuthHeaders();
   const res = await fetch('/api/admin/policy/rule', {
@@ -170,12 +195,16 @@ export async function toggleGranularRule({
       allowedRoles,
       enabled,
       reason,
+      expectedVersion,
     }),
   });
 
   const data = await res.json();
   if (!res.ok || !data.success) {
-    throw new Error(data.error || `Erro HTTP ${res.status} ao alterar regra granular.`);
+    const err: any = new Error(data.error || `Erro HTTP ${res.status} ao alterar regra granular.`);
+    err.statusCode = res.status;
+    err.currentVersion = data.currentVersion;
+    throw err;
   }
 
   return data;

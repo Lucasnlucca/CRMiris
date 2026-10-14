@@ -7,6 +7,37 @@
 import { Client, Account, Teams } from 'node-appwrite';
 import url from 'url';
 import type { WritePolicyEngine } from './writePolicyEngine';
+import { resolveGovernanceConfig } from './governanceConfig';
+
+function resolveAuthoritativeTarget(
+  envConfig: any,
+  policyEngine: WritePolicyEngine,
+  clientSuppliedDb?: string
+): string {
+  const govConfig = envConfig && envConfig.governanceConfig
+    ? envConfig.governanceConfig
+    : (policyEngine && (policyEngine as any).governanceDatabaseId
+        ? { databaseId: (policyEngine as any).governanceDatabaseId, status: 'READY' }
+        : resolveGovernanceConfig(process.env, { runtime: 'standalone' }));
+
+  if (!govConfig || govConfig.status !== 'READY' || !govConfig.databaseId) {
+    const err: any = new Error('[GOVERNANCE_CONFIG_ERROR] Configuração de governança do servidor indisponível ou inválida. Operações administrativas bloqueadas.');
+    err.statusCode = 503;
+    throw err;
+  }
+
+  const authoritativeDb: string = govConfig.databaseId;
+
+  if (clientSuppliedDb && typeof clientSuppliedDb === 'string' && clientSuppliedDb.trim() !== '') {
+    if (clientSuppliedDb.trim() !== authoritativeDb) {
+      const err: any = new Error(`[CLIENT_DATABASE_OVERRIDE_REJECTED] Seleção de banco pelo cliente ("${clientSuppliedDb}") rejeitada. O servidor opera exclusivamente no banco autoritativo configurado ("${authoritativeDb}").`);
+      err.statusCode = 403;
+      throw err;
+    }
+  }
+
+  return authoritativeDb;
+}
 
 export async function authenticateAndAuthorizeSuperAdmin(
   headers: Record<string, string | string[] | undefined>,
@@ -97,7 +128,11 @@ export async function handleAdminPolicyRoutes(
   envConfig: { ENDPOINT?: string; PROJECT_ID?: string; API_KEY?: string }
 ) {
   const parsedUrl = url.parse(req.url, true);
-  const pathname = parsedUrl.pathname;
+  const rawPath = parsedUrl.pathname || '';
+  const subPath = rawPath.startsWith('/api/admin/policy')
+    ? rawPath.slice('/api/admin/policy'.length)
+    : rawPath;
+  const normalizedPath = subPath ? (subPath.startsWith('/') ? subPath : `/${subPath}`) : '/';
   const method = req.method;
   const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '127.0.0.1';
 
@@ -131,18 +166,39 @@ export async function handleAdminPolicyRoutes(
   };
 
   try {
-    if (pathname === '/api/admin/policy/status' && method === 'GET') {
-      const databaseId = (parsedUrl.query.databaseId as string) || 'crm_isolated_test';
+    const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+    const sessionHeader = req.headers['x-appwrite-session'] || req.headers['X-Appwrite-Session'];
+    const hasAuth = (typeof authHeader === 'string' && authHeader.startsWith('Bearer ') && authHeader.slice(7).trim()) ||
+                    (typeof sessionHeader === 'string' && sessionHeader.trim());
+    if (!hasAuth) {
+      sendJson(401, { success: false, error: 'Autenticação necessária: token JWT ausente.', code: 401 });
+      return;
+    }
+
+    if ((normalizedPath === '/status' || rawPath === '/api/admin/policy/status') && method === 'GET') {
+      const targetDb = resolveAuthoritativeTarget(envConfig, policyEngine, parsedUrl.query.databaseId as string);
       const tenantId = (parsedUrl.query.tenantId as string) || '';
 
-      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, databaseId, envConfig);
-      const modules = policyEngine.getAllModulesStatus(databaseId, tenantId);
+      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
+
+      if (policyEngine.persistenceAdapter && (policyEngine as any).governanceDatabaseId === targetDb) {
+        try {
+          await policyEngine.syncFromDurable(targetDb);
+        } catch (syncErr: any) {
+          console.warn('[ADMIN_STATUS_SYNC_WARN] Falha ao sincronizar estado durável no /status:', syncErr.message);
+        }
+      }
+
+      const modules = policyEngine.getAllModulesStatus(targetDb, tenantId);
       const auditLogs = policyEngine.getAdminAuditLogs(30);
 
       sendJson(200, {
         success: true,
-        databaseId,
+        databaseId: targetDb,
         tenantId: tenantId || 'all',
+        stateVersion: policyEngine.stateVersion || 1,
+        updatedAt: policyEngine.lastDurableSyncAt || new Date().toISOString(),
+        updatedBy: policyEngine.lastDurableSyncBy || 'system',
         globalLockdown: Boolean(policyEngine.circuitBreaker.globalLockdown),
         circuitBreakerState: policyEngine.circuitBreaker.state,
         tripReason: policyEngine.circuitBreaker.tripReason,
@@ -158,20 +214,29 @@ export async function handleAdminPolicyRoutes(
       return;
     }
 
-    if (pathname === '/api/admin/policy/lockdown' && method === 'POST') {
+    if ((normalizedPath === '/lockdown' || rawPath === '/api/admin/policy/lockdown') && method === 'POST') {
       const body = await readBody();
-      const targetDb = body.databaseId || 'crm_isolated_test';
+      const targetDb = resolveAuthoritativeTarget(envConfig, policyEngine, body.databaseId);
       const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
 
       const active = Boolean(body.active);
       const reason = body.reason || (active ? 'Lockdown global acionado pelo SuperAdmin.' : 'Lockdown global desativado pelo SuperAdmin.');
 
-      policyEngine.setGlobalLockdownAdmin(active, reason, superAdmin.userId, clientIp);
+      const result = await policyEngine.setGlobalLockdownAdminPersistent({
+        databaseId: targetDb,
+        active,
+        reason,
+        actorId: superAdmin.userId,
+        clientIp,
+        expectedVersion: typeof body.expectedVersion === 'number' ? body.expectedVersion : undefined,
+      });
 
       sendJson(200, {
         success: true,
         globalLockdown: Boolean(policyEngine.circuitBreaker.globalLockdown),
         circuitBreakerState: policyEngine.circuitBreaker.state,
+        stateVersion: result.stateVersion,
+        updatedAt: result.updatedAt,
         message: active
           ? 'Lockdown global acionado com sucesso: 100% das escritas suspensas.'
           : 'Lockdown global desativado. Módulos previamente bloqueados continuam bloqueados por menor privilégio.',
@@ -179,27 +244,33 @@ export async function handleAdminPolicyRoutes(
       return;
     }
 
-    if (pathname === '/api/admin/policy/module-pause' && method === 'POST') {
+    if ((normalizedPath === '/module-pause' || rawPath === '/api/admin/policy/module-pause') && method === 'POST') {
       const body = await readBody();
       if (!body.collectionId) {
         sendJson(400, { success: false, error: 'Parâmetro "collectionId" é obrigatório.' });
         return;
       }
 
-      const targetDb = body.databaseId || 'crm_isolated_test';
+      const targetDb = resolveAuthoritativeTarget(envConfig, policyEngine, body.databaseId);
       const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
 
       const paused = Boolean(body.paused);
-      if (paused) {
-        policyEngine.pauseModuleAdmin(body.collectionId, body.reason, superAdmin.userId, clientIp);
-      } else {
-        policyEngine.resumeModuleAdmin(body.collectionId, superAdmin.userId, clientIp);
-      }
+      const result = await policyEngine.pauseModuleAdminPersistent({
+        databaseId: targetDb,
+        collectionId: body.collectionId,
+        paused,
+        reason: body.reason,
+        actorId: superAdmin.userId,
+        clientIp,
+        expectedVersion: typeof body.expectedVersion === 'number' ? body.expectedVersion : undefined,
+      });
 
       sendJson(200, {
         success: true,
         collectionId: body.collectionId,
         paused,
+        stateVersion: result.stateVersion,
+        updatedAt: result.updatedAt,
         message: paused
           ? `Módulo "${body.collectionId}" pausado com sucesso via Circuit Breaker.`
           : `Módulo "${body.collectionId}" retomado com sucesso.`,
@@ -207,12 +278,12 @@ export async function handleAdminPolicyRoutes(
       return;
     }
 
-    if (pathname === '/api/admin/policy/rule' && method === 'POST') {
+    if ((normalizedPath === '/rule' || rawPath === '/api/admin/policy/rule') && method === 'POST') {
       const body = await readBody();
-      const targetDb = body.databaseId || 'crm_isolated_test';
+      const targetDb = resolveAuthoritativeTarget(envConfig, policyEngine, body.databaseId);
       const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
 
-      const result = policyEngine.setRuleActive({
+      const result = await policyEngine.setRuleActivePersistent({
         databaseId: targetDb,
         collectionId: body.collectionId,
         action: body.action,
@@ -222,11 +293,14 @@ export async function handleAdminPolicyRoutes(
         actorId: superAdmin.userId,
         clientIp,
         reason: body.reason,
+        expectedVersion: typeof body.expectedVersion === 'number' ? body.expectedVersion : undefined,
       });
 
       sendJson(200, {
         success: true,
         ...result,
+        stateVersion: result.stateVersion,
+        updatedAt: result.updatedAt,
         message: body.enabled
           ? `Regra para (${body.collectionId}, ${body.action}, ${body.tenantId}) concedida com sucesso.`
           : `Regra para (${body.collectionId}, ${body.action}, ${body.tenantId}) revogada com sucesso.`,
@@ -234,9 +308,9 @@ export async function handleAdminPolicyRoutes(
       return;
     }
 
-    if (pathname === '/api/admin/policy/audit' && method === 'GET') {
-      const databaseId = (parsedUrl.query.databaseId as string) || 'crm_isolated_test';
-      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, databaseId, envConfig);
+    if ((normalizedPath === '/audit' || rawPath === '/api/admin/policy/audit') && method === 'GET') {
+      const targetDb = resolveAuthoritativeTarget(envConfig, policyEngine, parsedUrl.query.databaseId as string);
+      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
 
       const limit = parseInt((parsedUrl.query.limit as string) || '50', 10);
       const logs = policyEngine.getAdminAuditLogs(limit);
@@ -249,14 +323,17 @@ export async function handleAdminPolicyRoutes(
       return;
     }
 
-    sendJson(404, { success: false, error: `Endpoint administrativo não encontrado: ${pathname}` });
+    sendJson(404, { success: false, error: `Endpoint administrativo não encontrado: ${rawPath}` });
   } catch (err: any) {
-    const isForbidden = err.message && (err.message.includes('[UNAUTHORIZED_SUPERADMIN]') || err.message.includes('[PROD_GUARD]'));
-    const statusCode = err.statusCode || (isForbidden ? 403 : 500);
+    const isConflict = err.statusCode === 409 || (err.message && err.message.includes('CONCURRENCY_CONFLICT'));
+    const isForbidden = err.statusCode === 403 || (err.message && (err.message.includes('[UNAUTHORIZED_SUPERADMIN]') || err.message.includes('[PROD_GUARD]')));
+    const isAuth = err.statusCode === 401;
+    const statusCode = err.statusCode || (isConflict ? 409 : (isForbidden ? 403 : (isAuth ? 401 : 500)));
     sendJson(statusCode, {
       success: false,
       error: err.message || 'Erro interno no processamento administrativo de políticas.',
       code: statusCode,
+      currentVersion: err.currentVersion,
     });
   }
 }
