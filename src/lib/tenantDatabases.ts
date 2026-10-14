@@ -132,8 +132,10 @@ export function createTenantDatabases(
         if (!currentTenantId) {
           console.warn(`[Tenant Security] Criação em "${collectionId}" sem tenant ativo.`);
         } else {
-          // Garante que o tenant_id é SEMPRE o do contexto ativo, rejeitando tentativas do cliente de ditar outro tenant
-          secureData.tenant_id = currentTenantId;
+          // Garante que o payload de dados nunca contenha tenant_id enviado pelo frontend,
+          // cumprindo a regra de sanitização mandatória do Write Policy Engine.
+          // O tenant_id é resolvido e aplicado exclusivamente pelo servidor através do JWT.
+          delete secureData.tenant_id;
 
           // Injeta permissões autoritativas do Team da empresa
           const teamRole = `team:${currentTenantId}`;
