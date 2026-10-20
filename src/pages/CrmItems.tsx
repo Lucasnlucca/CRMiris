@@ -506,6 +506,7 @@ export default function CrmItems() {
         await databases.createDocument(DATABASE_ID, COLLECTION_ID, ID.unique(), payload);
       }
       closeModal();
+      window.location.reload();
     } catch (err: any) {
       setSaveError(err?.message || "Erro ao salvar item.");
       console.error(err);
@@ -518,7 +519,7 @@ export default function CrmItems() {
     if (!confirm("Tem certeza que deseja excluir este item?")) return;
     try {
       await databases.deleteDocument(DATABASE_ID, COLLECTION_ID, id);
-      setItems((prev) => prev.filter((i) => i.id !== id));
+      window.location.reload();
     } catch (err) {
       console.error(err);
     }

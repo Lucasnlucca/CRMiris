@@ -765,7 +765,7 @@ export function TicketsPage() {
         onClose={closeForm}
         onSaved={(ticket) => {
           closeForm();
-          navigate(`${basePath}/${ticket.id}`);
+          window.location.href = `${basePath}/${ticket.id}`;
         }}
       />
     );
@@ -1234,6 +1234,7 @@ export function TicketsPage() {
             await remove('tickets', ticketToDelete.id);
             notify('Chamado excluído com sucesso.');
             setTicketToDelete(null);
+            window.location.reload();
           } catch (error) {
             notify(
               translateErrorMessage(error, 'Não foi possível excluir o ticket.'),
@@ -1784,7 +1785,7 @@ export function TicketDetailPage() {
             await remove('tickets', ticket.id);
             notify('Ticket excluído com sucesso.');
             setDeleteOpen(false);
-            navigate(basePath);
+            window.location.href = basePath;
           } catch (error) {
             notify(
               translateErrorMessage(error, 'Não foi possível excluir o ticket.'),

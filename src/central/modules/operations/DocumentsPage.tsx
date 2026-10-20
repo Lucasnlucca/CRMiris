@@ -143,6 +143,7 @@ function DocumentForm({
       await save('documents', record);
       notify(document ? 'Documento atualizado.' : 'Documento adicionado.');
       onClose();
+      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível salvar o documento.');
     } finally {
@@ -609,6 +610,7 @@ export function DocumentsPage() {
               notify('Documento excluído com sucesso.');
               setDeleteDoc(null);
               setSelectedId(null);
+              window.location.reload();
             } catch (error) {
               notify(
                 error instanceof Error ? error.message : 'Não foi possível excluir o documento.',
@@ -881,6 +883,7 @@ export function DocumentsPage() {
             notify('Documento excluído com sucesso.');
             setDeleteDoc(null);
             if (selectedId === deleteDoc.id) setSelectedId(null);
+            window.location.reload();
           } catch (error) {
             notify(
               error instanceof Error ? error.message : 'Não foi possível excluir o documento.',

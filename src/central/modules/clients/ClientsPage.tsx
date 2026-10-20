@@ -603,7 +603,11 @@ export function ClientsPage() {
         onSaved={(client) => {
           const isNew = editing === 'new';
           closeForm();
-          if (isNew) navigate(`/clientes/${client.id}`);
+          if (isNew) {
+            window.location.href = `/clientes/${client.id}`;
+          } else {
+            window.location.reload();
+          }
         }}
       />
     );
@@ -837,6 +841,7 @@ export function ClientsPage() {
             await remove('clients', clientToDelete.id);
             notify('Cliente excluído com sucesso.');
             setClientToDelete(null);
+            window.location.reload();
           } catch (error) {
             notify(
               error instanceof Error ? error.message : 'Não foi possível excluir o cliente.',
@@ -2129,7 +2134,7 @@ export function ClientDetailPage() {
             await remove('clients', client.id);
             notify('Cliente excluído com sucesso.');
             setDeleteClientOpen(false);
-            navigate('/clientes');
+            window.location.href = '/clientes';
           } catch (error) {
             notify(
               error instanceof Error ? error.message : 'Não foi possível excluir o cliente.',

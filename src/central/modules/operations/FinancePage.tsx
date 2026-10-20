@@ -94,6 +94,7 @@ function ChargeForm({
       await save('charges', { ...form, description: form.description.trim() });
       notify(charge ? 'Lançamento atualizado.' : 'Lançamento financeiro registrado.');
       onClose();
+      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível salvar o lançamento.');
     } finally {
@@ -241,6 +242,7 @@ function InvoiceForm({
       await save('invoices', form);
       notify(invoice ? 'Registro da nota atualizado.' : 'Nota registrada.');
       onClose();
+      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível salvar a nota.');
     } finally {
@@ -601,6 +603,7 @@ export function FinancePage() {
                 if (invoiceId === deleteFinanceItem.item.id) setInvoiceId(null);
               }
               setDeleteFinanceItem(null);
+              window.location.reload();
             } catch (error) {
               notify(
                 error instanceof Error ? error.message : 'Não foi possível excluir o registro.',
@@ -718,6 +721,7 @@ export function FinancePage() {
                 if (invoiceId === deleteFinanceItem.item.id) setInvoiceId(null);
               }
               setDeleteFinanceItem(null);
+              window.location.reload();
             } catch (error) {
               notify(
                 error instanceof Error ? error.message : 'Não foi possível excluir o registro.',
@@ -1157,6 +1161,7 @@ export function FinancePage() {
               if (invoiceId === deleteFinanceItem.item.id) setInvoiceId(null);
             }
             setDeleteFinanceItem(null);
+            window.location.reload();
           } catch (error) {
             notify(
               error instanceof Error ? error.message : 'Não foi possível excluir o registro.',

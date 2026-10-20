@@ -32,6 +32,7 @@ export default function TenantSelector() {
     try {
       await setTenant(tenantId);
       setIsOpen(false);
+      window.location.reload();
     } finally {
       setSwitching(false);
     }

@@ -81,6 +81,7 @@ export function ServerForm({ server, onClose }: { server?: Server; onClose: () =
       });
       notify(server ? 'Servidor atualizado.' : 'Servidor cadastrado.');
       onClose();
+      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível salvar o servidor.');
     } finally {
@@ -521,6 +522,7 @@ export function ServersPage() {
             await remove('servers', deleteServer.id);
             notify('Servidor excluído com sucesso.');
             setDeleteServer(null);
+            window.location.reload();
           } catch (error) {
             notify(
               error instanceof Error ? error.message : 'Não foi possível excluir o servidor.',
