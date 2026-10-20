@@ -239,9 +239,26 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
       ]);
 
       const cols = colsRes.documents;
-      const deals = dealsRes.documents;
+      let allDeals = dealsRes.documents;
 
-      setTotalDealsCount(deals.length);
+      // F08: Paginar oportunidades restantes quando o volume total ultrapassa o limite padrão da página
+      if (dealsRes.total > allDeals.length) {
+        let cursor = allDeals[allDeals.length - 1]?.$id;
+        while (allDeals.length < dealsRes.total && cursor) {
+          const nextRes = await databases.listDocuments(DATABASE_ID, 'pipeline_deals', [
+            Query.orderDesc('$createdAt'),
+            Query.cursorAfter(cursor),
+            Query.limit(100),
+          ]);
+          const nextDocs = nextRes.documents || [];
+          if (!nextDocs.length) break;
+          allDeals = allDeals.concat(nextDocs);
+          cursor = nextDocs[nextDocs.length - 1].$id;
+        }
+      }
+
+      const deals = allDeals;
+      setTotalDealsCount(dealsRes.total ?? deals.length);
 
       // Create lookup map for columns
       const colMap = new Map<string, { name: string; position: number; color?: string }>();
@@ -837,15 +854,15 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-indigo-500" />
-            <span className="text-slate-600 dark:text-slate-400 font-medium">Appwrite Realtime:</span>
-            <span className="font-semibold text-slate-900 dark:text-white">Sincronizado</span>
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="text-slate-600 dark:text-slate-400 font-medium">Sincronização:</span>
+            <span className="font-semibold text-slate-900 dark:text-white">Ativa</span>
           </div>
         </div>
 
         <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
           <ShieldCheck className="w-4 h-4 text-emerald-500" />
-          <span>Iris Horizon CRM v2.4 Enterprise</span>
+          <span>Iris Horizon CRM Enterprise</span>
         </div>
       </div>
     </div>

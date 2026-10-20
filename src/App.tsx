@@ -1,132 +1,25 @@
-import React, { useState, useRef, useLayoutEffect, useEffect } from 'react';
+import React from 'react';
 import type { ReactNode } from 'react';
+import { BrowserRouter } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { TenantProvider, useTenant } from './context/TenantContext';
-import Sidebar from './components/Sidebar';
-import Header from './components/Header';
-import Dashboard from './pages/Dashboard';
-import Pipeline from './pages/Pipeline';
-import Contatos from './pages/Contatos';
-import Phonebook from './pages/Phonebook';
-import Configuracoes from './pages/Configuracoes';
-import Automacoes from './pages/Automacoes';
-import PlaceholderPage from './pages/PlaceholderPage';
 import Login from './pages/Login';
 import Register from './pages/Register';
-import CrmItems from './pages/CrmItems';
-import Propostas from './pages/Propostas';
-import Usuarios from './pages/Usuarios';
-import Suporte from './pages/Suporte';
 import ProposalPreview from './pages/ProposalPreview';
-import Contratos from './pages/Contratos';
 import ContractSignPreview from './pages/ContractSignPreview';
-import SuperAdminPolicyPanel from './pages/SuperAdminPolicyPanel';
+import { AppProvider } from './central/context/AppContext';
+import { AppRoutes } from './central/App';
 
 function AuthenticatedApp() {
-  const { isAuthorized, loading: tenantLoading, error: tenantError, tenant } = useTenant();
+  const {
+    isAuthorized,
+    loading: tenantLoading,
+    error: tenantError,
+    tenantNotFound,
+    tenantSuspended,
+  } = useTenant();
   const { logout } = useAuth();
-  const [currentPage, setCurrentPage] = useState(() => {
-    try { return sessionStorage.getItem('currentPage') || 'visao-geral'; } catch { return 'visao-geral'; }
-  });
-  const [pendingDealId, setPendingDealId] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const currentPageRef = useRef(currentPage);
-
-  useLayoutEffect(() => {
-    currentPageRef.current = currentPage;
-  }, [currentPage]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-        e.preventDefault();
-        setSidebarCollapsed((prev) => !prev);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  const handlePageChange = (page: string, referenceId?: string | null) => {
-    try { sessionStorage.setItem('currentPage', page); } catch {}
-    setCurrentPage(page);
-
-    if (referenceId) {
-      setPendingDealId(referenceId);
-    }
-  };
-
-  const renderPage = () => {
-    switch (currentPage) {
-      case 'visao-geral':
-        return <Dashboard onPageChange={handlePageChange} />;
-
-      case 'crm-contatos':
-        return <Contatos onPageChange={handlePageChange} />;
-
-      case 'crm-negocios':
-        return <PlaceholderPage title="Negócios" />;
-
-      case 'crm-contratos':
-        return <Contratos />;
-
-      case 'crm-documentos':
-        return <PlaceholderPage title="Documentos" />;
-
-      case 'crm-items':
-        return <CrmItems />;
-
-      case 'crm-propostas':
-        return <Propostas onPageChange={handlePageChange} />;
-
-      case 'crm-pipeline':
-        return (
-          <Pipeline
-            initialDealId={pendingDealId}
-            onDealOpened={() => setPendingDealId(null)}
-          />
-        );
-
-      case 'dstrack':
-        return <Suporte />;
-
-      case 'recursos-catalogo':
-        return <Phonebook />;
-
-      case 'recursos-produtos':
-        return <PlaceholderPage title="Produtos" />;
-
-      case 'recursos-estoque':
-        return <PlaceholderPage title="Estoque" />;
-
-      case 'automacoes':
-        return <Automacoes />;
-
-      case 'usuarios':
-        return <Usuarios />;
-
-      case 'administracao':
-        return <Configuracoes />;
-
-      case 'superadmin-policy':
-        return <SuperAdminPolicyPanel onPageChange={handlePageChange} />;
-
-      case 'parceiros-afiliados':
-        return <PlaceholderPage title="Afiliados" />;
-
-      case 'parceiros-revendas':
-        return <PlaceholderPage title="Revendas" />;
-
-      case 'parceiros-api':
-        return <PlaceholderPage title="API Pública" />;
-
-      default:
-        return <Dashboard onPageChange={handlePageChange} />;
-    }
-  };
 
   if (tenantLoading) {
     return (
@@ -134,6 +27,70 @@ function AuthenticatedApp() {
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin" />
           <p className="text-sm font-medium text-slate-600 dark:text-slate-400">Carregando ambiente da empresa...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (tenantNotFound) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#edf0f5] dark:bg-[#090d15] p-4">
+        <div className="max-w-md w-full bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/[0.1] p-6 text-center shadow-xl">
+          <div className="w-12 h-12 rounded-full bg-rose-500/10 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Empresa Não Encontrada</h2>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
+            O endereço informado não corresponde a nenhuma organização cadastrada ou ativa nesta plataforma.
+          </p>
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => { window.location.href = '/'; }}
+              className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 transition-colors shadow-sm"
+            >
+              Ir para Início
+            </button>
+            <button
+              onClick={logout}
+              className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/[0.08] text-slate-700 dark:text-slate-300 text-sm font-semibold hover:bg-slate-200 transition-colors"
+            >
+              Sair
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (tenantSuspended) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#edf0f5] dark:bg-[#090d15] p-4">
+        <div className="max-w-md w-full bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/[0.1] p-6 text-center shadow-xl">
+          <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-bold text-slate-900 dark:text-white mb-2">Empresa Suspensa</h2>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
+            O acesso a esta empresa está temporariamente suspenso pela administração. Entre em contato com o suporte comercial.
+          </p>
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={() => { window.location.href = '/'; }}
+              className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/[0.08] text-slate-700 dark:text-slate-300 text-sm font-semibold hover:bg-slate-200 transition-colors"
+            >
+              Trocar de Empresa
+            </button>
+            <button
+              onClick={logout}
+              className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 transition-colors shadow-sm"
+            >
+              Sair
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -152,10 +109,10 @@ function AuthenticatedApp() {
           <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">{tenantError}</p>
           <div className="flex justify-center gap-3">
             <button
-              onClick={() => window.location.reload()}
+              onClick={() => { window.location.href = '/'; }}
               className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/[0.08] text-slate-700 dark:text-slate-300 text-sm font-semibold hover:bg-slate-200 transition-colors"
             >
-              Tentar Novamente
+              Início
             </button>
             <button
               onClick={logout}
@@ -170,22 +127,11 @@ function AuthenticatedApp() {
   }
 
   return (
-    <div className="min-h-screen flex bg-[#edf0f5] dark:bg-[#090d15] text-slate-900 dark:text-slate-100 transition-colors">
-      <Sidebar currentPage={currentPage} onPageChange={handlePageChange} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)} />
-      <Header
-        currentPage={currentPage}
-        onPageChange={handlePageChange}
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
-
-      <main
-        key={`${tenant?.id || 'no-tenant'}_${currentPage}`}
-        className={`flex-1 ${sidebarCollapsed ? 'ml-[72px]' : 'ml-[270px]'} mt-16 p-4 sm:p-6 lg:p-8 transition-[margin] duration-300 min-w-0`}
-      >
-        {renderPage()}
-      </main>
-    </div>
+    <AppProvider>
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
+    </AppProvider>
   );
 }
 
@@ -193,6 +139,7 @@ function AppContent() {
   const { isAuthenticated, loading } = useAuth();
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
   const isRegisterPage = pathname === '/register';
+  const isAcessoPage = pathname === '/acesso';
   const proposalPreviewMatch = pathname.match(/^\/proposta\/(.+)$/);
   const contractSignMatch = pathname.match(/^\/(?:contrato|assinar)\/(.+)$/);
 
@@ -212,7 +159,7 @@ function AppContent() {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated && !isAcessoPage) {
     return isRegisterPage ? <Register /> : <Login />;
   }
 

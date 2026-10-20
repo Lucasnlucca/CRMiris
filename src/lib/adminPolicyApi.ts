@@ -6,7 +6,7 @@
  * é realizada integralmente no servidor.
  */
 
-import { account } from './appwrite';
+import { getAuthoritativeAuthHeaders } from './appwrite';
 
 export interface ModuleActionStatus {
   allowed: boolean;
@@ -68,20 +68,7 @@ export interface PolicyStatusResponse {
 }
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  try {
-    const jwtRes = await account.createJWT();
-    if (jwtRes?.jwt) {
-      headers['Authorization'] = `Bearer ${jwtRes.jwt}`;
-    }
-  } catch (err) {
-    console.warn('[AdminPolicyApi] Aviso ao obter JWT de sessão:', err);
-  }
-
-  return headers;
+  return await getAuthoritativeAuthHeaders();
 }
 
 /**

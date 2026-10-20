@@ -429,8 +429,8 @@ export default function ContractSignPreview() {
           clientIp = ipData.ip || clientIp;
         }
       } catch {
-        // Fallback resiliente
-        clientIp = '201.86.' + Math.floor(Math.random() * 200 + 10) + '.' + Math.floor(Math.random() * 200 + 10);
+        // F02: Se não for possível coletar o IP no client, registrar como 'Não disponível' (nunca forjar IP aleatório)
+        clientIp = 'Não disponível';
       }
 
       const timestampUtc = new Date().toISOString();
@@ -505,6 +505,10 @@ export default function ContractSignPreview() {
           notes: updatedNotes,
         };
 
+        const queryToken = typeof window !== 'undefined'
+          ? (new URLSearchParams(window.location.search).get('token') || contract.signature_token || '')
+          : (contract.signature_token || '');
+
         try {
           // Salvar via Backend API Bridge autoritativo com captura de evidências no servidor
           await backendApiBridge.signContract(contract.id, {
@@ -513,6 +517,7 @@ export default function ContractSignPreview() {
             signerEmail: signerEmailFinal,
             signerPhone: signerPhoneFinal,
             termsAccepted: true,
+            publicToken: queryToken || undefined,
           });
         } catch (bridgeErr: any) {
           console.warn('Backend API Bridge sign retornou aviso, tentando via updateDocument:', bridgeErr?.message);
@@ -1694,7 +1699,7 @@ export default function ContractSignPreview() {
 
       <div className="w-full max-w-4xl mt-6 text-center text-xs text-slate-500 print:hidden flex items-center justify-center gap-2">
         <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-        <span>Documento certificado e assinado eletronicamente via Iris Horizon CRM Multi-tenant</span>
+        <span>Documento certificado e assinado eletronicamente via Iris Horizon CRM</span>
       </div>
     </div>
   );

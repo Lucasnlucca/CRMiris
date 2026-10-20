@@ -10,7 +10,7 @@ import {
   CreditCard,
   CalendarDays,
   FolderOpen,
-  Figma,
+  Layers,
   Briefcase,
   PlugZap,
   XCircle,
@@ -168,7 +168,7 @@ const integrationDefinitions: IntegrationDefinition[] = [
   {
     key: 'figma',
     name: 'Figma',
-    icon: Figma,
+    icon: Layers,
     description: 'Projetos e protótipos',
     defaultStatus: 'soon',
     configurable: false,
@@ -444,20 +444,51 @@ export default function Automacoes() {
     }
   };
 
-  const validateIntegration = (integrationKey: IntegrationKey, config: Record<string, any>) => {
+  const validateIntegration = (integrationKey: IntegrationKey, config: Record<string, any>): { valid: boolean; error?: string } => {
     if (integrationKey === 'asaas') {
-      return Boolean(config.api_key && config.environment);
+      if (!config.api_key || !config.environment) {
+        return { valid: false, error: 'Chave de API e ambiente são obrigatórios.' };
+      }
+      return { valid: true };
     }
 
     if (integrationKey === 'google_calendar') {
-      return Boolean(config.client_id && config.client_secret && config.redirect_uri);
+      if (!config.client_id || !config.client_secret || !config.redirect_uri) {
+        return { valid: false, error: 'Client ID, Client Secret e Redirect URI são obrigatórios.' };
+      }
+      return { valid: true };
     }
 
     if (integrationKey === 'webhooks') {
-      return Boolean(config.webhook_url && config.secret);
+      const rawUrl = String(config.webhook_url || '').trim();
+      if (!rawUrl || !config.secret) {
+        return { valid: false, error: 'URL do Webhook e Segredo HMAC são obrigatórios.' };
+      }
+      try {
+        const parsed = new URL(rawUrl);
+        if (parsed.protocol !== 'https:') {
+          return { valid: false, error: 'Apenas endpoints HTTPS seguros são permitidos para webhooks.' };
+        }
+        const host = parsed.hostname.toLowerCase();
+        if (
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          host === '0.0.0.0' ||
+          host.startsWith('10.') ||
+          host.startsWith('192.168.') ||
+          host.startsWith('169.254.') ||
+          host.endsWith('.local') ||
+          host.endsWith('.internal')
+        ) {
+          return { valid: false, error: 'Destinos internos ou privados (RFC 1918/localhost) são bloqueados por segurança contra SSRF.' };
+        }
+      } catch {
+        return { valid: false, error: 'URL do Webhook inválida.' };
+      }
+      return { valid: true };
     }
 
-    return false;
+    return { valid: false, error: 'Tipo de integração não suportado.' };
   };
 
   const testIntegrationConnection = async () => {
@@ -468,15 +499,16 @@ export default function Automacoes() {
       setFeedbackMessage('');
       setFeedbackType('');
 
-      const isValid = validateIntegration(selectedIntegrationKey, formData);
+      const check = validateIntegration(selectedIntegrationKey, formData);
 
-      if (!isValid) {
+      if (!check.valid) {
         setCurrentStatus('disconnected');
-        setFeedbackMessage('Preencha os campos obrigatórios antes de testar a conexão.');
+        setFeedbackMessage(check.error || 'Preencha os campos obrigatórios antes de testar a conexão.');
         setFeedbackType('error');
         return;
       }
 
+      // F11: Distinguir configuração salva/validada de teste com telemetria ativa
       const newStatus: IntegrationStatus = 'connected';
 
       const payload = {
@@ -488,7 +520,7 @@ export default function Automacoes() {
         updated_at: new Date().toISOString()
       };
 
-            // Appwrite doesn't have upsert, so we query first
+      // Appwrite doesn't have upsert, so we query first
       const { documents } = await databases.listDocuments(DATABASE_ID, 'integration_configs', [
         Query.equal('user_id', user.id),
         Query.equal('integration_key', selectedIntegrationKey),
@@ -500,15 +532,6 @@ export default function Automacoes() {
         data = await databases.updateDocument(DATABASE_ID, 'integration_configs', documents[0].$id, payload);
       } else {
         data = await databases.createDocument(DATABASE_ID, 'integration_configs', ID.unique(), payload);
-      }
-      const error = null;
-
-      if (error) {
-        console.error(error);
-        setCurrentStatus('disconnected');
-        setFeedbackMessage('Falha ao atualizar o status da integração.');
-        setFeedbackType('error');
-        return;
       }
 
       setCurrentStatus('connected');
@@ -522,12 +545,12 @@ export default function Automacoes() {
         }));
       }
 
-      setFeedbackMessage('Conexão validada com sucesso.');
+      setFeedbackMessage('Configuração validada e salva com sucesso. O envio de eventos ocorrerá nas automações vinculadas.');
       setFeedbackType('success');
     } catch (error) {
       console.error(error);
       setCurrentStatus('disconnected');
-      setFeedbackMessage('Erro inesperado ao testar a conexão.');
+      setFeedbackMessage('Erro inesperado ao salvar configuração de integração.');
       setFeedbackType('error');
     } finally {
       setTestingIntegration(false);

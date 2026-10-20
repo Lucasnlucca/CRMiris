@@ -44,6 +44,7 @@ import { downloadContractDocx } from '../utils/contractDocx';
 import { databases, client } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 import { useAuth } from '../context/AuthContext';
+import { useTenant } from '../context/TenantContext';
 import { parseLegalRepresentative, encodeNotesWithLegalRep } from './Contatos';
 import { parseAuditDossier } from '../utils/auditTrail';
 
@@ -418,46 +419,25 @@ export function compressImageToBase64(file: File, callback: (base64: string) => 
 }
 
 export function encodeClausesForAppwrite(clauses: ContractClause[], fullText?: string): string {
-  // Se for texto contínuo, grava um payload compacto
+  // F01: Nunca fazer .slice() em string JSON serializada, garantindo integridade sintática e jurídica
   if (fullText && fullText.trim()) {
-    const compactObj = {
+    return JSON.stringify({
       mode: 'full_text',
-      text: fullText.length > 2500 ? fullText.slice(0, 2400) + '...' : fullText,
-    };
-    const json = JSON.stringify(compactObj);
-    if (json.length <= 2700) return json;
+      text: fullText,
+    });
   }
 
-  // Strip all base64 data: URLs so it doesn't blow past Appwrite's 3000 chars limit
-  let compact = clauses.map((c) => ({
+  // Sanitizar URLs base64 gigantes mantendo o texto integral de cada cláusula
+  const compact = clauses.map((c) => ({
     id: c.id,
     cat: c.category,
     t: c.title,
     txt: c.text,
-    img: c.imageUrl && !c.imageUrl.startsWith('data:') && c.imageUrl.length < 150 ? c.imageUrl : undefined,
+    img: c.imageUrl && !c.imageUrl.startsWith('data:') && c.imageUrl.length < 250 ? c.imageUrl : undefined,
     pos: c.imagePosition || 'below',
   }));
 
-  let json = JSON.stringify(compact);
-  if (json.length <= 2700) return json;
-
-  // Se exceder 2700 caracteres, trunca o texto proporcionalmente para caber com ampla folga
-  const perClauseLimit = Math.max(60, Math.floor(2100 / compact.length));
-  compact = compact.map((c) => ({
-    ...c,
-    txt: c.txt.length > perClauseLimit ? c.txt.slice(0, perClauseLimit) + '...' : c.txt,
-  }));
-  json = JSON.stringify(compact);
-  if (json.length <= 2700) return json;
-
-  // Limite extremo de segurança: títulos e IDs
-  const ultraCompact = compact.map((c) => ({
-    id: c.id,
-    cat: c.cat,
-    t: c.t,
-    txt: c.txt.slice(0, 40),
-  }));
-  return JSON.stringify(ultraCompact).slice(0, 2700);
+  return JSON.stringify(compact);
 }
 
 export function parseContractClauses(clausesJson?: string, contractId?: string): ContractClause[] {
@@ -579,11 +559,17 @@ export function formatDocumentMask(value?: string): string {
 
 export default function Contratos() {
   const { user } = useAuth();
+  const { tenant } = useTenant();
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [proposals, setProposals] = useState<ProposalOption[]>([]);
   const [clients, setClients] = useState<ClientOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Provedor padrão derivado autoritativamente do tenant logado (F04)
+  const tenantProviderName = tenant?.trade_name || tenant?.name || DEFAULT_PROVIDER.name;
+  const tenantProviderDocument = tenant?.document || DEFAULT_PROVIDER.document;
+  const tenantProviderAddress = tenant?.address || DEFAULT_PROVIDER.address;
 
   // Filtros e Visualização
   const [search, setSearch] = useState('');
@@ -613,9 +599,9 @@ export default function Contratos() {
   const [formClientAddress, setFormClientAddress] = useState('');
   const [formLegalRepName, setFormLegalRepName] = useState('');
   const [formLegalRepCpf, setFormLegalRepCpf] = useState('');
-  const [formProviderName, setFormProviderName] = useState(DEFAULT_PROVIDER.name);
-  const [formProviderDocument, setFormProviderDocument] = useState(DEFAULT_PROVIDER.document);
-  const [formProviderAddress, setFormProviderAddress] = useState(DEFAULT_PROVIDER.address);
+  const [formProviderName, setFormProviderName] = useState(tenantProviderName);
+  const [formProviderDocument, setFormProviderDocument] = useState(tenantProviderDocument);
+  const [formProviderAddress, setFormProviderAddress] = useState(tenantProviderAddress);
   const [formStartDate, setFormStartDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formEndDate, setFormEndDate] = useState(() => {
     const d = new Date();
@@ -766,12 +752,14 @@ export default function Contratos() {
   // ─── Abrir Modal de Criação ─────────────────────────────────────────────────
 
   const handleOpenCreateModal = async (initialProposalId?: string) => {
-    const nextNumber = `CTR-${new Date().getFullYear()}-${String(contracts.length + 1).padStart(4, '0')}`;
+    // F05: Geração de identificador resiliente e à prova de condições de corrida/colisões
+    const nextNumber = `CTR-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${Math.floor(Math.random() * 90 + 10)}`;
     setFormContractNumber(nextNumber);
     setFormTitle('Contrato de Prestação de Serviços & Soluções Tecnológicas');
-    setFormProviderName(DEFAULT_PROVIDER.name);
-    setFormProviderDocument(DEFAULT_PROVIDER.document);
-    setFormProviderAddress(DEFAULT_PROVIDER.address);
+    // F04: Provedor baseado no tenant real
+    setFormProviderName(tenantProviderName);
+    setFormProviderDocument(tenantProviderDocument);
+    setFormProviderAddress(tenantProviderAddress);
     setFormClauses(getStoredClauseLibrary().filter((c) => c.enabledByDefault));
     setClauseEditorMode('full_text');
     setFormContractFullText(getStoredContractFullText());
@@ -808,12 +796,12 @@ export default function Contratos() {
 
   // Abrir Modal de Criação já com cliente selecionado da página de clientes
   const handleOpenCreateModalWithClient = async (clientData: any) => {
-    const nextNumber = `CTR-${new Date().getFullYear()}-${String(contracts.length + 1).padStart(4, '0')}`;
+    const nextNumber = `CTR-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}${Math.floor(Math.random() * 90 + 10)}`;
     setFormContractNumber(nextNumber);
     setFormTitle(`Contrato de Prestação de Serviços - ${clientData.name || 'Cliente'}`);
-    setFormProviderName(DEFAULT_PROVIDER.name);
-    setFormProviderDocument(DEFAULT_PROVIDER.document);
-    setFormProviderAddress(DEFAULT_PROVIDER.address);
+    setFormProviderName(tenantProviderName);
+    setFormProviderDocument(tenantProviderDocument);
+    setFormProviderAddress(tenantProviderAddress);
     setFormClauses(getStoredClauseLibrary().filter((c) => c.enabledByDefault));
     setClauseEditorMode('full_text');
     setFormContractFullText(getStoredContractFullText());

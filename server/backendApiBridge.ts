@@ -26,21 +26,46 @@ import {
 
 const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
 
-// Controle estrito de ativação do Módulo Clientes em Produção
-const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE === 'true';
+// Controle de ativação dos Módulos Operacionais em Produção (habilitado por padrão)
+const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE !== 'false';
 
 const initialRules = [
   ...SANDBOX_PILOT_CLIENTS_RULES,
   ...(ENABLE_PROD_CLIENTS_MODULE ? prodClientsRules : []),
 ];
 
-export const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true });
+export const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true, autoSeedProdTenants: true });
+
+import fs from 'fs';
+import path from 'path';
+
+function getLocalEnvFallback(key: string): string {
+  if (process.env[key]) return process.env[key]!;
+  for (const fileName of ['.env.local', '.env']) {
+    try {
+      const envFile = path.resolve(process.cwd(), fileName);
+      if (fs.existsSync(envFile)) {
+        const lines = fs.readFileSync(envFile, 'utf8').split('\n');
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+            const idx = trimmed.indexOf('=');
+            const k = trimmed.slice(0, idx).trim();
+            const v = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+            if (k === key) return v;
+          }
+        }
+      }
+    } catch {}
+  }
+  return '';
+}
 
 // Configurações do Ambiente do Servidor
-const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
-const API_KEY = process.env.APPWRITE_API_KEY || '';
-const DEFAULT_DATABASE_ID = process.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
+const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || getLocalEnvFallback('VITE_APPWRITE_URL') || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || getLocalEnvFallback('VITE_APPWRITE_PROJECT_ID') || '6a6cac620021f4c64b3f';
+const API_KEY = process.env.APPWRITE_API_KEY || getLocalEnvFallback('APPWRITE_API_KEY') || '';
+const DEFAULT_DATABASE_ID = process.env.VITE_APPWRITE_DATABASE_ID || getLocalEnvFallback('VITE_APPWRITE_DATABASE_ID') || 'crm_db';
 
 // Coleções oficiais gerenciadas pelo CRM
 export const TENANT_AWARE_COLLECTIONS = new Set([
@@ -57,6 +82,13 @@ export const TENANT_AWARE_COLLECTIONS = new Set([
   'crm_items',
   'crm_contracts',
   'support_tickets',
+  'servers',
+  'services',
+  'documents',
+  'charges',
+  'invoices',
+  'events',
+  'activities',
   'phonebook',
   'call_history',
   'whatsapp_contacts',
@@ -130,15 +162,30 @@ async function authenticateUser(headers: Record<string, string | string[] | unde
   const sessionHeader = headers['x-appwrite-session'] || headers['X-Appwrite-Session'];
   let sessionSecret = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
 
+  if (sessionSecret.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(sessionSecret);
+      sessionSecret = parsed[`a_session_${PROJECT_ID}`] || parsed[`a_session_${PROJECT_ID}_legacy`] || (Object.values(parsed)[0] as string) || '';
+    } catch {}
+  }
+
+  if (!jwt && !sessionSecret && headers['cookie']) {
+    const rawCookie = Array.isArray(headers['cookie']) ? headers['cookie'].join('; ') : String(headers['cookie']);
+    const match = rawCookie.match(new RegExp(`(?:^|;\\s*)a_session_${PROJECT_ID}(?:_legacy)?=([^;]+)`)) ||
+                  rawCookie.match(/(?:^|;\s*)a_session=([^;]+)/);
+    if (match && match[1]) {
+      sessionSecret = decodeURIComponent(match[1]).trim();
+    }
+  }
+
   if (!jwt && !sessionSecret) {
-    throw { statusCode: 401, message: 'Autenticação necessária: token JWT ou sessão ausente.' };
+    throw { statusCode: 401, message: 'Autenticação necessária: credencial (JWT ou Sessão) ausente.' };
   }
 
   const userClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID);
-
   if (jwt) {
     userClient.setJWT(jwt);
-  } else if (sessionSecret) {
+  } else {
     userClient.setSession(sessionSecret);
   }
 
@@ -160,32 +207,41 @@ async function resolveUserTenantAndRole(
   requestedTenantId?: string,
   targetDatabaseId: string = 'crm_db'
 ): Promise<{ authoritativeTenantId: string; isSuperAdmin: boolean; userTeams: string[]; userRoles: string[] }> {
-  // Obter memberships do usuário
-  // Como o Teams API lista memberships por Team, verificamos os times conhecidos
-  const knownTeams = [
+  const knownTeamsSet = new Set<string>([
     'tenant_default',
     'superadmins',
     'test_team_alpha',
     'test_team_beta',
     'test_team_superadmins',
-  ];
+  ]);
 
-  if (requestedTenantId && !knownTeams.includes(requestedTenantId)) {
-    knownTeams.push(requestedTenantId);
+  if (requestedTenantId) {
+    knownTeamsSet.add(requestedTenantId);
   }
 
-  const userTeams: string[] = [];
-  const userRoles: string[] = [];
+  try {
+    const allTeamsRes = await adminTeams.list();
+    if (allTeamsRes && Array.isArray(allTeamsRes.teams)) {
+      for (const t of allTeamsRes.teams) {
+        if (t && t.$id) knownTeamsSet.add(t.$id);
+      }
+    }
+  } catch {}
 
-  for (const teamId of knownTeams) {
+  const userTeams: string[] = [];
+  const teamRolesMap = new Map<string, string[]>();
+
+  for (const teamId of knownTeamsSet) {
     try {
       const list = await adminTeams.listMemberships(teamId);
       const mem = list.memberships.find((m) => m.userId === userId);
       if (mem) {
         userTeams.push(teamId);
+        const rolesForThisTeam: string[] = [];
         if (Array.isArray(mem.roles)) {
-          mem.roles.forEach((r) => { if (r && !userRoles.includes(r)) userRoles.push(r); });
+          mem.roles.forEach((r) => { if (r && !rolesForThisTeam.includes(r)) rolesForThisTeam.push(r); });
         }
+        teamRolesMap.set(teamId, rolesForThisTeam);
       }
     } catch (e) {
       // Time inexistente ou erro transitório
@@ -201,13 +257,6 @@ async function resolveUserTenantAndRole(
       : (t === 'superadmins' || t === 'test_team_superadmins');
 
   const isSuperAdmin = userTeams.some(isSuperAdminTeam);
-
-  if (isSuperAdmin && !userRoles.includes('superadmin')) {
-    userRoles.push('superadmin');
-  }
-  if (userRoles.length === 0 && userTeams.length > 0) {
-    userRoles.push('agent');
-  }
 
   let authoritativeTenantId = '';
 
@@ -236,6 +285,17 @@ async function resolveUserTenantAndRole(
         message: `Usuário "${userId}" não está vinculado a nenhuma organização ativa.`,
       };
     }
+  }
+
+  // S08: Papéis estritamente vinculados ao tenant autorizado (sem vazamento cruzado)
+  const tenantSpecificRoles = teamRolesMap.get(authoritativeTenantId) || [];
+  const userRoles: string[] = [...tenantSpecificRoles];
+
+  if (isSuperAdmin && !userRoles.includes('superadmin')) {
+    userRoles.push('superadmin');
+  }
+  if (userRoles.length === 0 && userTeams.includes(authoritativeTenantId)) {
+    userRoles.push('agent');
   }
 
   return { authoritativeTenantId, isSuperAdmin, userTeams, userRoles };
@@ -361,19 +421,21 @@ export async function executeAuthoritativeWrite(
 
     const { adminDb, adminTeams } = getAdminClients();
 
-    // 1. FLUXO ESPECIAL: ASSINATURA PÚBLICA DE CONTRATOS
+    // 1. FLUXO ESPECIAL: ASSINATURA PÚBLICA DE CONTRATOS (S02 / F03)
     if (action === 'signContract') {
       const contractId = documentId || (data && data.contractId);
       if (!contractId) {
         throw { statusCode: 400, message: 'ID do contrato é obrigatório para assinatura.' };
       }
 
+      const publicContractCollection = 'crm_contracts';
+
       const mockDb = {
         async getContractById(id: string) {
-          return await adminDb.getDocument(databaseId!, collectionId || 'crm_contracts', id);
+          return await adminDb.getDocument(databaseId!, publicContractCollection, id);
         },
         async updateContract(id: string, updatePayload: Record<string, any>) {
-          return await adminDb.updateDocument(databaseId!, collectionId || 'crm_contracts', id, updatePayload);
+          return await adminDb.updateDocument(databaseId!, publicContractCollection, id, updatePayload);
         },
       };
 
@@ -388,6 +450,7 @@ export async function executeAuthoritativeWrite(
             signerEmail: data?.signerEmail || data?.signed_by_email,
             signerPhone: data?.signerPhone || data?.signed_by_phone,
             termsAccepted: Boolean(data?.termsAccepted),
+            publicToken: data?.publicToken || (req.headers['x-public-token'] as string) || undefined,
           },
         },
         mockDb
@@ -396,7 +459,7 @@ export async function executeAuthoritativeWrite(
       return {
         success: true,
         action: 'signContract',
-        collectionId: collectionId || 'crm_contracts',
+        collectionId: publicContractCollection,
         documentId: contractId,
         data: auditResult,
       };
@@ -459,7 +522,44 @@ export async function executeAuthoritativeWrite(
       };
     }
 
-    const isTenantAware = TENANT_AWARE_COLLECTIONS.has(collectionId);
+    // S03: Bloquear coleções globais ou não-autorizadas do CRUD genérico
+    if (!TENANT_AWARE_COLLECTIONS.has(collectionId)) {
+      throw {
+        statusCode: 403,
+        message: `Acesso negado: a coleção "${collectionId}" não é permitida para operações genéricas de escrita. Coleções administrativas requerem rotas dedicadas.`,
+      };
+    }
+
+    // Validação de Integridade Relacional Multi-Tenant:
+    // Impede referências cruzadas a registros pertencentes a outros tenants (Etapas 2, 3 e 4)
+    const refChecks = [
+      { field: 'client_id', collection: (collectionId === 'test_contacts' || collectionId === 'test_deals' || collectionId === 'test_crm_contracts') ? 'test_clients' : 'clients' },
+      { field: 'contact_id', collection: (collectionId === 'test_deals') ? 'test_contacts' : 'phonebook' },
+      { field: 'deal_id', collection: (collectionId === 'test_crm_contracts') ? 'test_deals' : 'pipeline_deals' },
+    ];
+
+    for (const ref of refChecks) {
+      const refVal = sanitizedData[ref.field];
+      if (refVal && typeof refVal === 'string' && refVal.trim()) {
+        try {
+          const targetRefDoc = await adminDb.getDocument(databaseId, ref.collection, refVal.trim());
+          if (targetRefDoc.tenant_id && targetRefDoc.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+            throw {
+              statusCode: 403,
+              message: `[CROSS_TENANT_VIOLATION] Referência cruzada proibida: "${ref.field}" (${refVal}) pertence a outro tenant.`,
+            };
+          }
+        } catch (e: any) {
+          if (e.code === 404) {
+            throw {
+              statusCode: 404,
+              message: `[REFERENCE_NOT_FOUND] Registro referenciado em "${ref.field}" não encontrado.`,
+            };
+          }
+          throw e;
+        }
+      }
+    }
 
     // 5. EXECUÇÃO DA OPERAÇÃO
 
@@ -467,9 +567,7 @@ export async function executeAuthoritativeWrite(
     if (action === 'create') {
       const docIdToUse = documentId && documentId.trim() ? documentId.trim() : ID.unique();
 
-      if (isTenantAware) {
-        sanitizedData.tenant_id = authoritativeTenantId;
-      }
+      sanitizedData.tenant_id = authoritativeTenantId;
 
       // Permissões Finais da Diretriz A: APENAS LEITURA PARA O TIME DO TENANT E SUPERADMINS!
       // (Nenhuma permissão de escrita concedida diretamente a clientes)
@@ -482,20 +580,10 @@ export async function executeAuthoritativeWrite(
               ? 'test_team_superadmins'
               : 'superadmins');
 
-      if (collectionId === 'users_hydra' || collectionId === 'test_users_hydra') {
-        // Para perfis de usuário: o próprio usuário pode ler e atualizar seu perfil
-        permissions.push(
-          Permission.read(Role.user(userId)),
-          Permission.update(Role.user(userId)),
-          Permission.read(Role.team(authoritativeTenantId)),
-          Permission.read(Role.team(superAdminTeamForPerms))
-        );
-      } else if (isTenantAware) {
-        permissions.push(
-          Permission.read(Role.team(authoritativeTenantId)),
-          Permission.read(Role.team(superAdminTeamForPerms))
-        );
-      }
+      permissions.push(
+        Permission.read(Role.team(authoritativeTenantId)),
+        Permission.read(Role.team(superAdminTeamForPerms))
+      );
 
       const created = await adminDb.createDocument(
         databaseId,
@@ -521,18 +609,18 @@ export async function executeAuthoritativeWrite(
         throw { statusCode: 400, message: 'documentId é obrigatório para atualização.' };
       }
 
-      // Validação de posse
-      if (isTenantAware) {
-        const existing = await adminDb.getDocument(databaseId, collectionId, documentId);
-        if (existing.tenant_id && existing.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+      // Validação rigorosa de posse multi-tenant (S03)
+      const existing = await adminDb.getDocument(databaseId, collectionId, documentId);
+      if (!isSuperAdmin) {
+        if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
           throw {
             statusCode: 403,
-            message: `Acesso negado: o documento "${documentId}" pertence a outra organização.`,
+            message: `Acesso negado: o documento "${documentId}" não pertence à sua organização.`,
           };
         }
-        // Assegura que tenant_id nunca é alterado
-        delete sanitizedData.tenant_id;
       }
+      // Assegura que tenant_id nunca é alterado via update
+      delete sanitizedData.tenant_id;
 
       const updated = await adminDb.updateDocument(
         databaseId,
@@ -557,13 +645,13 @@ export async function executeAuthoritativeWrite(
         throw { statusCode: 400, message: 'documentId é obrigatório para exclusão.' };
       }
 
-      // Validação de posse
-      if (isTenantAware) {
-        const existing = await adminDb.getDocument(databaseId, collectionId, documentId);
-        if (existing.tenant_id && existing.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+      // Validação rigorosa de posse multi-tenant (S03)
+      const existing = await adminDb.getDocument(databaseId, collectionId, documentId);
+      if (!isSuperAdmin) {
+        if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
           throw {
             statusCode: 403,
-            message: `Acesso negado: o documento "${documentId}" pertence a outra organização.`,
+            message: `Acesso negado: o documento "${documentId}" não pertence à sua organização.`,
           };
         }
       }

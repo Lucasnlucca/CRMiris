@@ -5,7 +5,8 @@ import { databases } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from '../context/AuthContext';
-import { createNewUser, deleteUser as removeUser } from '../lib/userManagement';
+import { useTenant } from '../context/TenantContext';
+import { inviteTenantMember, removeTenantMember } from '../lib/tenantUsersApi';
 
 interface NewUserForm {
   name: string;
@@ -25,31 +26,27 @@ const tabs: { id: TabId; label: string; icon: any; description: string }[] = [
 const ALL_MENU_ITEMS = [
   { id: 'visao-geral', label: 'Dashboard', icon: LayoutDashboard, group: 'principal' },
   { id: 'crm-contatos', label: 'CRM - Clientes', icon: UsersIcon, group: 'crm' },
-  { id: 'crm-negocios', label: 'CRM - Negocios', icon: UsersIcon, group: 'crm' },
   { id: 'crm-pipeline', label: 'CRM - Pipeline', icon: UsersIcon, group: 'crm' },
   { id: 'crm-items', label: 'CRM - Itens', icon: UsersIcon, group: 'crm' },
   { id: 'crm-propostas', label: 'CRM - Propostas', icon: UsersIcon, group: 'crm' },
+  { id: 'crm-contratos', label: 'CRM - Contratos', icon: UsersIcon, group: 'crm' },
   { id: 'dstrack', label: 'Suporte', icon: TrendingUp, group: 'principal' },
-  { id: 'recursos-catalogo', label: 'Recursos - Catalogo', icon: Package, group: 'recursos' },
-  { id: 'recursos-produtos', label: 'Recursos - Produtos', icon: Package, group: 'recursos' },
-  { id: 'recursos-estoque', label: 'Recursos - Estoque', icon: Package, group: 'recursos' },
-  { id: 'automacoes', label: 'Automacoes', icon: Zap, group: 'principal' },
-  { id: 'administracao', label: 'Configuracoes', icon: Settings, group: 'principal' },
-  { id: 'parceiros-afiliados', label: 'Parceiros - Afiliados', icon: Briefcase, group: 'parceiros' },
-  { id: 'parceiros-revendas', label: 'Parceiros - Revendas', icon: Briefcase, group: 'parceiros' },
-  { id: 'parceiros-api', label: 'Parceiros - API', icon: Briefcase, group: 'parceiros' },
+  { id: 'recursos-catalogo', label: 'Recursos - Catálogo', icon: Package, group: 'recursos' },
+  { id: 'automacoes', label: 'Automações', icon: Zap, group: 'principal' },
+  { id: 'administracao', label: 'Configurações', icon: Settings, group: 'principal' },
+  { id: 'usuarios', label: 'Usuários & Acessos', icon: UsersIcon, group: 'principal' },
 ];
 
 const MENU_GROUPS = [
   { id: 'principal', label: 'Menus Principais' },
   { id: 'crm', label: 'CRM' },
   { id: 'recursos', label: 'Recursos' },
-  { id: 'parceiros', label: 'Parceiros' },
 ];
 
 export default function Configuracoes() {
   const { isDarkMode, toggleTheme } = useTheme();
   const { user } = useAuth();
+  const { tenant, isSuperAdmin } = useTenant();
   const [activeTab, setActiveTab] = useState<TabId>('geral');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -70,7 +67,7 @@ export default function Configuracoes() {
 
   useEffect(() => {
     loadTeamUsers();
-  }, []);
+  }, [tenant?.id]);
 
   const loadTeamUsers = async () => {
     setTeamLoading(true);
@@ -173,7 +170,14 @@ export default function Configuracoes() {
         throw new Error('A senha deve ter pelo menos 8 caracteres (requisito de segurança do Appwrite).');
       }
 
-      await createNewUser(newUser);
+      const roleMapped = newUser.role === 'admin' ? 'admin' : 'agent';
+      await inviteTenantMember({
+        tenantId: tenant?.id || 'tenant_default',
+        name: newUser.name.trim(),
+        email: newUser.email.trim(),
+        password: newUser.password,
+        role: roleMapped,
+      });
 
       setUserMessage('Usuário criado com sucesso!');
       setNewUser({ name: '', email: '', password: '', role: 'colaborador' });
@@ -192,14 +196,17 @@ export default function Configuracoes() {
   const handleDeleteUser = async (userId: string, userName: string) => {
     if (!window.confirm(`Tem certeza que deseja excluir o usuário "${userName}"?`)) return;
     try {
-      await removeUser(userId);
+      await removeTenantMember({
+        tenantId: tenant?.id || 'tenant_default',
+        userId,
+      });
       await loadTeamUsers();
     } catch (error: any) {
       alert(error.message || 'Erro ao excluir usuário');
     }
   };
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = isSuperAdmin || user?.role === 'admin';
 
   const inputClass = 'w-full px-4 py-2.5 bg-slate-50/70 dark:bg-white/[0.04] border border-slate-200 dark:border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-xs text-slate-900 dark:text-white placeholder-slate-400 transition-all';
   const cardClass = 'bg-white dark:bg-[#121824] rounded-2xl p-6 shadow-xs border border-slate-200/80 dark:border-white/[0.08]';

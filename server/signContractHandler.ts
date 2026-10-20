@@ -16,6 +16,7 @@
 
 import crypto from 'crypto';
 import { assertNotUnderMaintenance, enterPrivilegedOperation } from './maintenanceGuard';
+import { validatePublicAccessToken, revokePublicAccessToken } from './publicTokenService';
 
 export interface SignContractServerPayload {
   contractId: string;
@@ -24,6 +25,7 @@ export interface SignContractServerPayload {
   signerEmail?: string;
   signerPhone?: string;
   termsAccepted: boolean;
+  publicToken?: string;
 }
 
 export interface ServerAuditResult {
@@ -80,9 +82,10 @@ export async function handleSignContractServer(
     updateContract: (id: string, data: Record<string, any>) => Promise<any>;
   }
 ): Promise<ServerAuditResult> {
+  assertNotUnderMaintenance('signContract');
   const exitOp = enterPrivilegedOperation();
   try {
-    const { contractId, signerName, signerDocument, signerEmail, signerPhone, termsAccepted } = req.body;
+    const { contractId, signerName, signerDocument, signerEmail, signerPhone, termsAccepted, publicToken } = req.body;
 
   if (!termsAccepted) {
     throw new Error('O aceite formal das cláusulas contratuais e termos é obrigatório.');
@@ -93,18 +96,38 @@ export async function handleSignContractServer(
   }
 
   // 1. Obter o contrato original diretamente do banco de dados
-  // (Garante que nenhum dado comercial ou cláusula foi manipulado pelo cliente)
   const contract = await db.getContractById(contractId);
   if (!contract) {
     throw new Error('Contrato não localizado.');
   }
 
-  if (contract.status === 'signed') {
+  if (contract.status === 'signed' || contract.signed_at || contract.signature_hash) {
     throw new Error('Este contrato já se encontra assinado e com integridade bloqueada.');
   }
 
-  // 2. Captura Autoritativa de Metadados de Rede no Servidor
   const clientIp = extractClientIp(req);
+
+  // S02: Validação mandatória de token público autoritativo vinculado ao contrato e tenant
+  if (!publicToken || typeof publicToken !== 'string' || !publicToken.trim()) {
+    throw new Error('Autorização de assinatura (token público) é obrigatória para assinar o contrato.');
+  }
+
+  const tokenCheck = validatePublicAccessToken({
+    token: publicToken.trim(),
+    targetType: 'contract',
+    targetId: contractId,
+    expectedScope: 'sign_contract',
+    clientIp,
+  });
+  if (!tokenCheck.valid) {
+    throw new Error(tokenCheck.errorMessage || 'Autorização de assinatura inválida ou expirada.');
+  }
+
+  if (contract.tenant_id && tokenCheck.tokenRecord?.tenantId && contract.tenant_id !== tokenCheck.tokenRecord.tenantId) {
+    throw new Error('Autorização inválida: a empresa vinculada ao token difere do contrato.');
+  }
+
+  // 2. Captura Autoritativa de Metadados de Rede no Servidor
   const clientPort = String(req.socket?.remotePort || req.headers['x-forwarded-port'] || '443');
   const userAgent = String(req.headers['user-agent'] || 'Desconhecido').slice(0, 500);
   const timestampUtc = new Date().toISOString(); // Timestamp confiável NTP do servidor
@@ -114,15 +137,15 @@ export async function handleSignContractServer(
   const items = contract.items_json ? JSON.parse(contract.items_json) : [];
   const clauses = contract.clauses_json ? JSON.parse(contract.clauses_json) : [];
   const clausesText = Array.isArray(clauses) 
-    ? clauses.map((c: any, i: number) => `${c.title || `CLÁUSULA ${i + 1}ª`}\n${c.text}`).join('\n\n')
+    ? clauses.map((c: any, i: number) => `${c.title || `CLÁUSULA ${i + 1}ª`}\n${c.text || c.txt || ''}`).join('\n\n')
     : String(contract.clauses_json || '');
 
   const canonicalDocument = [
     `=== INSTRUMENTO PARTICULAR DE PRESTAÇÃO DE SERVIÇOS ===`,
-    `IDENTIFICADOR:${contract.contract_number}`,
-    `CONTRATADA:${contract.provider_name} | DOC:${contract.provider_document}`,
-    `CONTRATANTE:${contract.client_name} | DOC:${contract.client_document}`,
-    `VALOR_RECORRENTE:${contract.total_value} | CICLO:${contract.billing_cycle}`,
+    `IDENTIFICADOR:${contract.contract_number || contractId}`,
+    `CONTRATADA:${contract.provider_name || ''} | DOC:${contract.provider_document || ''}`,
+    `CONTRATANTE:${contract.client_name || ''} | DOC:${contract.client_document || ''}`,
+    `VALOR_RECORRENTE:${contract.total_value || contract.total_amount || 0} | CICLO:${contract.billing_cycle || 'Mensal'}`,
     `ITENS:${JSON.stringify(items)}`,
     `CLAUSULAS:${clausesText.trim()}`,
     `=== FIM DO DOCUMENTO ===`
@@ -185,17 +208,22 @@ export async function handleSignContractServer(
     legal_audit_trail: JSON.stringify(auditDossier),
   });
 
-  return {
-    success: true,
-    contractId,
-    documentHash,
-    signatureHash,
-    signedAtUtc: timestampUtc,
-    clientIp,
-    clientPort,
-    userAgent,
-    legalBasis,
-  };
+    // 7. Revogar o token público para garantir uso único (não reutilizável)
+    if (publicToken) {
+      revokePublicAccessToken(publicToken);
+    }
+
+    return {
+      success: true,
+      contractId,
+      documentHash,
+      signatureHash,
+      signedAtUtc: timestampUtc,
+      clientIp,
+      clientPort,
+      userAgent,
+      legalBasis,
+    };
   } finally {
     exitOp();
   }

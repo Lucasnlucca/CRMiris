@@ -590,12 +590,12 @@ export async function downloadContractDocx(
                 width: { size: 30, type: WidthType.PERCENTAGE },
                 shading: { fill: 'F8FAFC', type: ShadingType.CLEAR },
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
-                children: [new Paragraph({ children: [new TextRun({ text: 'IP & Porta Lógica:', bold: true, size: 16, color: '475569' })] })],
+                children: [new Paragraph({ children: [new TextRun({ text: 'IP de Conexão:', bold: true, size: 16, color: '475569' })] })],
               }),
               new TableCell({
                 width: { size: 70, type: WidthType.PERCENTAGE },
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
-                children: [new Paragraph({ children: [new TextRun({ text: `${contract.signed_by_ip || 'Auditado'} (Porta: 443 / HTTPS TLS 1.3)`, size: 16, color: '0F172A' })] })],
+                children: [new Paragraph({ children: [new TextRun({ text: contract.signed_by_ip || 'Não disponível', size: 16, color: '0F172A' })] })],
               }),
             ],
           }),
@@ -610,7 +610,7 @@ export async function downloadContractDocx(
               new TableCell({
                 width: { size: 70, type: WidthType.PERCENTAGE },
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
-                children: [new Paragraph({ children: [new TextRun({ text: contract.signed_by_user_agent || 'Navegador Web / Dispositivo Seguro', size: 14, color: '475569' })] })],
+                children: [new Paragraph({ children: [new TextRun({ text: contract.signed_by_user_agent || 'Não disponível', size: 14, color: '475569' })] })],
               }),
             ],
           }),
@@ -625,7 +625,7 @@ export async function downloadContractDocx(
               new TableCell({
                 width: { size: 70, type: WidthType.PERCENTAGE },
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
-                children: [new Paragraph({ children: [new TextRun({ text: contract.signature_hash || 'Registrado via Trilha de Auditoria', bold: true, size: 14, color: '047857' })] })],
+                children: [new Paragraph({ children: [new TextRun({ text: contract.signature_hash || 'Não disponível', bold: true, size: 14, color: '047857' })] })],
               }),
             ],
           }),

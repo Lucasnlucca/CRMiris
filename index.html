@@ -1,13 +1,73 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-tenant-domain-base="lvplataform.com.br">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="tenant-slug" id="crm-tenant-slug" content="" />
+    <meta name="tenant-domain-base" id="crm-tenant-domain-base" content="lvplataform.com.br" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&display=swap" rel="stylesheet" />
-    <title>CRM Multitenant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Caveat:wght@600;700&display=swap" rel="stylesheet" />
+    <title>Iris Horizon — CRM Multi-Tenant</title>
+    <script>
+      (function () {
+        try {
+          var reserved = {
+            api: 1, admin: 1, superadmin: 1, login: 1, register: 1, auth: 1,
+            proposta: 1, contrato: 1, assinar: 1, static: 1, assets: 1,
+            www: 1, crm: 1, app: 1, mail: 1, painel: 1, portal: 1, localhost: 1,
+            clientes: 1, contatos: 1, negocios: 1, pipeline: 1, contratos: 1,
+            propostas: 1, itens: 1, produtos: 1, chamados: 1, suporte: 1,
+            catalogo: 1, automacoes: 1, usuarios: 1, configuracoes: 1,
+            empresas: 1, politicas: 1
+          };
+          var root = document.documentElement;
+          var metaEl = document.getElementById('crm-tenant-slug');
+          var explicitSlug = (root.getAttribute('data-tenant-slug') || (metaEl && metaEl.getAttribute('content')) || '').trim().toLowerCase();
+          var resolved = explicitSlug || '';
+
+          if (!resolved) {
+            var host = (window.location.hostname || '').toLowerCase();
+            if (host.endsWith('.lvplataform.com.br')) {
+              var p1 = host.slice(0, -'.lvplataform.com.br'.length).split('.').filter(Boolean);
+              if (p1.length > 0 && !reserved[p1[0]]) resolved = p1[0];
+            } else if (host.endsWith('.lvplatform.com.br')) {
+              var p2 = host.slice(0, -'.lvplatform.com.br'.length).split('.').filter(Boolean);
+              if (p2.length > 0 && !reserved[p2[0]]) resolved = p2[0];
+            } else if (host.endsWith('.localhost')) {
+              var p3 = host.slice(0, -'.localhost'.length).split('.').filter(Boolean);
+              if (p3.length > 0 && !reserved[p3[0]]) resolved = p3[0];
+            } else if (host && host !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(host) && !host.endsWith('.easypanel.host')) {
+              var parts = host.split('.').filter(Boolean);
+              if (parts.length >= 3 && !reserved[parts[0]]) {
+                resolved = parts[0];
+              }
+            }
+          }
+
+          if (!resolved && window.location.search) {
+            var params = new URLSearchParams(window.location.search);
+            var qTenant = (params.get('tenant') || params.get('empresa') || '').trim().toLowerCase();
+            if (qTenant && !reserved[qTenant]) resolved = qTenant;
+          }
+
+          if (!resolved && window.location.pathname && window.location.pathname !== '/') {
+            var segs = window.location.pathname.split('/').filter(Boolean);
+            if (segs.length > 0) {
+              var seg0 = segs[0].toLowerCase();
+              if (!reserved[seg0]) resolved = seg0;
+            }
+          }
+
+          root.setAttribute('data-tenant-host', window.location.hostname || 'localhost');
+          if (resolved) {
+            root.setAttribute('data-tenant-slug', resolved);
+            if (metaEl) metaEl.setAttribute('content', resolved);
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-gray-50 dark:bg-[#1a1d23]">
     <div id="root"></div>

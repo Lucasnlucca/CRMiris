@@ -18,6 +18,13 @@ export const TENANT_AWARE_COLLECTIONS = new Set([
   'crm_items',
   'crm_contracts',
   'support_tickets',
+  'servers',
+  'services',
+  'documents',
+  'charges',
+  'invoices',
+  'events',
+  'activities',
   'phonebook',
   'call_history',
   'whatsapp_contacts',
@@ -126,17 +133,19 @@ export function createTenantDatabases(
       const currentTenantId = getTenantId();
 
       let secureData = { ...data };
+      delete secureData.$id;
+      delete secureData.$createdAt;
+      delete secureData.$updatedAt;
+      delete secureData.$permissions;
+      delete secureData.$databaseId;
+      delete secureData.$collectionId;
       let securePermissions = permissions;
 
       if (TENANT_AWARE_COLLECTIONS.has(collectionId)) {
+        delete secureData.tenant_id;
         if (!currentTenantId) {
           console.warn(`[Tenant Security] Criação em "${collectionId}" sem tenant ativo.`);
         } else {
-          // Garante que o payload de dados nunca contenha tenant_id enviado pelo frontend,
-          // cumprindo a regra de sanitização mandatória do Write Policy Engine.
-          // O tenant_id é resolvido e aplicado exclusivamente pelo servidor através do JWT.
-          delete secureData.tenant_id;
-
           // Injeta permissões autoritativas do Team da empresa
           const teamRole = `team:${currentTenantId}`;
           const isSuper = !!getIsSuperAdmin?.();
@@ -197,10 +206,15 @@ export function createTenantDatabases(
       const currentTenantId = getTenantId();
 
       let secureData = { ...data };
+      delete secureData.$id;
+      delete secureData.$createdAt;
+      delete secureData.$updatedAt;
+      delete secureData.$permissions;
+      delete secureData.$databaseId;
+      delete secureData.$collectionId;
 
-      if (TENANT_AWARE_COLLECTIONS.has(collectionId) && currentTenantId) {
-        // Se o payload tentar alterar o tenant_id para outro valor, bloqueia ou força o tenant ativo
-        if (secureData.tenant_id && secureData.tenant_id !== currentTenantId) {
+      if (TENANT_AWARE_COLLECTIONS.has(collectionId)) {
+        if (currentTenantId && secureData.tenant_id && secureData.tenant_id !== currentTenantId) {
           console.warn(`[Tenant Security] Tentativa ilegal de alterar tenant_id do documento "${documentId}".`);
           throw new Error(`[Tenant Security] Não é permitido transferir entidades entre organizações.`);
         }
@@ -239,5 +253,5 @@ export function createTenantDatabases(
       // Roteia a exclusão com autorização estrita pelo Backend API Bridge
       return await backendApiBridge.deleteDocument(databaseId, collectionId, documentId);
     },
-  } as Databases;
+  } as unknown as Databases;
 }

@@ -363,7 +363,19 @@ export default function PipelineItemView({ deal, columns, users, onClose, onUpda
   }
 
   async function deleteAttachment(id: string) {
+    const target = attachments.find((a) => a.id === id);
     setAttachments((prev) => prev.filter((a) => a.id !== id));
+    // F10: Excluir o arquivo binário do Appwrite Storage para evitar arquivos órfãos
+    if (target?.url) {
+      const match = target.url.match(/\/files\/([a-zA-Z0-9._-]+)\//);
+      if (match && match[1]) {
+        try {
+          await storage.deleteFile(STORAGE_BUCKET_ID, match[1]);
+        } catch (e) {
+          console.warn('[deleteAttachment] Aviso ao excluir arquivo do storage:', e);
+        }
+      }
+    }
     await databases.deleteDocument(DATABASE_ID, "pipeline_attachments", id);
   }
 

@@ -4,6 +4,7 @@ import { databases, client } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from "../context/AuthContext";
+import { useTenant } from "../context/TenantContext";
 import PipelineItemView from "../components/pipeline/PipelineItemView";
 import QuickAddCard from "../components/pipeline/QuickAddCard";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
@@ -150,6 +151,7 @@ interface PipelineProps {
 
 export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps) {
   const { user } = useAuth();
+  const { tenant } = useTenant();
   const [columns, setColumns] = useState<Column[]>([]);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -190,15 +192,14 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
   });
 
   useEffect(() => {
-  
-  loadInitialData();
+    loadInitialData();
 
-  const cleanup = setupRealtimeSubscriptions();
+    const cleanup = setupRealtimeSubscriptions();
 
-  return () => {
-    cleanup?.();
-  };
-}, []);
+    return () => {
+      cleanup?.();
+    };
+  }, [tenant?.id]);
 
   useEffect(() => {
     if (initialDealId && deals.length > 0 && !loading) {

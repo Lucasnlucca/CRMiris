@@ -3,6 +3,7 @@ import { databases } from '../lib/appwrite';
 import { Query } from 'appwrite';
 import { Proposal, parseProposalTerms, getProposalNumber, ProposalLineItem } from './Propostas';
 import { useAuth } from '../context/AuthContext';
+import { useTenant } from '../context/TenantContext';
 import { downloadProposalDocx } from '../utils/proposalDocx';
 import { FileText, Printer } from 'lucide-react';
 
@@ -12,6 +13,7 @@ const COLLECTION_ITEMS = 'crm_proposal_items';
 
 export default function ProposalPreview() {
   const { user } = useAuth();
+  const { tenant } = useTenant();
   const isEmployee = Boolean(user);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [items, setItems] = useState<any[]>([]);
@@ -76,7 +78,14 @@ export default function ProposalPreview() {
         amount: Number(r.amount) || 0,
         unit: "",
       }));
-      await downloadProposalDocx(proposal, mappedItems, termsData);
+      await downloadProposalDocx(proposal, mappedItems, termsData, {
+        name: tenant?.name,
+        tradeName: tenant?.trade_name,
+        document: tenant?.document,
+        address: tenant?.address,
+        email: tenant?.email,
+        phone: tenant?.phone,
+      });
     } catch (err) {
       console.error("Erro ao gerar DOCX:", err);
       alert("Não foi possível gerar o arquivo Word.");
@@ -213,14 +222,14 @@ export default function ProposalPreview() {
                         {item.long_description && <div className="text-[11px] text-slate-500 print:text-gray-500 mt-1 whitespace-pre-wrap leading-relaxed">{item.long_description}</div>}
                       </td>
                       <td className="py-4 px-4 text-center">
-                        <span className="inline-block font-mono text-sm font-black text-indigo-400 print:text-indigo-800 bg-indigo-950/40 print:bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-800/40 print:border-indigo-200">
+                        <span className="inline-block tabular-nums text-sm font-black text-indigo-400 print:text-indigo-800 bg-indigo-950/40 print:bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-800/40 print:border-indigo-200">
                           {item.qty}
                         </span>
                       </td>
-                      <td className="py-4 px-4 text-right font-mono text-sm font-bold text-slate-200 print:text-slate-800">
+                      <td className="py-4 px-4 text-right tabular-nums text-sm font-bold text-slate-200 print:text-slate-800">
                         {formatCurrency(item.rate)}
                       </td>
-                      <td className="py-4 px-4 text-right font-mono text-base font-black text-emerald-400 print:text-emerald-700">
+                      <td className="py-4 px-4 text-right tabular-nums text-base font-black text-emerald-400 print:text-emerald-700">
                         {formatCurrency(item.amount)}
                       </td>
                     </tr>
@@ -236,26 +245,26 @@ export default function ProposalPreview() {
           <div className="w-full max-w-xs space-y-3">
             <div className="flex justify-between text-xs text-slate-400 print:text-gray-600">
               <span>Subtotal:</span>
-              <span className="font-mono text-white print:text-black font-medium">{formatCurrency(proposal.subtotal)}</span>
+              <span className="tabular-nums text-white print:text-black font-medium">{formatCurrency(proposal.subtotal)}</span>
             </div>
 
             {proposal.discount_value > 0 && (
               <div className="flex justify-between text-xs text-rose-400 print:text-red-600 font-medium">
                 <span>Desconto Aplicado:</span>
-                <span className="font-mono">-{formatCurrency(proposal.discount_value)}</span>
+                <span className="tabular-nums">-{formatCurrency(proposal.discount_value)}</span>
               </div>
             )}
 
             {proposal.adjustment !== 0 && (
               <div className="flex justify-between text-xs text-slate-400 print:text-gray-600">
                 <span>Ajuste Financeiro:</span>
-                <span className="font-mono text-white print:text-black">{formatCurrency(proposal.adjustment)}</span>
+                <span className="tabular-nums text-white print:text-black">{formatCurrency(proposal.adjustment)}</span>
               </div>
             )}
 
             <div className="pt-3 border-t border-slate-800 print:border-gray-300 flex justify-between items-center">
               <span className="text-sm font-bold text-white print:text-black uppercase tracking-wider">Total do Investimento</span>
-              <span className="text-xl sm:text-2xl font-black font-mono text-emerald-400 print:text-indigo-600">
+              <span className="text-xl sm:text-2xl font-black tabular-nums text-emerald-400 print:text-indigo-600">
                 {formatCurrency(proposal.total)}
               </span>
             </div>
@@ -315,7 +324,7 @@ export default function ProposalPreview() {
       </div>
 
       <div className="w-full max-w-4xl mt-6 text-center text-xs text-slate-600 print:hidden">
-        Documento gerado eletronicamente por Iris Horizon CRM Multi-tenant
+        Documento gerado eletronicamente via Iris Horizon CRM
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ import { Client, Account, Teams } from 'node-appwrite';
 import url from 'url';
 import type { WritePolicyEngine } from './writePolicyEngine';
 import { resolveGovernanceConfig } from './governanceConfig';
+import { readJsonBody } from './requestUtils';
 
 function resolveAuthoritativeTarget(
   envConfig: any,
@@ -59,11 +60,33 @@ export async function authenticateAndAuthorizeSuperAdmin(
   }
 
   const sessionHeader = headers['x-appwrite-session'] || headers['X-Appwrite-Session'];
-  const sessionSecret = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
+  let sessionSecret = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
+
+  if (sessionSecret.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(sessionSecret);
+      sessionSecret = parsed[`a_session_${projectId}`] || parsed[`a_session_${projectId}_legacy`] || Object.values(parsed)[0] as string || '';
+    } catch {}
+  }
+
+  // Extrai sessão dos cookies do navegador se não enviado via header customizado
+  if (!jwt && !sessionSecret && headers['cookie']) {
+    const rawCookie = Array.isArray(headers['cookie']) ? headers['cookie'].join('; ') : String(headers['cookie']);
+    const match = rawCookie.match(new RegExp(`(?:^|;\\s*)a_session_${projectId}(?:_legacy)?=([^;]+)`)) ||
+                  rawCookie.match(/(?:^|;\s*)a_session=([^;]+)/);
+    if (match && match[1]) {
+      sessionSecret = decodeURIComponent(match[1]).trim();
+    }
+  }
 
   if (!jwt && !sessionSecret) {
-    throw { statusCode: 401, message: 'Autenticação necessária: token JWT ausente.' };
+    throw { statusCode: 401, message: 'Autenticação necessária: credencial (JWT ou Sessão) ausente.' };
   }
+
+  const adminClient = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
+  const adminTeams = new Teams(adminClient);
+
+  let user: any = null;
 
   const userClient = new Client().setEndpoint(endpoint).setProject(projectId);
   if (jwt) {
@@ -71,9 +94,7 @@ export async function authenticateAndAuthorizeSuperAdmin(
   } else {
     userClient.setSession(sessionSecret);
   }
-
   const userAccount = new Account(userClient);
-  let user: any;
   try {
     user = await userAccount.get();
   } catch (e: any) {
@@ -81,9 +102,6 @@ export async function authenticateAndAuthorizeSuperAdmin(
   }
 
   const userId = user.$id;
-
-  const adminClient = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
-  const adminTeams = new Teams(adminClient);
 
   const superAdminTeams = targetDatabaseId === 'crm_db'
     ? ['superadmins']
@@ -125,7 +143,7 @@ export async function handleAdminPolicyRoutes(
   req: any,
   res: any,
   policyEngine: WritePolicyEngine,
-  envConfig: { ENDPOINT?: string; PROJECT_ID?: string; API_KEY?: string }
+  envConfig: { ENDPOINT?: string; PROJECT_ID?: string; API_KEY?: string; governanceConfig?: any }
 ) {
   const parsedUrl = url.parse(req.url, true);
   const rawPath = parsedUrl.pathname || '';
@@ -149,27 +167,15 @@ export async function handleAdminPolicyRoutes(
     res.end(JSON.stringify(payload));
   };
 
-  const readBody = (): Promise<any> => {
-    return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
-      req.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf8');
-        try {
-          resolve(raw ? JSON.parse(raw) : {});
-        } catch (e) {
-          reject(new Error('JSON inválido no corpo da requisição.'));
-        }
-      });
-      req.on('error', (err: any) => reject(err));
-    });
-  };
+  // Leitura segura do corpo JSON para métodos POST (S10)
+  const readBody = (): Promise<any> => readJsonBody(req, { maxBytes: 1024 * 1024 });
 
   try {
     const authHeader = req.headers['authorization'] || req.headers['Authorization'];
     const sessionHeader = req.headers['x-appwrite-session'] || req.headers['X-Appwrite-Session'];
     const hasAuth = (typeof authHeader === 'string' && authHeader.startsWith('Bearer ') && authHeader.slice(7).trim()) ||
-                    (typeof sessionHeader === 'string' && sessionHeader.trim());
+                    (typeof sessionHeader === 'string' && sessionHeader.trim()) ||
+                    Boolean(req.headers['cookie']);
     if (!hasAuth) {
       sendJson(401, { success: false, error: 'Autenticação necessária: token JWT ausente.', code: 401 });
       return;
@@ -297,8 +303,8 @@ export async function handleAdminPolicyRoutes(
       });
 
       sendJson(200, {
-        success: true,
         ...result,
+        success: true,
         stateVersion: result.stateVersion,
         updatedAt: result.updatedAt,
         message: body.enabled
@@ -319,6 +325,7 @@ export async function handleAdminPolicyRoutes(
         success: true,
         logs,
         count: logs.length,
+        requestedBy: superAdmin.userId,
       });
       return;
     }

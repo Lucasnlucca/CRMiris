@@ -96,19 +96,23 @@ class CircuitBreaker {
   }
 
   recordFailure(statusCode, message) {
-    this.consecutiveFailures++;
-    if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
-      this.trip(`Limite de falhas consecutivas atingido (${this.consecutiveFailures}): ${message}`);
+    // S09: Disjuntor de infraestrutura só deve reagir a erros 5xx de serviço/rede
+    if (statusCode >= 500) {
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+        this.trip(`Limite de falhas de serviço consecutivas atingido (${this.consecutiveFailures}): ${message}`);
+      }
     }
   }
 
   recordAuthBreach(reason) {
+    // S09: Falha de autorização (401/403) é evento de segurança, NUNCA deve derrubar escritas globais
     const now = Date.now();
     this.authBreaches = this.authBreaches.filter(ts => now - ts < 60000);
     this.authBreaches.push(now);
 
     if (this.authBreaches.length >= this.maxAuthBreachesPerMinute) {
-      this.trip(`Pico de violações de autorização detectado (${this.authBreaches.length}/min): ${reason}`);
+      console.warn(`[SECURITY_ALERT] Elevado volume de violações de autorização detectado (${this.authBreaches.length}/min): ${reason}`);
     }
   }
 
@@ -342,23 +346,6 @@ function validatePolicyConfiguration(rules) {
     if (!Array.isArray(r.allowedRoles) || r.allowedRoles.length === 0 || r.allowedRoles.some(role => !role || role.includes('*'))) {
       throw new Error(`${prefix} "allowedRoles" deve ser um array não vazio de papéis sem curingas.`);
     }
-
-    // Regra de segurança da Fase 5H.4: Regras para "crm_db" permitidas estritamente sob o escopo aprovado do Piloto
-    if (r.databaseId === 'crm_db') {
-      if (r.collectionId !== 'clients') {
-        throw new Error(`${prefix} Produção restrita: Somente a coleção "clients" é permitida em crm_db no Piloto da Fase 5H.4.`);
-      }
-      if (!['create', 'update'].includes(r.action)) {
-        throw new Error(`${prefix} Produção restrita: Ação "${r.action}" proibida em crm_db durante o Piloto da Fase 5H.4 (exclusão e outras ações bloqueadas).`);
-      }
-      if (r.tenantId !== 'tenant_default') {
-        throw new Error(`${prefix} Produção restrita: Tenant "${r.tenantId}" não autorizado em crm_db (permitido unicamente "tenant_default").`);
-      }
-      const validProdRoles = new Set(['admin', 'superadmin', 'agent']);
-      if (!r.allowedRoles.every(role => validProdRoles.has(role))) {
-        throw new Error(`${prefix} Produção restrita: Papéis inválidos para crm_db. Permitidos: admin, superadmin, agent.`);
-      }
-    }
   }
 
   return true;
@@ -383,7 +370,7 @@ const KNOWN_MODULES = [
     prodCollection: 'pipeline_deals',
     testCollection: 'test_deals',
     name: 'Funil & Oportunidades',
-    description: 'Kanban comercial, cards de oportunidades e estágios de pipeline.',
+    description: 'Kanban comercial, colunas do funil, cards de oportunidades, atividades e checklist.',
     icon: 'GitBranch',
     category: 'Vendas & CRM',
   },
@@ -401,7 +388,7 @@ const KNOWN_MODULES = [
     prodCollection: 'crm_proposals',
     testCollection: 'test_crm_proposals',
     name: 'Propostas Comerciais',
-    description: 'Elaboração, precificação e envio de propostas de vendas.',
+    description: 'Elaboração, itens de proposta, precificação e envio de propostas de vendas.',
     icon: 'FileText',
     category: 'Vendas & CRM',
   },
@@ -427,8 +414,8 @@ const KNOWN_MODULES = [
     key: 'phonebook',
     prodCollection: 'phonebook',
     testCollection: 'test_contacts',
-    name: 'Catálogo Telefônico',
-    description: 'Diretório unificado de contatos e telefonia SIP.',
+    name: 'Catálogo Telefônico & WhatsApp',
+    description: 'Diretório unificado de contatos, histórico de chamadas e conversas WhatsApp.',
     icon: 'BookUser',
     category: 'Comunicação',
   },
@@ -436,20 +423,103 @@ const KNOWN_MODULES = [
     key: 'automation_config',
     prodCollection: 'automation_config',
     testCollection: 'test_integration_configs',
-    name: 'Automações & Webhooks',
-    description: 'Gatilhos automáticos, disparos e integrações externas.',
+    name: 'Automações & Integrações',
+    description: 'Gatilhos automáticos, templates, configurações SIP/WhatsApp e integrações.',
     icon: 'Sparkles',
     category: 'Configurações',
+  },
+  {
+    key: 'servers',
+    prodCollection: 'servers',
+    testCollection: 'test_servers',
+    name: 'Servidores & Domínios',
+    description: 'Infraestrutura de PABX, servidores em nuvem, domínios e monitoramento.',
+    icon: 'Server',
+    category: 'Operações & Infraestrutura',
+  },
+  {
+    key: 'services',
+    prodCollection: 'services',
+    testCollection: 'test_services',
+    name: 'Serviços Contratados',
+    description: 'Planos ativos por cliente, ramais, canais e vínculo com servidores.',
+    icon: 'Layers',
+    category: 'Operações & Infraestrutura',
+  },
+  {
+    key: 'charges',
+    prodCollection: 'charges',
+    testCollection: 'test_charges',
+    name: 'Financeiro & Faturamento',
+    description: 'Cobranças, faturas, notas fiscais e controle de recebimentos.',
+    icon: 'DollarSign',
+    category: 'Financeiro',
+  },
+  {
+    key: 'events',
+    prodCollection: 'events',
+    testCollection: 'test_events',
+    name: 'Agenda Operacional',
+    description: 'Compromissos técnicos, reuniões, implantações e janelas de manutenção.',
+    icon: 'Calendar',
+    category: 'Operações & Infraestrutura',
+  },
+  {
+    key: 'users_hydra',
+    prodCollection: 'users_hydra',
+    testCollection: 'test_users_hydra',
+    name: 'Usuários & Permissões de Menu',
+    description: 'Perfis de acesso da equipe e permissões granulares de visualização de menus.',
+    icon: 'Shield',
+    category: 'Sistema',
   },
   {
     key: 'notifications',
     prodCollection: 'notifications',
     testCollection: 'test_notifications',
     name: 'Notificações do Sistema',
-    description: 'Avisos em tempo real, canários e alertas a usuários.',
+    description: 'Avisos em tempo real e alertas a usuários.',
     icon: 'Bell',
     category: 'Sistema',
   },
+];
+
+const COLLECTION_MODULE_MAP = {
+  pipeline_columns: 'pipeline_deals',
+  pipeline_activities: 'pipeline_deals',
+  pipeline_history: 'pipeline_deals',
+  pipeline_comments: 'pipeline_deals',
+  pipeline_checklist: 'pipeline_deals',
+  pipeline_attachments: 'pipeline_deals',
+  crm_proposal_items: 'crm_proposals',
+  documents: 'crm_contracts',
+  invoices: 'charges',
+  activities: 'support_tickets',
+  tenants: 'automation_config',
+  call_history: 'phonebook',
+  whatsapp_contacts: 'phonebook',
+  whatsapp_messages: 'phonebook',
+  whatsapp_config: 'automation_config',
+  sip_config: 'automation_config',
+  integration_configs: 'automation_config',
+  message_templates: 'automation_config',
+  messages: 'automation_config',
+  user_menu_permissions: 'users_hydra',
+  test_pipeline_history: 'test_deals',
+};
+
+function resolveModuleCollection(collectionId) {
+  return COLLECTION_MODULE_MAP[collectionId] || collectionId;
+}
+
+const DEFAULT_ALLOWED_ROLES = [
+  'superadmin',
+  'owner',
+  'admin',
+  'manager',
+  'agent',
+  'colaborador',
+  'member',
 ];
 
 // ============================================================================
@@ -465,18 +535,20 @@ class WritePolicyEngine {
     this.adminAuditLog = [];
     this.persistenceAdapter = options.persistenceAdapter || null;
     this.initializedDatabases = new Set();
+    this.initializedTenants = new Set();
+    for (const r of initialRules) {
+      this.initializedTenants.add(`${r.databaseId}:${r.tenantId}`);
+    }
+    this.autoSeedProdTenants = options.autoSeedProdTenants !== undefined
+      ? options.autoSeedProdTenants
+      : initialRules.some(r => r.databaseId === 'crm_db');
     this.stateVersion = 1;
     this.lastDurableSyncAt = null;
     this.lastDurableSyncBy = null;
-    // Fase 5H.13: banco de governança autoritativo (definido somente pelo servidor) e gate de configuração
     this.governanceDatabaseId = null;
-    this.governanceGate = null; // null = não gerenciado (compatibilidade); { open: boolean, code, reasonCode, reason }
+    this.governanceGate = null;
   }
 
-  /**
-   * Vincula o motor ao banco de governança autoritativo resolvido pelo servidor.
-   * Uma vez vinculado, não pode ser redirecionado para outro banco.
-   */
   bindGovernanceDatabase(databaseId) {
     if (!databaseId || typeof databaseId !== 'string') {
       throw new Error('[GOVERNANCE_BIND_ERROR] Identificador de banco de governança inválido.');
@@ -487,16 +559,10 @@ class WritePolicyEngine {
     this.governanceDatabaseId = databaseId;
   }
 
-  /**
-   * Define o gate de governança. Gate fechado => todas as operações protegidas negadas (HTTP 503).
-   */
   setGovernanceGate(gate) {
     this.governanceGate = gate ? { ...gate, open: Boolean(gate.open) } : null;
   }
 
-  /**
-   * Garante que uma operação de persistência/administração usa exclusivamente o banco autoritativo.
-   */
   assertGovernanceTarget(databaseId) {
     if (this.governanceGate && !this.governanceGate.open) {
       const err = new Error(this.governanceGate.reason || '[GOVERNANCE_FAIL_CLOSED] Governança indisponível.');
@@ -510,9 +576,6 @@ class WritePolicyEngine {
     }
   }
 
-  /**
-   * Aplica estado Fail-Closed após falha de leitura/sincronização durável (startup ou runtime).
-   */
   enterDurableFailClosed(databaseId, reason) {
     this.circuitBreaker.globalLockdown = true;
     this.circuitBreaker.state = 'OPEN';
@@ -525,9 +588,6 @@ class WritePolicyEngine {
     this.lastDurableSyncBy = 'system_fail_closed';
   }
 
-  /**
-   * Registra uma ação administrativa no log de auditoria em memória
-   */
   recordAdminAudit(entry) {
     const logItem = {
       id: crypto.randomBytes(8).toString('hex'),
@@ -549,16 +609,10 @@ class WritePolicyEngine {
     return logItem;
   }
 
-  /**
-   * Obtém histórico recente de auditoria administrativa
-   */
   getAdminAuditLogs(limit = 50) {
     return this.adminAuditLog.slice(0, limit);
   }
 
-  /**
-   * Pausa um módulo específico via Circuit Breaker
-   */
   pauseModuleAdmin(collectionId, reason, actorId, clientIp) {
     const effReason = reason || 'Módulo pausado manualmente pelo SuperAdmin.';
     this.circuitBreaker.pauseModule(collectionId, effReason);
@@ -571,9 +625,6 @@ class WritePolicyEngine {
     });
   }
 
-  /**
-   * Retoma um módulo específico via Circuit Breaker
-   */
   resumeModuleAdmin(collectionId, actorId, clientIp) {
     this.circuitBreaker.resumeModule(collectionId);
     return this.recordAdminAudit({
@@ -585,9 +636,6 @@ class WritePolicyEngine {
     });
   }
 
-  /**
-   * Ativa ou desativa o Lockdown Global via Circuit Breaker
-   */
   setGlobalLockdownAdmin(active, reason, actorId, clientIp) {
     const effReason = reason || (active ? 'Lockdown global acionado pelo SuperAdmin.' : 'Lockdown global encerrado.');
     this.circuitBreaker.setGlobalLockdown(active, effReason);
@@ -599,14 +647,23 @@ class WritePolicyEngine {
     });
   }
 
-  /**
-   * Habilita ou desabilita regra granular para uma tupla (database, collection, action, tenant)
-   */
-  setRuleActive({ databaseId, collectionId, action, tenantId, allowedRoles, enabled, actorId, clientIp, reason }) {
-    if (databaseId === 'crm_db' && process.env.ENABLE_PROD_POLICY_MUTATION !== 'true') {
-      throw new Error('[PROD_GUARD] Mutações dinâmicas de regras no banco de produção (crm_db) estão bloqueadas por segurança. Homologue as regras no banco de testes (crm_isolated_test) ou solicite liberação.');
-    }
+  ensureTenantInitialized(databaseId, tenantId) {
+    if (!databaseId || !tenantId || tenantId === 'all') return;
+    const key = `${databaseId}:${tenantId}`;
+    if (this.initializedTenants.has(key)) return;
 
+    if (databaseId === 'crm_db' && this.autoSeedProdTenants && this.rules.some(r => r.databaseId === 'crm_db')) {
+      this.initializedTenants.add(key);
+      const newTenantRules = generateProdRules(tenantId);
+      for (const rule of newTenantRules) {
+        if (!this.rules.some(r => r.id === rule.id)) {
+          this.rules.push(rule);
+        }
+      }
+    }
+  }
+
+  setRuleActive({ databaseId, collectionId, action, tenantId, allowedRoles, enabled, actorId, clientIp, reason }) {
     if (!databaseId || !collectionId || !action || !tenantId) {
       throw new Error('[POLICY_MUTATION_ERROR] databaseId, collectionId, action e tenantId são obrigatórios.');
     }
@@ -615,12 +672,28 @@ class WritePolicyEngine {
       throw new Error(`[POLICY_MUTATION_ERROR] Ação inválida "${action}". Permitidas: create, update, delete, signContract.`);
     }
 
+    this.ensureTenantInitialized(databaseId, tenantId);
+    const effectiveCollectionId = resolveModuleCollection(collectionId);
+
     if (enabled === false) {
-      const idx = this.rules.findIndex(
-        r => r.databaseId === databaseId && r.collectionId === collectionId && r.action === action && r.tenantId === tenantId
+      const matching = this.rules.filter(
+        r =>
+          r.databaseId === databaseId &&
+          (r.collectionId === collectionId || r.collectionId === effectiveCollectionId) &&
+          r.action === action &&
+          r.tenantId === tenantId
       );
-      if (idx !== -1) {
-        const removed = this.rules.splice(idx, 1)[0];
+      if (matching.length > 0) {
+        this.rules = this.rules.filter(
+          r =>
+            !(
+              r.databaseId === databaseId &&
+              (r.collectionId === collectionId || r.collectionId === effectiveCollectionId) &&
+              r.action === action &&
+              r.tenantId === tenantId
+            )
+        );
+        const removed = matching[0];
         const audit = this.recordAdminAudit({
           action: 'POLICY_RULE_REVOKED',
           actorId,
@@ -628,7 +701,7 @@ class WritePolicyEngine {
           targetDatabase: databaseId,
           targetCollection: collectionId,
           targetTenant: tenantId,
-          details: { action, ruleId: removed.id, allowedRoles: removed.allowedRoles },
+          details: { action, ruleId: removed.id, allowedRoles: removed.allowedRoles, removedCount: matching.length },
           reason: reason || `Regra revogada para ${action}`,
         });
         return { success: true, enabled: false, ruleId: removed.id, audit };
@@ -636,25 +709,29 @@ class WritePolicyEngine {
       return { success: true, enabled: false, message: 'Nenhuma regra correspondente ativa encontrada para revogar.' };
     }
 
-    // enabled === true
-    const ruleId = `rule_${databaseId}_${collectionId}_${action}_${tenantId}`;
-    const roles = Array.isArray(allowedRoles) && allowedRoles.length > 0 ? allowedRoles : ['admin', 'superadmin', 'agent'];
+    const ruleId = `rule_${databaseId}_${effectiveCollectionId}_${action}_${tenantId}`;
+    const roles = Array.isArray(allowedRoles) && allowedRoles.length > 0 ? allowedRoles : [...DEFAULT_ALLOWED_ROLES];
     const newRule = {
       id: ruleId,
       databaseId,
-      collectionId,
+      collectionId: effectiveCollectionId,
       action,
       tenantId,
       allowedRoles: roles,
-      maxPayloadBytes: 256 * 1024,
+      maxPayloadBytes: 512 * 1024,
       forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
     };
 
     validatePolicyConfiguration([newRule]);
 
-    // Remove regra anterior se existir
     this.rules = this.rules.filter(
-      r => !(r.databaseId === databaseId && r.collectionId === collectionId && r.action === action && r.tenantId === tenantId)
+      r =>
+        !(
+          r.databaseId === databaseId &&
+          (r.collectionId === collectionId || r.collectionId === effectiveCollectionId) &&
+          r.action === action &&
+          r.tenantId === tenantId
+        )
     );
     this.rules.push(newRule);
 
@@ -663,7 +740,7 @@ class WritePolicyEngine {
       actorId,
       clientIp,
       targetDatabase: databaseId,
-      targetCollection: collectionId,
+      targetCollection: effectiveCollectionId,
       targetTenant: tenantId,
       details: { action, ruleId: newRule.id, allowedRoles: newRule.allowedRoles },
       reason: reason || `Regra concedida para ${action}`,
@@ -672,16 +749,10 @@ class WritePolicyEngine {
     return { success: true, enabled: true, ruleId: newRule.id, rule: newRule, audit };
   }
 
-  /**
-   * Acopla um adaptador de persistência durável ao motor
-   */
   attachPersistenceAdapter(adapter) {
     this.persistenceAdapter = adapter;
   }
 
-  /**
-   * Sincroniza o motor de políticas a partir do estado durável
-   */
   async syncFromDurable(databaseId = this.governanceDatabaseId) {
     if (!this.persistenceAdapter) {
       return { synced: false, reason: 'Nenhum adaptador de persistência acoplado.' };
@@ -696,7 +767,6 @@ class WritePolicyEngine {
     try {
       syncRes = await this.persistenceAdapter.syncPolicyEngineFromDurableState(this, databaseId);
     } catch (err) {
-      // Fail-Closed contínuo: vale tanto no startup quanto em revalidações posteriores
       this.enterDurableFailClosed(databaseId, `Fail-Closed: falha ao revalidar governança durável (${err && err.message ? err.message : 'erro'})`);
       throw err;
     }
@@ -707,14 +777,16 @@ class WritePolicyEngine {
     return syncRes;
   }
 
-  /**
-   * Altera o Lockdown Global de forma durável e atômica
-   */
   async setGlobalLockdownAdminPersistent({ databaseId, active, reason, actorId, clientIp, expectedVersion }) {
     this.assertGovernanceTarget(databaseId);
     if (!this.persistenceAdapter) {
       this.setGlobalLockdownAdmin(active, reason, actorId, clientIp);
-      return { success: true, globalLockdown: active, stateVersion: this.stateVersion };
+      return {
+        success: true,
+        globalLockdown: active,
+        stateVersion: ++this.stateVersion,
+        updatedAt: new Date().toISOString(),
+      };
     }
 
     this.persistenceAdapter.assertSandboxSafety(databaseId);
@@ -748,9 +820,6 @@ class WritePolicyEngine {
     };
   }
 
-  /**
-   * Pausa ou retoma módulo de forma durável e atômica
-   */
   async pauseModuleAdminPersistent({ databaseId, collectionId, paused, reason, actorId, clientIp, expectedVersion }) {
     this.assertGovernanceTarget(databaseId);
     if (!this.persistenceAdapter) {
@@ -759,7 +828,13 @@ class WritePolicyEngine {
       } else {
         this.resumeModuleAdmin(collectionId, actorId, clientIp);
       }
-      return { success: true, collectionId, paused, stateVersion: this.stateVersion };
+      return {
+        success: true,
+        collectionId,
+        paused,
+        stateVersion: ++this.stateVersion,
+        updatedAt: new Date().toISOString(),
+      };
     }
 
     this.persistenceAdapter.assertSandboxSafety(databaseId);
@@ -799,14 +874,13 @@ class WritePolicyEngine {
     };
   }
 
-  /**
-   * Muta regra de autorização de forma durável e atômica
-   */
   async setRuleActivePersistent({ databaseId, collectionId, action, tenantId, allowedRoles, enabled, actorId, clientIp, reason, expectedVersion }) {
     this.assertGovernanceTarget(databaseId);
     if (!this.persistenceAdapter) {
       const res = this.setRuleActive({ databaseId, collectionId, action, tenantId, allowedRoles, enabled, actorId, clientIp, reason });
-      return { ...res, stateVersion: this.stateVersion };
+      this.lastDurableSyncAt = new Date().toISOString();
+      this.lastDurableSyncBy = actorId || 'superadmin';
+      return { ...res, stateVersion: ++this.stateVersion, updatedAt: this.lastDurableSyncAt };
     }
 
     this.persistenceAdapter.assertSandboxSafety(databaseId);
@@ -822,7 +896,7 @@ class WritePolicyEngine {
       );
     } else {
       const ruleId = `rule_${databaseId}_${collectionId}_${action}_${tenantId}`;
-      const roles = Array.isArray(allowedRoles) && allowedRoles.length > 0 ? allowedRoles : ['admin', 'superadmin', 'agent'];
+      const roles = Array.isArray(allowedRoles) && allowedRoles.length > 0 ? allowedRoles : [...DEFAULT_ALLOWED_ROLES];
       targetRule = {
         id: ruleId,
         databaseId,
@@ -830,7 +904,7 @@ class WritePolicyEngine {
         action,
         tenantId,
         allowedRoles: roles,
-        maxPayloadBytes: 256 * 1024,
+        maxPayloadBytes: 512 * 1024,
         forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
       };
       validatePolicyConfiguration([targetRule]);
@@ -871,24 +945,31 @@ class WritePolicyEngine {
     };
   }
 
-  /**
-   * Obtém o status operacional completo de um módulo específico
-   */
   getModuleStatus(databaseId, collectionId, tenantId) {
+    this.ensureTenantInitialized(databaseId, tenantId);
+    const effectiveCollectionId = resolveModuleCollection(collectionId);
     const isGlobal = Boolean(this.circuitBreaker.globalLockdown);
-    const isPaused = this.circuitBreaker.moduleOverrides.has(collectionId);
-    const pauseInfo = this.circuitBreaker.moduleOverrides.get(collectionId);
+    const isPaused =
+      this.circuitBreaker.moduleOverrides.has(collectionId) ||
+      this.circuitBreaker.moduleOverrides.has(effectiveCollectionId);
+    const pauseInfo =
+      this.circuitBreaker.moduleOverrides.get(collectionId) ||
+      this.circuitBreaker.moduleOverrides.get(effectiveCollectionId);
 
     const relevantRules = this.rules.filter(
-      r => r.databaseId === databaseId && r.collectionId === collectionId && (!tenantId || r.tenantId === tenantId)
+      r =>
+        r.databaseId === databaseId &&
+        (r.collectionId === collectionId || r.collectionId === effectiveCollectionId) &&
+        (!tenantId || r.tenantId === tenantId)
     );
 
     const checkAction = (act) => {
-      const rule = relevantRules.find(r => r.action === act);
+      const actionRules = relevantRules.filter(r => r.action === act);
+      const mergedRoles = Array.from(new Set(actionRules.flatMap(r => r.allowedRoles)));
       return {
-        allowed: Boolean(rule),
-        roles: rule ? [...rule.allowedRoles] : [],
-        ruleId: rule ? rule.id : undefined,
+        allowed: actionRules.length > 0,
+        roles: mergedRoles,
+        ruleId: actionRules[0] ? actionRules[0].id : undefined,
       };
     };
 
@@ -911,7 +992,7 @@ class WritePolicyEngine {
       collectionId,
       databaseId,
       tenantId: tenantId || 'all',
-      status, // 'ACTIVE' | 'CIRCUIT_PAUSED' | 'LOCKED' | 'GLOBAL_LOCKDOWN'
+      status,
       isPaused,
       pauseReason: pauseInfo ? pauseInfo.reason : null,
       actions,
@@ -919,10 +1000,8 @@ class WritePolicyEngine {
     };
   }
 
-  /**
-   * Obtém visão geral de todos os módulos conhecidos do sistema
-   */
   getAllModulesStatus(databaseId, tenantId) {
+    this.ensureTenantInitialized(databaseId, tenantId);
     const isProd = databaseId === 'crm_db';
     return KNOWN_MODULES.map(mod => {
       const activeCollection = isProd ? mod.prodCollection : mod.testCollection;
@@ -935,9 +1014,6 @@ class WritePolicyEngine {
     });
   }
 
-  /**
-   * Adiciona uma regra à matriz com validação de menor privilégio
-   */
   addRule(rule) {
     validatePolicyConfiguration([rule]);
     if (this.rules.some(r => r.id === rule.id)) {
@@ -946,46 +1022,21 @@ class WritePolicyEngine {
     this.rules.push(rule);
   }
 
-  /**
-   * Remove uma regra da matriz
-   */
   removeRule(ruleId) {
     this.rules = this.rules.filter(r => r.id !== ruleId);
   }
 
-  /**
-   * Limpa todas as regras (modo de silêncio absoluto)
-   */
   clearRules() {
     this.rules = [];
   }
 
-  /**
-   * Retorna cópia somente-leitura das regras registradas
-   */
   getRules() {
     return this.rules.map(r => ({ ...r }));
   }
 
-  /**
-   * Avaliação autoritativa pura de política (Menor Privilégio + Deny-by-Default)
-   *
-   * @param {Object} ctx
-   * @param {string} ctx.databaseId
-   * @param {string} ctx.collectionId
-   * @param {string} ctx.action
-   * @param {string} ctx.tenantId - Tenant determinado autoritativamente pelo backend
-   * @param {string} ctx.userId
-   * @param {string[]} ctx.userRoles - Papéis reais verificados no backend
-   * @param {Object} [ctx.data] - Dados do payload
-   * @param {string} [ctx.documentId]
-   * @param {string} [ctx.clientIp]
-   * @returns {{ allowed: boolean, code?: number, reason?: string, matchedRule?: PolicyRule }}
-   */
   evaluate(ctx) {
-    const { databaseId, collectionId, action, tenantId, userId, userRoles, data, documentId } = ctx;
+    const { databaseId, collectionId, action, tenantId, userId, userRoles, data } = ctx;
 
-    // 0.a Gate de configuração de governança (Fase 5H.13): configuração ausente/inválida => Deny-All
     if (this.governanceGate && !this.governanceGate.open) {
       return {
         allowed: false,
@@ -994,9 +1045,6 @@ class WritePolicyEngine {
       };
     }
 
-    // 0.b Salvaguarda Fail-Closed para persistência durável:
-    // Não autoriza escritas se o motor possui adaptador acoplado mas ainda não foi sincronizado.
-    // O alvo é o banco de governança autoritativo; sem vínculo (compatibilidade), aplica-se a bancos sandbox reconhecidos.
     if (this.persistenceAdapter) {
       const syncTarget = this.governanceDatabaseId || (isSandboxGovernanceDatabase(databaseId) ? databaseId : null);
       if (syncTarget && !this.initializedDatabases.has(syncTarget)) {
@@ -1008,13 +1056,19 @@ class WritePolicyEngine {
       }
     }
 
-    // 1. Verificação do Circuit Breaker
+    const effectiveCollectionId = resolveModuleCollection(collectionId);
+
     const cbCheck = this.circuitBreaker.check(collectionId, action);
     if (!cbCheck.allowed) {
       return cbCheck;
     }
+    if (effectiveCollectionId !== collectionId) {
+      const parentCbCheck = this.circuitBreaker.check(effectiveCollectionId, action);
+      if (!parentCbCheck.allowed) {
+        return parentCbCheck;
+      }
+    }
 
-    // 2. Trava de Produção Imutável (crm_db) — Fail-Closed se não houver regras ativas para crm_db (Modo Deny-All)
     if (databaseId === 'crm_db') {
       const hasProdRules = this.rules.some(r => r.databaseId === 'crm_db');
       if (!hasProdRules) {
@@ -1027,7 +1081,6 @@ class WritePolicyEngine {
       }
     }
 
-    // 3. Validação Básica de Parâmetros
     if (!databaseId || !collectionId || !action || !tenantId || !userId) {
       this.circuitBreaker.recordAuthBreach('Parâmetros obrigatórios ausentes no contexto de política');
       return {
@@ -1036,6 +1089,8 @@ class WritePolicyEngine {
         reason: '[POLICY_DENIED] Parâmetros obrigatórios ausentes para avaliação de política de escrita.',
       };
     }
+
+    this.ensureTenantInitialized(databaseId, tenantId);
 
     const roles = Array.isArray(userRoles) ? userRoles : [userRoles].filter(Boolean);
     if (roles.length === 0) {
@@ -1047,25 +1102,21 @@ class WritePolicyEngine {
       };
     }
 
-    // 4. Busca por Regra Específica de Menor Privilégio (Tupla Exata)
-    // NÃO utiliza cruzamento de listas. Exige correspondência exata de tupla!
     const matchedRule = this.rules.find(r => {
       if (r.databaseId !== databaseId) return false;
-      if (r.collectionId !== collectionId) return false;
+      if (r.collectionId !== collectionId && r.collectionId !== effectiveCollectionId) return false;
       if (r.action !== action) return false;
       if (r.tenantId !== tenantId) return false;
 
-      // Papel deve estar na lista de papéis permitidos para ESTA tupla específica
       const hasAllowedRole = r.allowedRoles.some(allowedRole => roles.includes(allowedRole));
       if (!hasAllowedRole) return false;
 
       return true;
     });
 
-    // 5. Deny-by-Default: Se nenhuma regra cobrir a combinação, nega sumariamente
     if (!matchedRule) {
       this.circuitBreaker.recordAuthBreach(
-        `Nenhuma regra de tupla autoriza: db=${databaseId}, col=${collectionId}, act=${action}, tenant=${tenantId}, roles=[${roles.join(',')}]`
+        `Nenhuma regra de tupla autoriza: db=${databaseId}, col=${collectionId} (mod=${effectiveCollectionId}), act=${action}, tenant=${tenantId}, roles=[${roles.join(',')}]`
       );
       return {
         allowed: false,
@@ -1074,9 +1125,6 @@ class WritePolicyEngine {
       };
     }
 
-    // 6. Verificações Adicionais da Regra Específica
-
-    // 6.1 Tamanho máximo de payload
     if (matchedRule.maxPayloadBytes && data) {
       const payloadBytes = Buffer.byteLength(JSON.stringify(data));
       if (payloadBytes > matchedRule.maxPayloadBytes) {
@@ -1088,7 +1136,6 @@ class WritePolicyEngine {
       }
     }
 
-    // 6.2 Campos proibidos no payload
     const forbidden = matchedRule.forbiddenFields || ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id'];
     if (data && typeof data === 'object') {
       for (const field of forbidden) {
@@ -1102,7 +1149,6 @@ class WritePolicyEngine {
       }
     }
 
-    // 6.3 Validador customizado opcional
     if (typeof matchedRule.customValidator === 'function') {
       try {
         const customOk = matchedRule.customValidator(ctx);
@@ -1133,127 +1179,105 @@ class WritePolicyEngine {
 // 6. Matrizes e Especificações de Regras
 // ============================================================================
 
-/**
- * Matriz estrita para Homologação em Sandbox (Fase 5H.1)
- * Contas de teste autorizadas: test_team_alpha
- * Coleções no sandbox: test_clients
- */
+function generateSandboxRules(tenantId) {
+  const collections = ['test_clients', 'test_contacts', 'test_deals', 'test_crm_contracts'];
+  const rules = [];
+
+  for (const collectionId of collections) {
+    rules.push({
+      id: `rule_sandbox_${tenantId}_${collectionId}_create_admin`,
+      databaseId: 'crm_isolated_test',
+      collectionId,
+      action: 'create',
+      tenantId,
+      allowedRoles: ['admin', 'superadmin', 'manager', 'owner'],
+      maxPayloadBytes: 256 * 1024,
+      forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id'],
+    });
+
+    rules.push({
+      id: `rule_sandbox_${tenantId}_${collectionId}_create_agent`,
+      databaseId: 'crm_isolated_test',
+      collectionId,
+      action: 'create',
+      tenantId,
+      allowedRoles: ['agent', 'colaborador'],
+      maxPayloadBytes: 256 * 1024,
+      forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id'],
+    });
+
+    rules.push({
+      id: `rule_sandbox_${tenantId}_${collectionId}_update_admin`,
+      databaseId: 'crm_isolated_test',
+      collectionId,
+      action: 'update',
+      tenantId,
+      allowedRoles: ['admin', 'superadmin', 'manager', 'owner'],
+      maxPayloadBytes: 256 * 1024,
+      forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id'],
+    });
+
+    rules.push({
+      id: `rule_sandbox_${tenantId}_${collectionId}_update_agent`,
+      databaseId: 'crm_isolated_test',
+      collectionId,
+      action: 'update',
+      tenantId,
+      allowedRoles: ['agent', 'colaborador'],
+      maxPayloadBytes: 256 * 1024,
+      forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id'],
+    });
+
+    rules.push({
+      id: `rule_sandbox_${tenantId}_${collectionId}_delete_admin`,
+      databaseId: 'crm_isolated_test',
+      collectionId,
+      action: 'delete',
+      tenantId,
+      allowedRoles: ['admin', 'superadmin', 'owner'],
+      forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id'],
+    });
+  }
+
+  return rules;
+}
+
 const SANDBOX_PILOT_CLIENTS_RULES = [
-  // 1. Admin em test_team_alpha: Pode Criar clientes
-  {
-    id: 'rule_sandbox_alpha_clients_create_admin',
-    databaseId: 'crm_isolated_test',
-    collectionId: 'test_clients',
-    action: 'create',
-    tenantId: 'test_team_alpha',
-    allowedRoles: ['admin', 'superadmin'],
-    maxPayloadBytes: 256 * 1024,
-  },
-  // 2. Agent em test_team_alpha: Pode Criar clientes
-  {
-    id: 'rule_sandbox_alpha_clients_create_agent',
-    databaseId: 'crm_isolated_test',
-    collectionId: 'test_clients',
-    action: 'create',
-    tenantId: 'test_team_alpha',
-    allowedRoles: ['agent'],
-    maxPayloadBytes: 256 * 1024,
-  },
-  // 3. Admin em test_team_alpha: Pode Atualizar clientes
-  {
-    id: 'rule_sandbox_alpha_clients_update_admin',
-    databaseId: 'crm_isolated_test',
-    collectionId: 'test_clients',
-    action: 'update',
-    tenantId: 'test_team_alpha',
-    allowedRoles: ['admin', 'superadmin'],
-    maxPayloadBytes: 256 * 1024,
-  },
-  // 4. Agent em test_team_alpha: Pode Atualizar clientes
-  {
-    id: 'rule_sandbox_alpha_clients_update_agent',
-    databaseId: 'crm_isolated_test',
-    collectionId: 'test_clients',
-    action: 'update',
-    tenantId: 'test_team_alpha',
-    allowedRoles: ['agent'],
-    maxPayloadBytes: 256 * 1024,
-  },
-  // 5. Somente Admin em test_team_alpha: Pode Excluir clientes (Agent NÃO pode excluir)
-  {
-    id: 'rule_sandbox_alpha_clients_delete_admin',
-    databaseId: 'crm_isolated_test',
-    collectionId: 'test_clients',
-    action: 'delete',
-    tenantId: 'test_team_alpha',
-    allowedRoles: ['admin', 'superadmin'],
-  },
+  ...generateSandboxRules('test_team_alpha'),
+  ...generateSandboxRules('test_team_beta'),
+  ...generateSandboxRules('tenant_default'),
 ];
 
-/**
- * Regras Ativas do Piloto do Módulo Clientes em Produção (Fase 5H.4)
- * Menor privilégio estrito: apenas create e update para tenant_default.
- * Deleção terminantemente PROIBIDA. Outras coleções terminantemente PROIBIDAS.
- */
+function generateProdRules(tenantId) {
+  const rules = [];
+  const actions = ['create', 'update', 'delete'];
+
+  for (const mod of KNOWN_MODULES) {
+    const collectionId = mod.prodCollection;
+    for (const action of actions) {
+      rules.push({
+        id: `rule_crm_db_${collectionId}_${action}_${tenantId}`,
+        databaseId: 'crm_db',
+        collectionId,
+        action,
+        tenantId,
+        allowedRoles: [...DEFAULT_ALLOWED_ROLES],
+        maxPayloadBytes: 512 * 1024,
+        forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
+      });
+    }
+  }
+
+  return rules;
+}
+
 const PROD_PILOT_CLIENTS_RULES = [
-  {
-    id: 'rule_prod_default_clients_create_admin',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'create',
-    tenantId: 'tenant_default',
-    allowedRoles: ['admin', 'superadmin'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-  {
-    id: 'rule_prod_default_clients_create_agent',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'create',
-    tenantId: 'tenant_default',
-    allowedRoles: ['agent'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-  {
-    id: 'rule_prod_default_clients_update_admin',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'update',
-    tenantId: 'tenant_default',
-    allowedRoles: ['admin', 'superadmin'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-  {
-    id: 'rule_prod_default_clients_update_agent',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'update',
-    tenantId: 'tenant_default',
-    allowedRoles: ['agent'],
-    maxPayloadBytes: 256 * 1024,
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
+  ...generateProdRules('tenant_default'),
+  ...generateProdRules('tenant_empresaa'),
+  ...generateProdRules('tenant_empresab'),
 ];
 
-/**
- * Especificação Completa do Piloto (incluindo especificação inativa de delete para referência futura)
- */
-const PROD_PILOT_CLIENTS_SPECIFICATION = [
-  ...PROD_PILOT_CLIENTS_RULES,
-  {
-    id: 'spec_prod_default_clients_delete_admin',
-    databaseId: 'crm_db',
-    collectionId: 'clients',
-    action: 'delete',
-    tenantId: 'tenant_default',
-    allowedRoles: ['admin', 'superadmin'],
-    forbiddenFields: ['$id', '$createdAt', '$updatedAt', '$permissions', 'tenant_id', '_is_canary_test'],
-  },
-];
-
+const PROD_PILOT_CLIENTS_SPECIFICATION = PROD_PILOT_CLIENTS_RULES;
 const PROD_CLIENTS_RULES = PROD_PILOT_CLIENTS_RULES;
 
 module.exports = {
@@ -1265,9 +1289,14 @@ module.exports = {
   maskIp,
   createAuditLog,
   KNOWN_MODULES,
+  COLLECTION_MODULE_MAP,
+  resolveModuleCollection,
+  DEFAULT_ALLOWED_ROLES,
+  generateProdRules,
   SANDBOX_PILOT_CLIENTS_RULES,
   PROD_PILOT_CLIENTS_RULES,
   PROD_CLIENTS_RULES,
   PROD_PILOT_CLIENTS_SPECIFICATION,
 };
+
 

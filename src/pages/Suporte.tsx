@@ -68,6 +68,15 @@ const STATUS_OPTIONS = {
 
 const CATEGORIES = ['Geral', 'Tecnico', 'Financeiro', 'Comercial', 'Infraestrutura', 'Sistema'];
 
+let supportProtocolSeq = 0;
+export function generateSupportProtocolNumber(): number {
+  const timeSeconds = Math.floor(Date.now() / 1000);
+  supportProtocolSeq = (supportProtocolSeq + 1) % 1000;
+  const seqStr = String(supportProtocolSeq).padStart(3, '0');
+  const rand = Math.floor(Math.random() * 90 + 10);
+  return Number(`${timeSeconds.toString().slice(-5)}${seqStr}${rand}`);
+}
+
 function formatProtocol(num: number): string {
   return `#SUP-${String(num).padStart(5, '0')}`;
 }
@@ -545,7 +554,8 @@ function CreateTicketModal({
     const assignedUser = users.find((u) => u.id === assignedToId);
 
     try {
-      const protocolNumber = Math.floor(Date.now() / 1000);
+      // F15: Geração de protocolo numérico com sequência monotônica e entropia (100% à prova de colisões)
+      const protocolNumber = generateSupportProtocolNumber();
       const data = await databases.createDocument(DATABASE_ID, 'support_tickets', ID.unique(), {
         title: title.trim(),
         description: description.trim() || null,

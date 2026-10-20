@@ -59,13 +59,23 @@ function formatDate(dateStr?: string): string {
   }
 }
 
+export interface ProposalProviderInfo {
+  name?: string;
+  tradeName?: string;
+  document?: string;
+  address?: string;
+  email?: string;
+  phone?: string;
+}
+
 /**
  * Gera e realiza o download de um arquivo .docx completo e estilizado para a Proposta Comercial.
  */
 export async function downloadProposalDocx(
   proposal: Proposal,
   lineItems: ProposalLineItem[],
-  termsData: ProposalTermsData
+  termsData: ProposalTermsData,
+  providerInfo?: ProposalProviderInfo
 ): Promise<void> {
   const proposalNumber = getProposalNumber(proposal);
 
@@ -163,12 +173,25 @@ export async function downloadProposalDocx(
                 }),
                 new Paragraph({
                   children: [
-                    new TextRun({ text: 'Iris Horizon Tecnologia Ltda', bold: true, size: 20, color: '1E293B' }),
+                    new TextRun({
+                      text: providerInfo?.tradeName || providerInfo?.name || 'Iris Horizon Tecnologia Ltda',
+                      bold: true,
+                      size: 20,
+                      color: '1E293B',
+                    }),
                   ],
                 }),
                 new Paragraph({
                   children: [
-                    new TextRun({ text: 'Soluções Corporativas em Telecom & Nuvem\nCNPJ: 45.123.456/0001-89\nE-mail: comercial@irishorizon.com.br', size: 18, color: '64748B' }),
+                    new TextRun({
+                      text: [
+                        providerInfo?.address || 'Soluções Corporativas em Telecom & Nuvem',
+                        `CNPJ/CPF: ${providerInfo?.document || '45.123.456/0001-89'}`,
+                        `E-mail: ${providerInfo?.email || 'comercial@irishorizon.com.br'}`,
+                      ].join('\n'),
+                      size: 18,
+                      color: '64748B',
+                    }),
                   ],
                 }),
               ],

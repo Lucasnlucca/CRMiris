@@ -56,16 +56,22 @@ interface SuperAdminPolicyPanelProps {
 }
 
 export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicyPanelProps) {
-  const { isSuperAdmin, tenant } = useTenant();
+  const { isSuperAdmin, tenant, tenants } = useTenant();
   const { user } = useAuth();
 
-  const [databaseId, setDatabaseId] = useState<'crm_isolated_test' | 'crm_db'>('crm_isolated_test');
-  const [tenantId, setTenantId] = useState<string>('test_team_alpha');
+  const [databaseId, setDatabaseId] = useState<'crm_isolated_test' | 'crm_db'>('crm_db');
+  const [tenantId, setTenantId] = useState<string>(tenant?.id || 'tenant_default');
   const [loading, setLoading] = useState<boolean>(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [statusData, setStatusData] = useState<PolicyStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successNotice, setSuccessNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (databaseId === 'crm_db' && tenant?.id && tenantId === 'test_team_alpha') {
+      setTenantId(tenant.id);
+    }
+  }, [databaseId, tenant?.id, tenantId]);
 
   // Modal de Lockdown
   const [showLockdownModal, setShowLockdownModal] = useState<boolean>(false);
@@ -193,12 +199,6 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
     const targetTenant = tenantId || (databaseId === 'crm_db' ? 'tenant_default' : 'test_team_alpha');
     const nextEnabled = !currentAllowed;
 
-    // Se estiver em produção e bloqueado
-    if (databaseId === 'crm_db') {
-      setError('Mutações no banco de produção (crm_db) estão travadas por segurança. Homologue as regras no banco Sandbox.');
-      return;
-    }
-
     setActionLoading(`rule-${mod.activeCollection}-${action}`);
     try {
       const res = await toggleGranularRule({
@@ -206,9 +206,9 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
         collectionId: mod.activeCollection,
         action,
         tenantId: targetTenant,
-        allowedRoles: ['admin', 'superadmin', 'agent'],
+        allowedRoles: ['admin', 'superadmin', 'manager', 'agent'],
         enabled: nextEnabled,
-        reason: `Alteração granular de ${action} pelo painel SuperAdmin`,
+        reason: `Alteração granular de ${action} para ${targetTenant} pelo painel SuperAdmin`,
         expectedVersion: statusData?.stateVersion,
       });
       setSuccessNotice(res.message);
@@ -351,40 +351,61 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
           {/* Seletor de Base de Dados */}
           <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-900 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
             <button
-              onClick={() => setDatabaseId('crm_isolated_test')}
+              onClick={() => {
+                setDatabaseId('crm_db');
+                setTenantId(tenant?.id || 'tenant_default');
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                databaseId === 'crm_db'
+                  ? 'bg-indigo-600 text-white shadow'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Produção (crm_db)
+            </button>
+            <button
+              onClick={() => {
+                setDatabaseId('crm_isolated_test');
+                setTenantId('test_team_alpha');
+              }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                 databaseId === 'crm_isolated_test'
-                  ? 'bg-indigo-600 text-white shadow'
+                  ? 'bg-slate-700 text-white shadow'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               <Database className="w-3.5 h-3.5" />
               Sandbox (crm_isolated_test)
             </button>
-            <button
-              onClick={() => setDatabaseId('crm_db')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                databaseId === 'crm_db'
-                  ? 'bg-rose-700 text-white shadow'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Lock className="w-3.5 h-3.5" />
-              Produção Protegida (crm_db)
-            </button>
           </div>
 
           {/* Seletor de Tenant Alvo */}
           <div className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400">
             <Building className="w-3.5 h-3.5" />
-            <span>Organização:</span>
+            <span>Cliente / Organização:</span>
             <select
               value={tenantId}
               onChange={(e) => setTenantId(e.target.value)}
               className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               {databaseId === 'crm_db' ? (
-                <option value="tenant_default">tenant_default (Produção)</option>
+                <>
+                  {tenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.slug}.lvplataform.com.br — {t.id})
+                    </option>
+                  ))}
+                  {!tenants.some((t) => t.id === 'tenant_default') && (
+                    <option value="tenant_default">Iris Horizon (tenant_default)</option>
+                  )}
+                  {!tenants.some((t) => t.id === 'tenant_empresaa') && (
+                    <option value="tenant_empresaa">Empresa A (empresaa.lvplataform.com.br)</option>
+                  )}
+                  {!tenants.some((t) => t.id === 'tenant_empresab') && (
+                    <option value="tenant_empresab">Empresa B (empresab.lvplataform.com.br)</option>
+                  )}
+                </>
               ) : (
                 <>
                   <option value="test_team_alpha">test_team_alpha (Sandbox)</option>
@@ -600,9 +621,12 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
       {activeTab === 'audit' && (
         <div className="bg-white dark:bg-[#0c1017] rounded-2xl border border-slate-200 dark:border-white/[0.08] p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-slate-900 dark:text-white text-base">
-              Registro Imutável de Auditoria de Políticas
-            </h3>
+            <div>
+              <h3 className="font-bold text-slate-900 dark:text-white text-base">
+                Registro de Auditoria de Políticas da Instância
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">Eventos recentes registrados em memória pela instância ativa do servidor</p>
+            </div>
             <span className="text-xs text-slate-500">Últimas {auditLogs.length} mutações</span>
           </div>
 
@@ -684,7 +708,7 @@ export default function SuperAdminPolicyPanel({ onPageChange }: SuperAdminPolicy
                 </>
               ) : (
                 <>
-                  Esta ação suspende imediatamente <strong>100% de todas as operações de escrita</strong> em todas as collections e bancos do sistema via disjuntor de segurança (HTTP 503).
+                  Esta ação suspende imediatamente as <strong>operações de escrita</strong> nas coleções protegidas pelo motor de governança ativo via disjuntor de segurança (HTTP 503).
                 </>
               )}
             </p>

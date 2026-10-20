@@ -127,16 +127,25 @@ export function ItemModal({
   }, [onSave]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
-      <div className="w-full max-w-[560px] rounded-2xl bg-white dark:bg-[#121824] shadow-2xl border border-slate-200 dark:border-white/[0.08] overflow-hidden">
+    <div className="space-y-5 pb-12 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex items-center gap-2 rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#121824] px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-50 transition shadow-2xs"
+        >
+          ← Voltar ao catálogo
+        </button>
+      </div>
+      <div className="w-full rounded-2xl bg-white dark:bg-[#121824] shadow-sm border border-slate-200 dark:border-white/[0.08] overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/[0.08] px-6 py-4">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/[0.08] px-6 py-5">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-800/30 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
               {form.type === "service" ? <Wrench className="w-5 h-5" /> : <Package className="w-5 h-5" />}
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-white">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">
                 {editing ? "Editar Item do Catálogo" : "Novo Item ou Serviço"}
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -144,17 +153,10 @@ export function ItemModal({
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-white/[0.08] hover:text-slate-700 dark:hover:text-slate-200 transition"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
 
         {/* Form Body */}
-        <div className="px-6 py-5 space-y-4 max-h-[75vh] overflow-y-auto">
+        <div className="px-6 py-6 space-y-5">
           {/* Seletor Tipo: Serviço vs Produto */}
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1.5">
@@ -208,7 +210,7 @@ export function ItemModal({
                 Valor Base (R$) <span className="text-rose-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 font-mono">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 tabular-nums">
                   R$
                 </span>
                 <input
@@ -219,7 +221,7 @@ export function ItemModal({
                   onChange={(e) => setForm({ ...form, price: e.target.value })}
                   required
                   placeholder="0.00"
-                  className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-[#0d1117] pl-10 pr-3.5 py-2.5 text-sm font-mono font-medium text-slate-900 dark:text-white outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition"
+                  className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50/50 dark:bg-[#0d1117] pl-10 pr-3.5 py-2.5 text-sm tabular-nums font-medium text-slate-900 dark:text-white outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition"
                 />
               </div>
             </div>
@@ -522,6 +524,20 @@ export default function CrmItems() {
     }
   }
 
+  if (showModal) {
+    return (
+      <ItemModal
+        editing={editing}
+        form={form}
+        setForm={setForm}
+        saving={saving}
+        error={saveError}
+        onClose={closeModal}
+        onSave={save}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6 pb-12">
       {/* 1. Header Executivo com Métricas do Catálogo */}
@@ -578,7 +594,7 @@ export default function CrmItems() {
         </div>
         <div className="bg-white dark:bg-[#121824] rounded-2xl p-4 border border-slate-200/80 dark:border-white/[0.08] shadow-xs">
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Ticket Médio do Catálogo</p>
-          <p className="text-xl font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-1">
+          <p className="text-xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400 mt-1">
             {currency(stats.avgPrice)}
           </p>
         </div>
@@ -741,7 +757,7 @@ export default function CrmItems() {
                 <div>
                   <span className="text-[10px] text-slate-400 uppercase font-medium">Valor Unitário</span>
                   <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                    <span className="text-lg font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
                       {currency(item.price)}
                     </span>
                     <span className="text-[10px] text-slate-400">/ {item.unit || "un"}</span>
@@ -810,7 +826,7 @@ export default function CrmItems() {
                     <td className="py-3 px-4 text-slate-600 dark:text-slate-400 font-medium">
                       {item.group_name || "—"}
                     </td>
-                    <td className="py-3 px-4 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                    <td className="py-3 px-4 text-right tabular-nums font-bold text-emerald-600 dark:text-emerald-400 text-sm">
                       {currency(item.price)}
                     </td>
                     <td className="py-3 px-4 text-center text-slate-500 font-medium">
@@ -840,19 +856,6 @@ export default function CrmItems() {
             </table>
           </div>
         </div>
-      )}
-
-      {/* Modal de Criação / Edição */}
-      {showModal && (
-        <ItemModal
-          editing={editing}
-          form={form}
-          setForm={setForm}
-          saving={saving}
-          error={saveError}
-          onClose={closeModal}
-          onSave={save}
-        />
       )}
     </div>
   );

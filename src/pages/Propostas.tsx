@@ -48,6 +48,7 @@ import { downloadProposalDocx } from "../utils/proposalDocx";
 import { databases, client } from "../lib/appwrite";
 import { Query, ID } from "appwrite";
 import { useAuth } from "../context/AuthContext";
+import { useTenant } from "../context/TenantContext";
 import { ItemModal, ItemForm, INITIAL_FORM, CrmItem } from "./CrmItems";
 
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || "default";
@@ -497,31 +498,45 @@ function ProposalEditorModal({
       }
 
       // Persistir Itens
+      // Persistir Itens com proteção contra perda de dados (F06)
       if (targetProposalId) {
         const { documents: existing } = await databases.listDocuments(DATABASE_ID, "crm_proposal_items", [
           Query.equal("proposal_id", targetProposalId),
           Query.limit(100),
         ]);
-        if (existing.length > 0) {
-          await Promise.all(
-            existing.map((ex) => databases.deleteDocument(DATABASE_ID, "crm_proposal_items", ex.$id))
-          );
-        }
 
-        for (let i = 0; i < lineItems.length; i++) {
-          const li = lineItems[i];
-          await databases.createDocument(DATABASE_ID, "crm_proposal_items", ID.unique(), {
-            proposal_id: targetProposalId,
-            item_id: li.item_id,
-            name: li.name,
-            description: li.description,
-            long_description: li.long_description,
-            qty: Number(li.qty) || 1,
-            rate: Number(li.rate) || 0,
-            tax_rate: Number(li.tax_rate) || 0,
-            amount: (Number(li.qty) || 1) * (Number(li.rate) || 0),
-            position: i,
-          });
+        // F06: Criar os novos itens primeiro. Se algum falhar, desfazemos os novos e os antigos continuam intactos.
+        const createdNewDocs: any[] = [];
+        try {
+          for (let i = 0; i < lineItems.length; i++) {
+            const li = lineItems[i];
+            const created = await databases.createDocument(DATABASE_ID, "crm_proposal_items", ID.unique(), {
+              proposal_id: targetProposalId,
+              item_id: li.item_id,
+              name: li.name,
+              description: li.description,
+              long_description: li.long_description,
+              qty: Number(li.qty) || 1,
+              rate: Number(li.rate) || 0,
+              tax_rate: Number(li.tax_rate) || 0,
+              amount: (Number(li.qty) || 1) * (Number(li.rate) || 0),
+              position: i,
+            });
+            createdNewDocs.push(created);
+          }
+
+          // Apenas após o sucesso de todos os novos itens, deletamos os antigos com segurança
+          if (existing.length > 0) {
+            await Promise.all(
+              existing.map((ex) => databases.deleteDocument(DATABASE_ID, "crm_proposal_items", ex.$id))
+            );
+          }
+        } catch (itemErr: any) {
+          // Rollback preventivo dos novos itens gerados nesta tentativa com falha
+          await Promise.allSettled(
+            createdNewDocs.map((cd) => databases.deleteDocument(DATABASE_ID, "crm_proposal_items", cd.$id))
+          );
+          throw new Error(`Falha ao salvar itens da proposta: ${itemErr.message}. Os itens anteriores foram preservados.`);
         }
       }
 
@@ -769,7 +784,7 @@ function ProposalEditorModal({
                                 <p className="font-semibold text-slate-900 dark:text-white truncate">{item.name}</p>
                                 <span className="text-[10px] text-slate-400">{item.group_name || "Geral"}</span>
                               </div>
-                              <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+                              <span className="tabular-nums font-bold text-emerald-600 dark:text-emerald-400 flex-shrink-0">
                                 {currency(item.price)}
                               </span>
                             </button>
@@ -835,10 +850,10 @@ function ProposalEditorModal({
                             step="0.01"
                             value={li.rate}
                             onChange={(e) => updateLineItem(li._key, "rate", Math.max(Number(e.target.value) || 0, 0))}
-                            className="w-full px-2.5 py-1.5 text-right font-mono font-medium bg-slate-50 dark:bg-[#121824] border border-slate-200 dark:border-white/10 rounded-lg text-xs text-slate-900 dark:text-white outline-none"
+                            className="w-full px-2.5 py-1.5 text-right tabular-nums font-medium bg-slate-50 dark:bg-[#121824] border border-slate-200 dark:border-white/10 rounded-lg text-xs text-slate-900 dark:text-white outline-none"
                           />
                         </td>
-                        <td className="p-2 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                        <td className="p-2 text-right tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
                           {currency(li.amount)}
                         </td>
                         <td className="p-2 text-center">
@@ -861,7 +876,7 @@ function ProposalEditorModal({
                 <div className="w-full sm:w-80 bg-slate-50 dark:bg-[#0d1117] p-4 rounded-2xl border border-slate-200 dark:border-white/[0.08] space-y-2 text-xs">
                   <div className="flex justify-between text-slate-600 dark:text-slate-400">
                     <span>Subtotal:</span>
-                    <span className="font-mono font-semibold text-slate-900 dark:text-white">{currency(subtotal)}</span>
+                    <span className="tabular-nums font-semibold text-slate-900 dark:text-white">{currency(subtotal)}</span>
                   </div>
 
                   {/* Desconto */}
@@ -877,7 +892,7 @@ function ProposalEditorModal({
                           if (discountType === "percent") setDiscountPercent(v);
                           else setDiscountValue(v);
                         }}
-                        className="w-20 px-2 py-1 text-right font-mono bg-white dark:bg-[#121824] border border-slate-200 dark:border-white/10 rounded-md text-xs text-slate-900 dark:text-white outline-none"
+                        className="w-20 px-2 py-1 text-right tabular-nums bg-white dark:bg-[#121824] border border-slate-200 dark:border-white/10 rounded-md text-xs text-slate-900 dark:text-white outline-none"
                       />
                       <button
                         type="button"
@@ -899,7 +914,7 @@ function ProposalEditorModal({
                   {/* Total Final */}
                   <div className="pt-2 border-t border-slate-200 dark:border-white/10 flex justify-between items-baseline">
                     <span className="font-bold text-slate-900 dark:text-white text-sm">TOTAL GERAL:</span>
-                    <span className="font-mono font-bold text-lg text-emerald-600 dark:text-emerald-400">
+                    <span className="tabular-nums font-bold text-lg text-emerald-600 dark:text-emerald-400">
                       {currency(totalCalculated)}
                     </span>
                   </div>
@@ -959,7 +974,7 @@ function ProposalEditorModal({
         <div className="flex items-center justify-between border-t border-slate-100 dark:border-white/[0.08] px-6 py-4 flex-shrink-0 bg-slate-50/50 dark:bg-white/[0.01]">
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-500">Total Proposta:</span>
-            <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+            <span className="tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
               {currency(totalCalculated)}
             </span>
           </div>
@@ -995,13 +1010,16 @@ function ProposalDocumentModal({
   onClose,
   onStatusChange,
   onGenerateContract,
+  onDelete,
 }: {
   proposal: Proposal;
   lineItems: ProposalLineItem[];
   onClose: () => void;
   onStatusChange: (newStatus: string) => void;
   onGenerateContract?: (proposal: Proposal) => void;
+  onDelete?: (proposal: Proposal) => void;
 }) {
+  const { tenant } = useTenant();
   const statusCfg = STATUS_CONFIG[proposal.status] || STATUS_CONFIG.draft;
   const [copySuccess, setCopySuccess] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
@@ -1013,7 +1031,14 @@ function ProposalDocumentModal({
   async function handleDownloadDocx() {
     try {
       setExportingDocx(true);
-      await downloadProposalDocx(proposal, lineItems, termsData);
+      await downloadProposalDocx(proposal, lineItems, termsData, {
+        name: tenant?.name,
+        tradeName: tenant?.trade_name,
+        document: tenant?.document,
+        address: tenant?.address,
+        email: tenant?.email,
+        phone: tenant?.phone,
+      });
     } catch (err) {
       console.error("Erro ao gerar DOCX:", err);
       alert("Não foi possível gerar o arquivo Word.");
@@ -1112,6 +1137,15 @@ function ProposalDocumentModal({
                 <X className="w-3.5 h-3.5" /> Declinar
               </button>
             )}
+            {onDelete && (
+              <button
+                onClick={() => onDelete(proposal)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-800/30 hover:bg-rose-100 rounded-xl transition"
+                title="Excluir proposta"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Excluir
+              </button>
+            )}
           </div>
         </div>
 
@@ -1134,7 +1168,7 @@ function ProposalDocumentModal({
               <span className="text-xs uppercase font-bold tracking-widest text-indigo-600 dark:text-indigo-400">
                 PROPOSTA COMERCIAL
               </span>
-              <h2 className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
+              <h2 className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
                 #{getProposalNumber(proposal)}
               </h2>
               <div className="text-xs text-slate-500 space-y-0.5 pt-1">
@@ -1193,12 +1227,12 @@ function ProposalDocumentModal({
                       <td className="py-3.5 px-4 font-bold text-slate-900 dark:text-white text-sm">{li.name}</td>
                       <td className="py-3.5 px-4 text-xs text-slate-500">{li.description || "—"}</td>
                       <td className="py-3.5 px-3 text-center">
-                        <span className="inline-block font-mono font-black text-sm text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-800/40">
+                        <span className="inline-block tabular-nums font-bold text-sm text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded border border-indigo-200 dark:border-indigo-800/40">
                           {li.qty}
                         </span>
                       </td>
-                      <td className="py-3.5 px-4 text-right font-mono font-semibold text-slate-800 dark:text-slate-200 text-sm">{currency(li.rate)}</td>
-                      <td className="py-3.5 px-4 text-right font-mono font-extrabold text-emerald-600 dark:text-emerald-400 text-base">
+                      <td className="py-3.5 px-4 text-right tabular-nums font-semibold text-slate-800 dark:text-slate-200 text-sm">{currency(li.rate)}</td>
+                      <td className="py-3.5 px-4 text-right tabular-nums font-bold text-emerald-600 dark:text-emerald-400 text-base">
                         {currency(li.amount)}
                       </td>
                     </tr>
@@ -1213,23 +1247,23 @@ function ProposalDocumentModal({
             <div className="w-full sm:w-72 space-y-2 text-xs">
               <div className="flex justify-between text-slate-500">
                 <span>Subtotal dos itens:</span>
-                <span className="font-mono font-semibold text-slate-900 dark:text-white">{currency(proposal.subtotal)}</span>
+                <span className="tabular-nums font-semibold text-slate-900 dark:text-white">{currency(proposal.subtotal)}</span>
               </div>
               {proposal.discount_value > 0 && (
                 <div className="flex justify-between text-rose-500 font-medium">
                   <span>Desconto concedido:</span>
-                  <span>-{currency(proposal.discount_value)}</span>
+                  <span className="tabular-nums">-{currency(proposal.discount_value)}</span>
                 </div>
               )}
               {proposal.adjustment !== 0 && (
                 <div className="flex justify-between text-slate-500">
                   <span>Ajustes:</span>
-                  <span className="font-mono">{currency(proposal.adjustment)}</span>
+                  <span className="tabular-nums">{currency(proposal.adjustment)}</span>
                 </div>
               )}
               <div className="pt-2 border-t border-slate-200 dark:border-white/10 flex justify-between items-baseline">
                 <span className="font-bold text-slate-900 dark:text-white text-sm">TOTAL GERAL:</span>
-                <span className="font-mono font-bold text-xl text-emerald-600 dark:text-emerald-400">
+                <span className="tabular-nums font-bold text-xl text-emerald-600 dark:text-emerald-400">
                   {currency(proposal.total)}
                 </span>
               </div>
@@ -1295,6 +1329,7 @@ function ProposalDocumentModal({
 // ─── Main Component: Propostas ────────────────────────────────────────────────
 
 export default function Propostas({ onPageChange }: { onPageChange?: (page: string) => void } = {}) {
+  const { tenant } = useTenant();
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [crmItems, setCrmItems] = useState<CrmItem[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -1543,7 +1578,14 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
         unit: "",
       }));
       const tData = parseProposalTerms(p.content, p.notes);
-      await downloadProposalDocx(p, mappedItems, tData);
+      await downloadProposalDocx(p, mappedItems, tData, {
+        name: tenant?.name,
+        tradeName: tenant?.trade_name,
+        document: tenant?.document,
+        address: tenant?.address,
+        email: tenant?.email,
+        phone: tenant?.phone,
+      });
     } catch (err) {
       console.error("Erro ao baixar docx:", err);
       alert("Não foi possível gerar o arquivo Word.");
@@ -1602,7 +1644,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
               <Clock className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
+          <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
             {currency(metrics.openValue)}
           </p>
           <p className="text-[11px] text-slate-400 mt-1">
@@ -1620,7 +1662,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
               <CheckCircle2 className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+          <p className="text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
             {currency(metrics.wonValue)}
           </p>
           <p className="text-[11px] text-slate-400 mt-1">
@@ -1638,7 +1680,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
               <TrendingUp className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">
+          <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
             {metrics.winRate}%
           </p>
           <p className="text-[11px] text-slate-400 mt-1">
@@ -1656,7 +1698,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
               <DollarSign className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
+          <p className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
             {currency(metrics.avgTicket)}
           </p>
           <p className="text-[11px] text-slate-400 mt-1">
@@ -1678,7 +1720,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
             }`}
           >
             Todas as Propostas
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10 dark:bg-white/10 font-mono">
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10 dark:bg-white/10 tabular-nums font-semibold">
               {statusCounts.all}
             </span>
           </button>
@@ -1696,7 +1738,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
                 }`}
               >
                 {cfg.label}
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10 dark:bg-white/10 font-mono">
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10 dark:bg-white/10 tabular-nums font-semibold">
                   {statusCounts[k] || 0}
                 </span>
               </button>
@@ -1809,7 +1851,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
                     >
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-[11px] font-bold text-slate-400">
+                          <span className="tabular-nums text-[11px] font-bold text-slate-400">
                             #{getProposalNumber(p)}
                           </span>
                         </div>
@@ -1832,7 +1874,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
                         )}
                       </td>
 
-                      <td className="py-3.5 px-4 text-right font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                      <td className="py-3.5 px-4 text-right tabular-nums font-bold text-emerald-600 dark:text-emerald-400 text-sm">
                         {currency(p.total)}
                       </td>
 
@@ -1915,7 +1957,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
                   </span>
                 </div>
 
-                <div className="px-2 pb-2 text-[11px] font-mono text-emerald-600 dark:text-emerald-400 font-bold">
+                <div className="px-2 pb-2 text-[11px] tabular-nums text-emerald-600 dark:text-emerald-400 font-bold">
                   {currency(colTotal)}
                 </div>
 
@@ -1928,7 +1970,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
                       className="bg-white dark:bg-[#121824] rounded-xl p-3.5 border border-slate-200/80 dark:border-white/[0.08] shadow-xs hover:border-indigo-500/40 hover:shadow-md transition cursor-pointer"
                     >
                       <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="font-mono text-[10px] text-slate-400">
+                        <span className="tabular-nums text-[10px] text-slate-400 font-medium">
                           #{getProposalNumber(p)}
                         </span>
                         <span className="text-[10px] text-slate-400">
@@ -1945,10 +1987,23 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
                       </p>
 
                       <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-white/[0.04]">
-                        <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                        <span className="text-xs tabular-nums font-bold text-emerald-600 dark:text-emerald-400">
                           {currency(p.total)}
                         </span>
-                        <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDelete(p.id);
+                            }}
+                            className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-slate-100 dark:hover:bg-white/[0.08] transition"
+                            title="Excluir proposta"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                          <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -1990,6 +2045,7 @@ export default function Propostas({ onPageChange }: { onPageChange?: (page: stri
           onClose={() => setShowPreviewModal(false)}
           onStatusChange={(newStatus) => handleQuickStatusChange(previewProposal.id, newStatus)}
           onGenerateContract={handleGenerateContract}
+          onDelete={(p) => handleDelete(p.id)}
         />
       )}
     </div>

@@ -147,13 +147,11 @@ export async function calculateSignatureHash(
 }
 
 /**
- * Tenta obter a porta lógica aproximada do cliente ou informações de rede
+ * F02: A porta efêmera TCP do cliente é capturada autoritativamente no servidor
+ * e não deve ser inferida a partir da URL de destino.
  */
 export function getClientConnectionPort(): string {
-  if (typeof window !== 'undefined' && window.location.port) {
-    return window.location.port;
-  }
-  return '443'; // HTTPS padrão
+  return 'Não disponível';
 }
 
 /**

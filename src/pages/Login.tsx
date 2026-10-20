@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
-import { Eye, EyeOff } from "lucide-react";
+import { extractTenantSlugFromLocation, Tenant } from "../context/TenantContext";
+import { Eye, EyeOff, Building2, Globe } from "lucide-react";
 
 export default function Login() {
   const { login, loading: authLoading } = useAuth();
@@ -13,6 +14,27 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [resolvedTenant, setResolvedTenant] = useState<Tenant | null>(null);
+  const [detectedSlug, setDetectedSlug] = useState<string | null>(null);
+
+  useEffect(() => {
+    const slug = extractTenantSlugFromLocation();
+    if (!slug) return;
+    setDetectedSlug(slug);
+    fetch(`/api/admin/tenants/resolve/${encodeURIComponent(slug)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (json?.success && json.tenant) {
+          setResolvedTenant(json.tenant);
+          if (typeof document !== "undefined") {
+            document.documentElement.setAttribute("data-tenant-slug", json.tenant.slug);
+            document.documentElement.setAttribute("data-tenant-id", json.tenant.id);
+            document.title = `${json.tenant.trade_name || json.tenant.name} — Login CRM`;
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,18 +85,55 @@ export default function Login() {
       <div className="flex-1 flex items-center justify-center bg-[#0d1117] p-8 lg:p-16">
         <div className="w-full max-w-[380px]">
           {/* Logo */}
-          <div className="mb-10">
-            <img
-              src="/1.png"
-              alt="Iris Horizon"
-              className="h-14 w-auto object-contain"
-            />
+          <div className="mb-8 flex items-center justify-between gap-3">
+            {resolvedTenant?.logo_url ? (
+              <img
+                src={resolvedTenant.logo_url}
+                alt={resolvedTenant.name}
+                className="h-14 w-auto object-contain"
+              />
+            ) : (
+              <img
+                src="/1.png"
+                alt="Iris Horizon"
+                className="h-14 w-auto object-contain"
+              />
+            )}
           </div>
+
+          {(resolvedTenant || detectedSlug) && (
+            <div className="mb-6 p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs flex-shrink-0"
+                  style={{ backgroundColor: resolvedTenant?.primary_color || "#4f46e5" }}
+                >
+                  <Building2 className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-white truncate">
+                    {resolvedTenant ? resolvedTenant.trade_name || resolvedTenant.name : `Ambiente: ${detectedSlug}`}
+                  </div>
+                  <div className="text-[11px] text-indigo-300 font-mono flex items-center gap-1 truncate">
+                    <Globe className="w-3 h-3" />
+                    {resolvedTenant?.slug || detectedSlug}.lvplataform.com.br
+                  </div>
+                </div>
+              </div>
+              <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                Isolado
+              </span>
+            </div>
+          )}
 
           {/* Heading */}
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-white tracking-tight mb-1">Entre na sua conta</h1>
-            <p className="text-gray-400 text-sm">Insira suas credenciais para acessar o painel</p>
+            <p className="text-gray-400 text-sm">
+              {resolvedTenant
+                ? `Acesso exclusivo ao ambiente ${resolvedTenant.trade_name || resolvedTenant.name}`
+                : "Insira suas credenciais para acessar o painel"}
+            </p>
           </div>
 
           {/* Form */}

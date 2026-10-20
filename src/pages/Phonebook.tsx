@@ -157,6 +157,124 @@ export default function Phonebook() {
     }
   }
 
+  if (showModal) {
+    return (
+      <div className="space-y-5">
+        <div>
+          <button
+            type="button"
+            onClick={closeModal}
+            className="inline-flex items-center gap-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2 text-xs font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-50 transition shadow-2xs"
+          >
+            ← Voltar ao catálogo de contatos
+          </button>
+        </div>
+
+        <div className="w-full rounded-2xl bg-white dark:bg-gray-800 shadow-sm border border-gray-100 dark:border-gray-700">
+          <div className="border-b border-gray-100 dark:border-gray-700 px-6 py-5">
+            <span className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              Catálogo de Contatos
+            </span>
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white mt-0.5">
+              {editing ? 'Editar Contato' : 'Novo Contato'}
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+              Preencha os dados telefônicos e observações do contato corporativo.
+            </p>
+          </div>
+
+          <form onSubmit={handleSave} className="p-6 space-y-4">
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Nome *
+              </label>
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
+                placeholder="Nome do contato"
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Celular
+                </label>
+                <input
+                  type="text"
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })}
+                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
+                  placeholder="(19) 99999-9999"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Telefone Fixo
+                </label>
+                <input
+                  type="text"
+                  value={form.phone_landline}
+                  onChange={(e) => setForm({ ...form, phone_landline: formatPhone(e.target.value) })}
+                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
+                  placeholder="(19) 3333-4444"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  WhatsApp
+                </label>
+                <input
+                  type="text"
+                  value={form.whatsapp}
+                  onChange={(e) => setForm({ ...form, whatsapp: formatPhone(e.target.value) })}
+                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
+                  placeholder="(19) 99999-9999"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Observação
+                </label>
+                <input
+                  type="text"
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
+                  placeholder="Ex: Fornecedor, Parceiro..."
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4 border-t border-gray-100 dark:border-gray-700">
+              <button
+                type="button"
+                onClick={closeModal}
+                className="rounded-xl border border-gray-200 dark:border-gray-600 px-5 py-2.5 font-medium text-gray-700 dark:text-gray-300 text-sm transition hover:bg-gray-50 dark:hover:bg-gray-700"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-xl bg-blue-600 px-5 py-2.5 font-medium text-white text-sm transition hover:bg-blue-700 disabled:opacity-50"
+              >
+                {saving ? 'Salvando...' : editing ? 'Salvar alterações' : 'Adicionar contato'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -269,110 +387,6 @@ export default function Phonebook() {
           </div>
         )}
       </div>
-
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-gray-800 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
-              <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                {editing ? 'Editar Contato' : 'Novo Contato'}
-              </h3>
-              <button
-                onClick={closeModal}
-                className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSave} className="p-6 space-y-4">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Nome *
-                </label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
-                  placeholder="Nome do contato"
-                  autoFocus
-                />
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Celular
-                  </label>
-                  <input
-                    type="text"
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: formatPhone(e.target.value) })}
-                    className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
-                    placeholder="(19) 99999-9999"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                    Telefone Fixo
-                  </label>
-                  <input
-                    type="text"
-                    value={form.phone_landline}
-                    onChange={(e) => setForm({ ...form, phone_landline: formatPhone(e.target.value) })}
-                    className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
-                    placeholder="(19) 3333-4444"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  WhatsApp
-                </label>
-                <input
-                  type="text"
-                  value={form.whatsapp}
-                  onChange={(e) => setForm({ ...form, whatsapp: formatPhone(e.target.value) })}
-                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
-                  placeholder="(19) 99999-9999"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                  Observacao
-                </label>
-                <input
-                  type="text"
-                  value={form.notes}
-                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                  className="w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-4 py-2.5 text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 text-sm"
-                  placeholder="Ex: Fornecedor, Parceiro..."
-                />
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={closeModal}
-                  className="flex-1 rounded-xl border border-gray-200 dark:border-gray-600 px-4 py-2.5 font-medium text-gray-700 dark:text-gray-300 text-sm transition hover:bg-gray-50 dark:hover:bg-gray-700"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white text-sm transition hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {saving ? 'Salvando...' : editing ? 'Salvar' : 'Adicionar'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

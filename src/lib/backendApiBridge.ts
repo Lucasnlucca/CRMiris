@@ -8,7 +8,7 @@
  * 3. As respostas de sucesso ou erro sejam tratadas de forma consistente.
  */
 
-import { account, currentTenantId } from './appwrite';
+import { currentTenantId, getAuthoritativeAuthHeaders, clearCachedJwt } from './appwrite';
 
 export interface BackendBridgeResponse<T = any> {
   success: boolean;
@@ -32,25 +32,16 @@ async function sendAuthorizedWriteRequest<T>(payload: {
   permissions?: string[];
   targetTenantId?: string;
 }): Promise<T> {
-  let jwtToken = '';
-
-  // 1. Obter JWT de curta duração da sessão ativa
-  try {
-    const jwtResponse = await account.createJWT();
-    jwtToken = jwtResponse.jwt;
-  } catch (err: any) {
-    // Se a ação for signContract, o signatário pode ser público/anônimo
-    if (payload.action !== 'signContract') {
-      console.warn('[BackendBridge] Falha ao gerar JWT de sessão:', err.message);
-    }
-  }
-
-  const headers: Record<string, string> = {
+  let headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  if (jwtToken) {
-    headers['Authorization'] = `Bearer ${jwtToken}`;
+  if (payload.action !== 'signContract') {
+    headers = await getAuthoritativeAuthHeaders();
+  } else {
+    try {
+      headers = await getAuthoritativeAuthHeaders();
+    } catch {}
   }
 
   // Anexa o tenant ativo do contexto da interface como sugestão (o servidor valida rigorosamente)
@@ -161,6 +152,7 @@ export const backendApiBridge = {
       signerEmail?: string;
       signerPhone?: string;
       termsAccepted: boolean;
+      publicToken?: string;
     }
   ): Promise<any> {
     return await sendAuthorizedWriteRequest<any>({

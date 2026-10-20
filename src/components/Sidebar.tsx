@@ -15,6 +15,7 @@ import {
   Sparkles,
   FileCheck2,
   ShieldAlert,
+  Building2,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
@@ -49,8 +50,8 @@ export default function Sidebar({
   onToggleCollapse,
 }: SidebarProps) {
   const { user, logout } = useAuth();
-  const { isSuperAdmin } = useTenant();
-  const [allowedMenus, setAllowedMenus] = useState<Set<string> | null>(null);
+  const { tenant, isSuperAdmin } = useTenant();
+  const [deniedUserMenus, setDeniedUserMenus] = useState<Set<string> | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
 
   const toggleSection = (title: string) => {
@@ -63,37 +64,68 @@ export default function Sidebar({
   };
 
   useEffect(() => {
-    if (!user?.id || user.role === 'admin') {
-      setAllowedMenus(null);
+    if (!user?.id || isSuperAdmin) {
+      setDeniedUserMenus(null);
       return;
     }
     const loadPermissions = async () => {
       try {
+        const queries = [Query.equal('user_id', user.id), Query.limit(100)];
+        if (tenant?.id) {
+          queries.push(Query.equal('tenant_id', tenant.id));
+        }
         const { documents: data } = await databases.listDocuments(
           DATABASE_ID,
           'user_menu_permissions',
-          [Query.equal('user_id', user.id)]
+          queries
         );
 
         if (data && data.length > 0) {
           const denied = new Set(data.filter((p) => !p.has_access).map((p) => p.menu_id));
-          setAllowedMenus(denied);
+          setDeniedUserMenus(denied);
         } else {
-          setAllowedMenus(null);
+          setDeniedUserMenus(null);
         }
       } catch (error) {
         console.error('Error loading permissions:', error);
-        setAllowedMenus(null);
+        setDeniedUserMenus(null);
       }
     };
     loadPermissions();
-  }, [user?.id, user?.role]);
+  }, [user?.id, tenant?.id, isSuperAdmin]);
+
+  // Verifica menus permitidos pelo SuperAdmin no nível da empresa (settings_json.allowed_menus)
+  let companyAllowedMenus: Set<string> | null = null;
+  if (tenant?.settings_json) {
+    try {
+      const parsed = JSON.parse(tenant.settings_json);
+      if (Array.isArray(parsed.allowed_menus)) {
+        companyAllowedMenus = new Set(parsed.allowed_menus);
+      }
+    } catch {}
+  }
 
   const isMenuAllowed = (menuId: string): boolean => {
-    if (menuId === 'superadmin-policy') return isSuperAdmin;
-    if (menuId === 'usuarios' && user?.role !== 'admin') return false;
-    if (!allowedMenus || user?.role === 'admin') return true;
-    return !allowedMenus.has(menuId);
+    if (menuId === 'superadmin-policy' || menuId === 'superadmin-tenants') return isSuperAdmin;
+    if (isSuperAdmin) return true;
+
+    // 1. Restrição da empresa definida pelo SuperAdmin
+    if (companyAllowedMenus && !companyAllowedMenus.has(menuId)) {
+      return false;
+    }
+
+    // 2. Menu de gestão de usuários
+    if (menuId === 'usuarios') {
+      if (deniedUserMenus && deniedUserMenus.has('usuarios')) return false;
+      return user?.role === 'admin' || user?.role === 'owner' || user?.role === 'manager';
+    }
+
+    // 3. Restrição individual por colaborador
+    if (deniedUserMenus && deniedUserMenus.has(menuId)) {
+      return false;
+    }
+
+    return true;
   };
 
   const sections: MenuSection[] = [
@@ -118,6 +150,7 @@ export default function Sidebar({
       items: [
         { id: 'dstrack', label: 'Central de Chamados', icon: LifeBuoy, color: 'text-purple-500' },
         { id: 'recursos-catalogo', label: 'Catálogo de Contatos', icon: BookUser, color: 'text-teal-500' },
+        { id: 'automacoes', label: 'Automações & Disparos', icon: Sparkles, color: 'text-amber-500' },
       ],
     },
     {
@@ -127,6 +160,12 @@ export default function Sidebar({
         { id: 'usuarios', label: 'Usuários & Acessos', icon: UserCog, color: 'text-sky-400' },
         ...(isSuperAdmin
           ? [
+              {
+                id: 'superadmin-tenants',
+                label: 'Empresas (Tenants)',
+                icon: Building2,
+                color: 'text-indigo-400',
+              },
               {
                 id: 'superadmin-policy',
                 label: 'Políticas & Disjuntores',
@@ -157,10 +196,13 @@ export default function Sidebar({
           title="Ir para Painel Geral"
         >
           <div className="relative flex-shrink-0">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 via-indigo-600 to-indigo-800 p-0.5 shadow-md shadow-indigo-500/20 flex items-center justify-center transition-transform group-hover:scale-105">
+            <div
+              className="w-10 h-10 rounded-xl p-0.5 shadow-md shadow-indigo-500/20 flex items-center justify-center transition-transform group-hover:scale-105"
+              style={{ backgroundColor: tenant?.primary_color || '#4f46e5' }}
+            >
               <img
-                src="/logoicon.png"
-                alt="Iris Horizon"
+                src={tenant?.logo_url || '/logoicon.png'}
+                alt={tenant?.name || 'Iris Horizon'}
                 className="w-full h-full object-contain rounded-lg p-1"
               />
             </div>
@@ -171,15 +213,15 @@ export default function Sidebar({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="text-sm font-extrabold text-slate-900 dark:text-white tracking-tight truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-200 transition-colors">
-                  Iris Horizon
+                  {tenant?.trade_name || tenant?.name || 'Iris Horizon'}
                 </span>
                 <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-md bg-indigo-50 text-indigo-600 border border-indigo-200 dark:bg-indigo-500/20 dark:text-indigo-400 dark:border-indigo-500/30">
                   CRM
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 font-medium truncate">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Workspace Ativo
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-1 font-mono truncate">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />
+                {tenant?.slug ? `${tenant.slug}.lvplataform.com.br` : 'Workspace Ativo'}
               </p>
             </div>
           )}

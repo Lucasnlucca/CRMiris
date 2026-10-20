@@ -8,8 +8,7 @@ import React, {
   useMemo,
 } from 'react';
 import { ID } from 'appwrite';
-import { account, databases, setTenantUserId } from '../lib/appwrite';
-import { api, rest } from '../lib/api';
+import { account, databases, setTenantUserId, clearCachedJwt } from '../lib/appwrite';
 
 // Configurações do banco do Appwrite (você deverá definir isso no .env depois)
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
@@ -53,6 +52,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const clearStoredToken = useCallback(() => {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
+    clearCachedJwt();
   }, []);
 
   const updateOnlineStatus = useCallback(async (userId: string, isOnline: boolean) => {

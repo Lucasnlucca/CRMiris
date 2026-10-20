@@ -63,18 +63,50 @@ const {
 } = require('./writePolicyEngine.cjs');
 
 const { handleAdminPolicyRoutes } = require('./adminPolicyHandler.cjs');
+const { readJsonBody } = require('./requestUtils.cjs');
+const { handleSignContractServer } = require('./signContractHandler.cjs');
+const { validatePublicAccessToken } = require('./publicTokenService.cjs');
+
+const ALLOWED_BUSINESS_COLLECTIONS = new Set([
+  'crm_contracts',
+  'crm_proposals',
+  'crm_proposal_items',
+  'clients',
+  'support_tickets',
+  'servers',
+  'services',
+  'documents',
+  'charges',
+  'invoices',
+  'events',
+  'pipeline_deals',
+  'pipeline_columns',
+  'pipeline_attachments',
+  'pipeline_history',
+  'activities',
+  'crm_items',
+  'items',
+  'phonebook',
+  'test_deals',
+  'test_pipeline_history',
+  'test_clients',
+  'test_crm_proposals',
+  'test_crm_contracts',
+  'test_crm_items',
+  'test_contacts',
+]);
 
 const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
 
-// Controle estrito de ativação do Módulo Clientes em Produção
-const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE === 'true';
+// Controle de ativação dos Módulos Operacionais em Produção (habilitado por padrão)
+const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE !== 'false';
 
 const initialRules = [
   ...SANDBOX_PILOT_CLIENTS_RULES,
   ...(ENABLE_PROD_CLIENTS_MODULE ? prodClientsRules : []),
 ];
 
-const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true });
+const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true, autoSeedProdTenants: true });
 
 const { GovernancePersistencePrototype } = require('./governancePersistencePrototype.cjs');
 const {
@@ -82,7 +114,15 @@ const {
   initializeGovernance,
 } = require('./governanceConfig.cjs');
 
-const governanceConfig = resolveGovernanceConfig(process.env, { runtime: 'standalone' });
+const targetGovDb = process.env.GOVERNANCE_DATABASE_ID || DEFAULT_DATABASE_ID;
+const isSandboxGov = targetGovDb === 'crm_isolated_test' || targetGovDb === 'crm_sandbox_test';
+const standaloneEnv = {
+  ...process.env,
+  GOVERNANCE_ENVIRONMENT: process.env.GOVERNANCE_ENVIRONMENT || (isSandboxGov ? 'sandbox' : 'production'),
+  GOVERNANCE_DATABASE_ID: targetGovDb,
+};
+
+const governanceConfig = resolveGovernanceConfig(standaloneEnv, { runtime: 'standalone' });
 
 // Inicialização segura de governança: sem fallback automático, sem persistência quando desabilitada
 initializeGovernance(writePolicyEngine, governanceConfig, {
@@ -222,8 +262,8 @@ const server = http.createServer(async (req, res) => {
 
   // 1. CORS Headers Restritos
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Appwrite-Session');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Appwrite-Session, X-Appwrite-User-Id');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
 
@@ -251,6 +291,28 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // 2.6. Rotas de Provisionamento e Gestão de Empresas SuperAdmin: /api/admin/tenants/*
+  if (req.url && req.url.startsWith('/api/admin/tenants')) {
+    const { handleTenantProvisioningRoutes } = require('./tenantProvisioningHandler.cjs');
+    return handleTenantProvisioningRoutes(req, res, {
+      ENDPOINT,
+      PROJECT_ID,
+      API_KEY,
+      governanceConfig,
+    });
+  }
+
+  // 2.7. Rotas de Gestão de Membros e Convites por Empresa: /api/admin/users/*
+  if (req.url && req.url.startsWith('/api/admin/users')) {
+    const { handleUserManagementRoutes } = require('./userManagementHandler.cjs');
+    return handleUserManagementRoutes(req, res, {
+      ENDPOINT,
+      PROJECT_ID,
+      API_KEY,
+      governanceConfig,
+    });
+  }
+
   // 3. Rota de Escrita Autoritativa: /api/crm/write
   if (req.url === '/api/crm/write' && req.method === 'POST') {
     // Validação de Rate Limit
@@ -261,178 +323,215 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Validação imediata por Content-Length se presente
-    const contentLength = parseInt(req.headers['content-length'] || '0', 10);
-    if (contentLength > MAX_PAYLOAD_BYTES) {
-      res.statusCode = 413;
+    let body;
+    try {
+      body = await readJsonBody(req, { maxBytes: MAX_PAYLOAD_BYTES, timeoutMs: 15000 });
+    } catch (err) {
+      res.statusCode = err.statusCode || 400;
       res.setHeader('Content-Type', 'application/json');
-      req.on('data', () => {}); // Descarta os dados recebidos sem alocar memória
-      req.on('end', () => {
-        res.end(JSON.stringify({ success: false, error: 'Payload excede o limite máximo permitido de 5MB.', code: 413 }));
-      });
+      res.end(JSON.stringify({ success: false, error: err.message, code: res.statusCode }));
       return;
     }
 
-    let bytesReceived = 0;
-    let payloadExceeded = false;
-    const chunks = [];
-
-    req.on('data', (chunk) => {
-      bytesReceived += chunk.length;
-      if (bytesReceived > MAX_PAYLOAD_BYTES) {
-        payloadExceeded = true;
-        if (!res.writableEnded) {
-          res.statusCode = 413;
-          res.setHeader('Content-Type', 'application/json');
-          res.setHeader('Connection', 'close');
-          res.end(JSON.stringify({ success: false, error: 'Payload excede o limite máximo permitido de 5MB.', code: 413 }));
-          req.resume();
-        }
-        return;
-      }
-      if (!payloadExceeded) {
-        chunks.push(chunk);
-      }
-    });
-
-    req.on('end', async () => {
-      if (payloadExceeded || res.writableEnded) return;
+    try {
+      // Validar Maintenance Guard
+      assertNotUnderMaintenance('StandaloneServerWrite');
+      const exitOp = enterPrivilegedOperation();
 
       try {
-        const rawBody = Buffer.concat(chunks).toString('utf8');
-        const body = rawBody ? JSON.parse(rawBody) : {};
+        const databaseId = body.databaseId || DEFAULT_DATABASE_ID;
 
-        // Validar Maintenance Guard
-        assertNotUnderMaintenance('StandaloneServerWrite');
-        const exitOp = enterPrivilegedOperation();
+        // Inicializar Clientes Appwrite
+        const adminClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
+        const adminDb = new Databases(adminClient);
+        const adminTeams = new Teams(adminClient);
 
-        try {
-          const databaseId = body.databaseId || DEFAULT_DATABASE_ID;
-
-          // 1. AUTENTICAÇÃO MANDATÓRIA (Rejeição imediata com HTTP 401 se não autenticado)
-          const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-          let jwt = '';
-          if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-            jwt = authHeader.slice(7).trim();
-          }
-
-          if (!jwt && body.action !== 'signContract') {
-            res.statusCode = 401;
+        // AÇÃO PÚBLICA: SIGN CONTRACT (Assinatura externa com token público autoritativo)
+        if (body.action === 'signContract') {
+          const contractId = body.documentId || body.data?.contractId;
+          if (!contractId) {
+            res.statusCode = 400;
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'Autenticação necessária: token JWT ausente.', code: 401 }));
+            res.end(JSON.stringify({ success: false, error: 'ID do contrato é obrigatório para assinatura.', code: 400 }));
             return;
           }
 
-          // 2. CONTROLE DE AUTORIZAÇÃO DE PRODUÇÃO (FASE 5H)
-          // Governança estrita delegada ao Write Policy Engine (menor privilégio, tuplas determinísticas e deny-by-default).
+          const publicContractCollection = 'crm_contracts';
+          const mockDb = {
+            async getContractById(id) {
+              return await adminDb.getDocument(databaseId, publicContractCollection, id);
+            },
+            async updateContract(id, updatePayload) {
+              return await adminDb.updateDocument(databaseId, publicContractCollection, id, updatePayload);
+            },
+          };
 
-          // Inicializar Clientes Appwrite
-          const adminClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
-          const adminDb = new Databases(adminClient);
-          const adminTeams = new Teams(adminClient);
-
-          // AÇÃO PÚBLICA: SIGN CONTRACT (Assinatura externa sem exigência de JWT de operador)
-          if (body.action === 'signContract') {
-            const contractId = body.documentId || body.data?.contractId;
-            const signerName = body.data?.signerName || body.data?.signed_by_name || '';
-            const signerDocument = body.data?.signerDocument || body.data?.signed_by_document || '';
-            const termsAccepted = Boolean(body.data?.termsAccepted);
-
-            if (!termsAccepted) {
-              res.statusCode = 400;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: 'O aceite dos termos é obrigatório.', code: 400 }));
-              return;
-            }
-
-            const contract = await adminDb.getDocument(databaseId, body.collectionId || 'crm_contracts', contractId);
-            const signedAtUtc = new Date().toISOString();
-            const documentHash = crypto.createHash('sha256').update(contract.title || contractId).digest('hex');
-            const signatureHash = crypto.createHash('sha256').update(`${contractId}|${signerDocument}|${signedAtUtc}|${clientIp}`).digest('hex');
-
-            const signed = await adminDb.updateDocument(databaseId, body.collectionId || 'crm_contracts', contractId, {
-              status: 'signed',
-              signed_at: signedAtUtc,
-              signed_by_name: signerName.trim(),
-              signed_by_document: signerDocument.trim(),
-              signed_by_ip: clientIp,
-              document_hash: documentHash,
-              signature_hash: signatureHash,
-            });
+          try {
+            const auditResult = await handleSignContractServer(
+              {
+                headers: req.headers,
+                socket: req.socket,
+                body: {
+                  contractId,
+                  signerName: body.data?.signerName || body.data?.signed_by_name || '',
+                  signerDocument: body.data?.signerDocument || body.data?.signed_by_document || '',
+                  signerEmail: body.data?.signerEmail || body.data?.signed_by_email,
+                  signerPhone: body.data?.signerPhone || body.data?.signed_by_phone,
+                  termsAccepted: Boolean(body.data?.termsAccepted),
+                  publicToken: body.data?.publicToken || req.headers['x-public-token'] || undefined,
+                },
+              },
+              mockDb
+            );
 
             res.statusCode = 200;
             res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, action: 'signContract', documentId: contractId, data: signed }));
+            res.end(JSON.stringify({
+              success: true,
+              action: 'signContract',
+              collectionId: publicContractCollection,
+              documentId: contractId,
+              data: auditResult,
+            }));
+            return;
+          } catch (signErr) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: signErr.message, code: 400 }));
             return;
           }
+        }
 
-          let userId = null;
-          if (jwt) {
-            const userClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setJWT(jwt);
-            const userAccount = new Account(userClient);
-            const user = await userAccount.get();
-            userId = user.$id;
+        // S03: Restrição de coleções permitidas no CRUD genérico
+        if (!ALLOWED_BUSINESS_COLLECTIONS.has(body.collectionId)) {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({
+            success: false,
+            error: `Acesso negado: a coleção "${body.collectionId}" não é permitida para operações genéricas de escrita. Coleções globais sensíveis requerem endpoints administrativos dedicados.`,
+            code: 403,
+          }));
+          return;
+        }
+
+        // 1. AUTENTICAÇÃO MANDATÓRIA (S01: Rejeição imediata sem fallbackUserId)
+        const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+        let jwt = '';
+        if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+          jwt = authHeader.slice(7).trim();
+        }
+
+        const sessionHeader = req.headers['x-appwrite-session'] || req.headers['X-Appwrite-Session'];
+        let sessionSecret = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
+
+        if (sessionSecret.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(sessionSecret);
+            sessionSecret = parsed[`a_session_${PROJECT_ID}`] || parsed[`a_session_${PROJECT_ID}_legacy`] || Object.values(parsed)[0] || '';
+          } catch (e) {}
+        }
+
+        if (!jwt && !sessionSecret && req.headers['cookie']) {
+          const rawCookie = Array.isArray(req.headers['cookie']) ? req.headers['cookie'].join('; ') : String(req.headers['cookie']);
+          const match = rawCookie.match(new RegExp(`(?:^|;\\s*)a_session_${PROJECT_ID}(?:_legacy)?=([^;]+)`)) ||
+                        rawCookie.match(/(?:^|;\s*)a_session=([^;]+)/);
+          if (match && match[1]) {
+            sessionSecret = decodeURIComponent(match[1]).trim();
           }
+        }
 
-          // Identificar times
-          const knownTeams = ['tenant_default', 'superadmins', 'test_team_alpha', 'test_team_beta', 'test_team_superadmins'];
-          if (body.targetTenantId && !knownTeams.includes(body.targetTenantId)) {
-            knownTeams.push(body.targetTenantId);
+        if (!jwt && !sessionSecret) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: 'Autenticação necessária: credencial (JWT ou Sessão) ausente.', code: 401 }));
+          return;
+        }
+
+        let userId = null;
+        try {
+          const userClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID);
+          if (jwt) userClient.setJWT(jwt);
+          else userClient.setSession(sessionSecret);
+          const userAccount = new Account(userClient);
+          const user = await userAccount.get();
+          userId = user.$id;
+        } catch (err) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: `Sessão inválida ou expirada: ${err.message}`, code: 401 }));
+          return;
+        }
+
+        // Identificar times
+        const knownTeamsSet = new Set(['tenant_default', 'superadmins', 'test_team_alpha', 'test_team_beta', 'test_team_superadmins']);
+        if (body.targetTenantId) {
+          knownTeamsSet.add(body.targetTenantId);
+        }
+        try {
+          const allTeamsRes = await adminTeams.list();
+          if (allTeamsRes && Array.isArray(allTeamsRes.teams)) {
+            for (const t of allTeamsRes.teams) {
+              if (t && t.$id) knownTeamsSet.add(t.$id);
+            }
           }
+        } catch (e) {}
 
-          const userTeams = [];
-          const userRoles = [];
-          if (userId) {
-            for (const t of knownTeams) {
-              try {
-                const mems = await adminTeams.listMemberships(t);
-                const mem = mems.memberships.find((m) => m.userId === userId);
-                if (mem) {
-                  userTeams.push(t);
-                  if (Array.isArray(mem.roles)) {
-                    mem.roles.forEach((r) => { if (r && !userRoles.includes(r)) userRoles.push(r); });
-                  }
+        const userTeams = [];
+        const teamRolesMap = new Map();
+        if (userId) {
+          for (const t of knownTeamsSet) {
+            try {
+              const mems = await adminTeams.listMemberships(t);
+              const mem = mems.memberships.find((m) => m.userId === userId);
+              if (mem) {
+                userTeams.push(t);
+                const rolesForThisTeam = [];
+                if (Array.isArray(mem.roles)) {
+                  mem.roles.forEach((r) => { if (r && !rolesForThisTeam.includes(r)) rolesForThisTeam.push(r); });
                 }
-              } catch (e) {}
-            }
+                teamRolesMap.set(t, rolesForThisTeam);
+              }
+            } catch (e) {}
           }
+        }
 
-          // Verificação estrita de SuperAdmin por igualdade exata de ID de Team:
-          // Em crm_db (produção): unicamente o team oficial 'superadmins'.
-          // Em sandbox de teste (crm_isolated_test): 'superadmins' ou 'test_team_superadmins'.
-          const isSuperAdminTeam = (t) => databaseId === 'crm_db' ? (t === 'superadmins') : (t === 'superadmins' || t === 'test_team_superadmins');
-          const isSuper = userTeams.some((t) => isSuperAdminTeam(t));
+        // Verificação estrita de SuperAdmin por igualdade exata de ID de Team:
+        const isSuperAdminTeam = (t) => databaseId === 'crm_db' ? (t === 'superadmins') : (t === 'superadmins' || t === 'test_team_superadmins');
+        const isSuper = userTeams.some((t) => isSuperAdminTeam(t));
 
-          if (isSuper && !userRoles.includes('superadmin')) {
-            userRoles.push('superadmin');
-          }
-          if (userRoles.length === 0 && userTeams.length > 0) {
-            userRoles.push('agent');
-          }
-
-          let authoritativeTenantId = '';
-          if (body.targetTenantId) {
-            if (userTeams.includes(body.targetTenantId) || isSuper) {
-              authoritativeTenantId = body.targetTenantId;
-            } else {
-              res.statusCode = 403;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: 'Acesso negado à organização solicitada.', code: 403 }));
-              return;
-            }
+        let authoritativeTenantId = '';
+        if (body.targetTenantId) {
+          if (userTeams.includes(body.targetTenantId) || isSuper) {
+            authoritativeTenantId = body.targetTenantId;
           } else {
-            const operationalTenant = userTeams.find((t) => !isSuperAdminTeam(t));
-            if (operationalTenant) {
-              authoritativeTenantId = operationalTenant;
-            } else if (isSuper) {
-              authoritativeTenantId = databaseId === 'crm_db' ? 'tenant_default' : (userTeams.includes('test_team_superadmins') ? 'test_team_alpha' : 'tenant_default');
-            } else {
-              res.statusCode = 403;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: 'Usuário não vinculado a nenhuma organização ativa.', code: 403 }));
-              return;
-            }
+            res.statusCode = 403;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: 'Acesso negado à organização solicitada.', code: 403 }));
+            return;
           }
+        } else {
+          const operationalTenant = userTeams.find((t) => !isSuperAdminTeam(t));
+          if (operationalTenant) {
+            authoritativeTenantId = operationalTenant;
+          } else if (isSuper) {
+            authoritativeTenantId = databaseId === 'crm_db' ? 'tenant_default' : (userTeams.includes('test_team_superadmins') ? 'test_team_alpha' : 'tenant_default');
+          } else {
+            res.statusCode = 403;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: 'Usuário não vinculado a nenhuma organização ativa.', code: 403 }));
+            return;
+          }
+        }
+
+        // S08: Papéis estritamente limitados ao tenant autorizado
+        const tenantSpecificRoles = teamRolesMap.get(authoritativeTenantId) || [];
+        const userRoles = [...tenantSpecificRoles];
+        if (isSuper && !userRoles.includes('superadmin')) {
+          userRoles.push('superadmin');
+        }
+        if (userRoles.length === 0 && userTeams.includes(authoritativeTenantId)) {
+          userRoles.push('agent');
+        }
 
           // 3.5. AUTORIZAÇÃO DE PRODUÇÃO EXCLUSIVA VIA WRITE POLICY ENGINE (Fases 5H.3 / 5H.4)
           // O mecanismo canário da Fase 5G foi aposentado em favor do motor de políticas declarativo.
@@ -489,9 +588,49 @@ const server = http.createServer(async (req, res) => {
           delete docData.tenant_id;
           delete docData._is_canary_test;
 
+          // Validação de Integridade Relacional Multi-Tenant:
+          // Impede referências cruzadas a registros pertencentes a outros tenants (Etapas 2, 3 e 4)
+          const refChecks = [
+            { field: 'client_id', collection: (collectionId === 'test_contacts' || collectionId === 'test_deals' || collectionId === 'test_crm_contracts') ? 'test_clients' : 'clients' },
+            { field: 'contact_id', collection: (collectionId === 'test_deals') ? 'test_contacts' : 'phonebook' },
+            { field: 'deal_id', collection: (collectionId === 'test_crm_contracts') ? 'test_deals' : 'pipeline_deals' },
+          ];
+
+          for (const ref of refChecks) {
+            const refVal = docData[ref.field];
+            if (refVal && typeof refVal === 'string' && refVal.trim()) {
+              try {
+                const targetRefDoc = await adminDb.getDocument(databaseId, ref.collection, refVal.trim());
+                if (targetRefDoc.tenant_id && targetRefDoc.tenant_id !== authoritativeTenantId && !isSuper) {
+                  res.statusCode = 403;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({
+                    success: false,
+                    error: `[CROSS_TENANT_VIOLATION] Referência cruzada proibida: "${ref.field}" (${refVal}) pertence a outro tenant.`,
+                    code: 403,
+                  }));
+                  return;
+                }
+              } catch (e) {
+                if (e.code === 404) {
+                  res.statusCode = 404;
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify({
+                    success: false,
+                    error: `[REFERENCE_NOT_FOUND] Registro referenciado em "${ref.field}" não encontrado.`,
+                    code: 404,
+                  }));
+                  return;
+                }
+                throw e;
+              }
+            }
+          }
+
           // AÇÃO: CREATE
           if (body.action === 'create') {
             docData.tenant_id = authoritativeTenantId;
+
             const superAdminTeamForPerms = databaseId === 'crm_db'
               ? 'superadmins'
               : ((authoritativeTenantId === 'test_team_alpha' || authoritativeTenantId === 'test_team_beta') ? 'test_team_superadmins' : 'superadmins');
@@ -506,15 +645,18 @@ const server = http.createServer(async (req, res) => {
             return;
           }
 
-          // AÇÃO: UPDATE
+          // AÇÃO: UPDATE (S03: Enforce strict tenant ownership)
           if (body.action === 'update') {
             const existing = await adminDb.getDocument(databaseId, collectionId, body.documentId);
-            if (existing.tenant_id && existing.tenant_id !== authoritativeTenantId && !isSuper) {
-              res.statusCode = 403;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: 'Acesso negado: documento de outro tenant.', code: 403 }));
-              return;
+            if (!isSuper) {
+              if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
+                res.statusCode = 403;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: false, error: 'Acesso negado: o documento não pertence à sua organização.', code: 403 }));
+                return;
+              }
             }
+            delete docData.tenant_id;
             const updated = await adminDb.updateDocument(databaseId, collectionId, body.documentId, docData);
             res.statusCode = 200;
             res.setHeader('Content-Type', 'application/json');
@@ -522,14 +664,16 @@ const server = http.createServer(async (req, res) => {
             return;
           }
 
-          // AÇÃO: DELETE
+          // AÇÃO: DELETE (S03: Enforce strict tenant ownership)
           if (body.action === 'delete') {
             const existing = await adminDb.getDocument(databaseId, collectionId, body.documentId);
-            if (existing.tenant_id && existing.tenant_id !== authoritativeTenantId && !isSuper) {
-              res.statusCode = 403;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: 'Acesso negado: documento de outro tenant.', code: 403 }));
-              return;
+            if (!isSuper) {
+              if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
+                res.statusCode = 403;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: false, error: 'Acesso negado: o documento não pertence à sua organização.', code: 403 }));
+                return;
+              }
             }
             await adminDb.deleteDocument(databaseId, collectionId, body.documentId);
             res.statusCode = 200;
@@ -549,28 +693,91 @@ const server = http.createServer(async (req, res) => {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ success: false, error: err.message, code: res.statusCode }));
       }
-    });
+    } catch (routeErr) {
+      res.statusCode = routeErr.statusCode || 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: routeErr.message, code: res.statusCode }));
+    }
     return;
   }
 
-  // 4. Suporte a Servir Arquivos Estáticos SPA (dist/) para execução autônoma
-  const distDir = path.join(__dirname, '../dist');
+  // 4. Suporte a Servir Arquivos Estáticos SPA (dist/) para execução autônoma (S04: Contenção Rigorosa)
+  const distDir = path.resolve(__dirname, '../dist');
   if (fs.existsSync(distDir) && req.method === 'GET') {
-    let filePath = path.join(distDir, req.url.split('?')[0]);
-    if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
-      filePath = path.join(filePath, 'index.html');
+    let safeUrlPath = '/';
+    try {
+      safeUrlPath = decodeURIComponent((req.url || '/').split('?')[0].split('#')[0]);
+    } catch {
+      res.statusCode = 400;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'URL inválida ou codificação corrompida.' }));
+      return;
     }
 
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      filePath = path.join(distDir, 'index.html'); // SPA fallback
+    // S04: Bloquear terminantemente qualquer tentativa de traversal com '..' ou bytes nulos
+    if (safeUrlPath.includes('..') || safeUrlPath.includes('\0')) {
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Acesso negado: tentativa de traversal proibida.' }));
+      return;
     }
 
-    if (fs.existsSync(filePath)) {
-      const ext = path.extname(filePath).toLowerCase();
+    let normalizedRelative = path.normalize(safeUrlPath);
+    if (normalizedRelative.startsWith('\\') || normalizedRelative.startsWith('/')) {
+      normalizedRelative = normalizedRelative.slice(1);
+    }
+
+    let targetPath = path.resolve(distDir, normalizedRelative);
+
+    // Contenção estrita: targetPath DEVE residir dentro de distDir
+    if (!targetPath.startsWith(distDir + path.sep) && targetPath !== distDir) {
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Acesso negado: fora do diretório público.' }));
+      return;
+    }
+
+    // Validação de link simbólico para impedir escape da raiz
+    if (fs.existsSync(targetPath)) {
+      try {
+        const realTarget = fs.realpathSync(targetPath);
+        const realDist = fs.realpathSync(distDir);
+        if (!realTarget.startsWith(realDist + path.sep) && realTarget !== realDist) {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Acesso negado: fora do diretório público.' }));
+          return;
+        }
+      } catch (e) {
+        res.statusCode = 403;
+        res.end();
+        return;
+      }
+    }
+
+    if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
+      targetPath = path.join(targetPath, 'index.html');
+    }
+
+    if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+      targetPath = path.join(distDir, 'index.html'); // SPA fallback
+    }
+
+    if (fs.existsSync(targetPath)) {
+      const baseName = path.basename(targetPath);
+      // Bloquear acesso a arquivos ocultos, de ambiente ou código-fonte
+      if (baseName.startsWith('.') || baseName.endsWith('.env') || baseName.endsWith('.ts') || baseName.endsWith('.cjs')) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Acesso proibido.' }));
+        return;
+      }
+
+      const ext = path.extname(targetPath).toLowerCase();
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
       res.statusCode = 200;
       res.setHeader('Content-Type', contentType);
-      const stream = fs.createReadStream(filePath);
+      const stream = fs.createReadStream(targetPath);
       stream.pipe(res);
       return;
     }
