@@ -403,7 +403,12 @@ const server = http.createServer(async (req, res) => {
         }
 
         // S03: Restrição de coleções permitidas no CRUD genérico
-        if (!ALLOWED_BUSINESS_COLLECTIONS.has(body.collectionId)) {
+        const isSelfPresenceCandidate = body.collectionId === 'users_hydra' &&
+          body.action === 'update' &&
+          body.documentId &&
+          Object.keys(body.data || {}).every(k => k === 'is_online' || k === 'last_seen');
+
+        if (!ALLOWED_BUSINESS_COLLECTIONS.has(body.collectionId) && !isSelfPresenceCandidate) {
           res.statusCode = 403;
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({
@@ -460,6 +465,38 @@ const server = http.createServer(async (req, res) => {
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ success: false, error: `Sessão inválida ou expirada: ${err.message}`, code: 401 }));
           return;
+        }
+
+        // Tratamento seguro de presença/heartbeat do próprio usuário em users_hydra
+        if (body.collectionId === 'users_hydra') {
+          if (isSelfPresenceCandidate && body.documentId === userId) {
+            const updatePayload = {};
+            if (typeof body.data.is_online === 'boolean') updatePayload.is_online = body.data.is_online;
+            if (typeof body.data.last_seen === 'string') updatePayload.last_seen = body.data.last_seen;
+            else updatePayload.last_seen = new Date().toISOString();
+
+            try {
+              const updatedDoc = await adminDb.updateDocument(databaseId, 'users_hydra', userId, updatePayload);
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: true, action: 'update', documentId: userId, data: updatedDoc }));
+              return;
+            } catch (upErr) {
+              res.statusCode = upErr.code || 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: upErr.message, code: res.statusCode }));
+              return;
+            }
+          } else {
+            res.statusCode = 403;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              success: false,
+              error: 'Acesso negado: operações em "users_hydra" são restritas a batimento cardíaco da própria conta.',
+              code: 403,
+            }));
+            return;
+          }
         }
 
         // Identificar times
