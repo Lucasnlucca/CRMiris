@@ -114,8 +114,12 @@ strong {
 .brand {
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 29px 25px 30px;
+  gap: 12px;
+  padding: 22px 16px 20px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 .brand-symbol {
   height: 38px;
@@ -140,24 +144,41 @@ strong {
   border: 2px solid var(--navy);
   border-radius: 50%;
 }
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
 .brand-name {
-  font-size: 17px;
-  letter-spacing: -0.6px;
+  font-size: 15.5px;
+  letter-spacing: -0.4px;
   color: var(--navy);
   font-weight: 750;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  line-height: 1.25;
 }
 .brand-name span {
   color: #526079;
   font-weight: 450;
 }
 .brand-subtitle {
-  font-size: 10px;
-  letter-spacing: 1.8px;
+  font-size: 9px;
+  letter-spacing: 0.25px;
   text-transform: uppercase;
-  color: #99a2b2;
-  margin-top: 4px;
-  font-weight: 650;
+  color: #8c97a8;
+  margin-top: 3px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  display: block;
+  line-height: 1.3;
 }
 .nav-area {
   padding: 0 15px;
@@ -452,13 +473,15 @@ strong {
 }
 .shell-collapsed .sidebar {
   width: 76px;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.22s ease;
 }
 .shell-collapsed .app-header,
 .shell-collapsed .app-main {
   margin-left: 76px;
 }
 .shell-collapsed .brand {
-  padding: 28px 19px;
+  padding: 22px 19px;
+  justify-content: center;
 }
 .shell-collapsed .brand-copy,
 .shell-collapsed .nav-text,
@@ -480,6 +503,52 @@ strong {
 }
 .shell-collapsed .sidebar-version {
   justify-content: center;
+}
+
+/* Expansão suave ao passar o mouse por cima do menu recolhido */
+.shell-collapsed .sidebar:hover,
+.shell-collapsed .sidebar.sidebar-hovered {
+  width: 246px;
+  box-shadow: 6px 0 32px rgba(15, 23, 42, 0.16);
+  z-index: 50;
+}
+.shell-collapsed .sidebar:hover .brand,
+.shell-collapsed .sidebar.sidebar-hovered .brand {
+  padding: 22px 16px 20px;
+  justify-content: flex-start;
+}
+.shell-collapsed .sidebar:hover .brand-copy,
+.shell-collapsed .sidebar.sidebar-hovered .brand-copy {
+  display: flex;
+}
+.shell-collapsed .sidebar:hover .nav-text,
+.shell-collapsed .sidebar.sidebar-hovered .nav-text {
+  display: inline;
+}
+.shell-collapsed .sidebar:hover .nav-count,
+.shell-collapsed .sidebar.sidebar-hovered .nav-count {
+  display: inline-flex;
+}
+.shell-collapsed .sidebar:hover .nav-group-label,
+.shell-collapsed .sidebar.sidebar-hovered .nav-group-label {
+  display: block;
+}
+.shell-collapsed .sidebar:hover .sidebar-version span,
+.shell-collapsed .sidebar.sidebar-hovered .sidebar-version span {
+  display: inline;
+}
+.shell-collapsed .sidebar:hover .nav-area,
+.shell-collapsed .sidebar.sidebar-hovered .nav-area {
+  padding: 0 15px;
+}
+.shell-collapsed .sidebar:hover .nav-link,
+.shell-collapsed .sidebar.sidebar-hovered .nav-link {
+  justify-content: flex-start;
+  padding: 10px 14px;
+}
+.shell-collapsed .sidebar:hover .sidebar-version,
+.shell-collapsed .sidebar.sidebar-hovered .sidebar-version {
+  justify-content: space-between;
 }
 .mobile-menu {
   display: none;

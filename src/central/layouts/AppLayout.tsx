@@ -51,9 +51,10 @@ export const roleNames: Record<Role, string> = {
 };
 
 export function Brand({ tenant }: { tenant?: any }) {
-  const displayTitle = tenant?.trade_name || tenant?.name;
+  const displayTitle = tenant?.trade_name || tenant?.name || 'Iris Horizon CRM';
+  const domainText = tenant?.slug ? `${tenant.slug}.lvplataform.com.br` : 'Central de Operações & CRM';
   return (
-    <div className="brand">
+    <div className="brand" title={`${displayTitle} (${domainText})`}>
       <div
         className="brand-symbol"
         style={tenant?.primary_color ? { backgroundColor: tenant.primary_color } : undefined}
@@ -61,7 +62,7 @@ export function Brand({ tenant }: { tenant?: any }) {
         {tenant?.logo_url ? (
           <img
             src={tenant.logo_url}
-            alt={displayTitle || 'Telefonia Fácil'}
+            alt={displayTitle}
             className="w-6 h-6 object-contain"
           />
         ) : (
@@ -69,17 +70,17 @@ export function Brand({ tenant }: { tenant?: any }) {
         )}
       </div>
       <div className="brand-copy">
-        <div className="brand-name">
+        <div className="brand-name" title={displayTitle}>
           {displayTitle ? (
             <span>{displayTitle}</span>
           ) : (
             <>
-              telefonia<span>fácil</span>
+              Iris <span>Horizon CRM</span>
             </>
           )}
         </div>
-        <div className="brand-subtitle">
-          {tenant?.slug ? `${tenant.slug}.lvplataform.com.br` : 'Central de Operações & CRM'}
+        <div className="brand-subtitle" title={domainText}>
+          {domainText}
         </div>
       </div>
     </div>
@@ -269,8 +270,16 @@ export function AppLayout() {
   const { tenant, isSuperAdmin } = useTenant();
   const role = session?.role ?? 'admin';
   const navigate = useNavigate();
-  const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  // Menu recolhido por padrão com auto-expansão ao passar o mouse por cima
+  const [pinned, setPinned] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('sidebar_pinned') === 'true';
+    }
+    return false;
+  });
+  const [hovered, setHovered] = useState(false);
+  const isExpanded = pinned || hovered;
+  const isCollapsed = !isExpanded;
   const [mobile, setMobile] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -539,7 +548,7 @@ export function AppLayout() {
 
   return (
     <div
-      className={`app-shell ${collapsed ? 'shell-collapsed' : ''} ${mobile ? 'mobile-open' : ''} ${data.settings.density === 'compact' ? 'compact' : ''}`}
+      className={`app-shell ${!pinned ? 'shell-collapsed' : ''} ${mobile ? 'mobile-open' : ''} ${data.settings.density === 'compact' ? 'compact' : ''}`}
     >
       <a
         href="#main-content"
@@ -556,8 +565,12 @@ export function AppLayout() {
         aria-label="Fechar menu lateral"
         onClick={() => setMobile(false)}
       />
-      <aside className="sidebar">
-        <Link to={role === 'client' ? '/portal' : '/'} aria-label="Início da Central">
+      <aside
+        className={`sidebar ${hovered ? 'sidebar-hovered' : ''}`}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        <Link to={role === 'client' ? '/portal' : '/'} aria-label="Início da Central" className="brand-link">
           <Brand tenant={tenant} />
         </Link>
         <nav className="nav-area" aria-label="Menu principal">
@@ -572,7 +585,7 @@ export function AppLayout() {
                   to={item.path}
                   end={item.path === '/' || item.path === '/portal'}
                   className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-                  title={collapsed ? item.label : undefined}
+                  title={isCollapsed ? item.label : undefined}
                 >
                   <item.icon size={17} strokeWidth={1.65} />
                   <span className="nav-text">{item.label}</span>
@@ -592,10 +605,19 @@ export function AppLayout() {
             <span>{tenant?.trade_name || 'Telefonia Fácil'} © {new Date().getFullYear()}</span>
             <button
               className="collapse-button"
-              onClick={() => setCollapsed((v) => !v)}
-              aria-label={collapsed ? 'Expandir menu' : 'Recolher menu'}
+              onClick={() => {
+                setPinned((v) => {
+                  const next = !v;
+                  if (typeof window !== 'undefined') {
+                    localStorage.setItem('sidebar_pinned', String(next));
+                  }
+                  return next;
+                });
+              }}
+              aria-label={pinned ? 'Desafixar menu (recolhimento automático)' : 'Fixar menu aberto'}
+              title={pinned ? 'Desafixar menu (recolhimento automático)' : 'Fixar menu aberto'}
             >
-              {collapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+              {pinned ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
             </button>
           </div>
         </div>
