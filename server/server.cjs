@@ -693,11 +693,6 @@ const server = http.createServer(async (req, res) => {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ success: false, error: err.message, code: res.statusCode }));
       }
-    } catch (routeErr) {
-      res.statusCode = routeErr.statusCode || 500;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: false, error: routeErr.message, code: res.statusCode }));
-    }
     return;
   }
 
