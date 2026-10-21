@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { ID } from 'appwrite';
+import { storage } from '../lib/appwrite';
 import {
   Building2,
   Plus,
@@ -12,6 +14,8 @@ import {
   Globe,
   Lock,
   Users,
+  UploadCloud,
+  Trash2,
 } from 'lucide-react';
 import { useTenant, Tenant } from '../context/TenantContext';
 import {
@@ -67,6 +71,51 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
     primary_color: '#4f46e5',
     allowed_menus: ALL_CRM_MENUS.map((m) => m.id),
   });
+
+  const [uploadingLogo, setUploadingLogo] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Por favor, selecione um arquivo de imagem válido (PNG, SVG, JPG, WebP).');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('O arquivo de imagem deve ter no máximo 2MB.');
+      return;
+    }
+
+    setUploadingLogo(true);
+    setError(null);
+
+    try {
+      const bucketId = import.meta.env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments';
+      let uploadedUrl = '';
+      try {
+        const fileId = ID.unique();
+        await storage.createFile(bucketId, fileId, file);
+        uploadedUrl = storage.getFileView(bucketId, fileId).toString();
+      } catch (storageErr: any) {
+        console.warn('[Storage] Fallback para DataURL:', storageErr?.message);
+      }
+
+      if (!uploadedUrl) {
+        uploadedUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = () => reject(new Error('Erro ao processar o arquivo de imagem.'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      setFormData((prev) => ({ ...prev, logo_url: uploadedUrl }));
+    } catch (err: any) {
+      setError(err.message || 'Falha ao processar arquivo da logo.');
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -631,15 +680,75 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
 
                 <div className="sm:col-span-2">
                   <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    URL da Logomarca
+                    Logomarca da Empresa (Arquivo de Imagem)
                   </label>
                   <input
-                    type="url"
-                    value={formData.logo_url}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, logo_url: e.target.value }))}
-                    placeholder="https://exemplo.com/logo.png"
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleFileUpload(file);
+                      e.target.value = '';
+                    }}
                   />
+                  {formData.logo_url ? (
+                    <div className="flex items-center gap-3 p-3 rounded-xl border border-indigo-200 dark:border-white/10 bg-indigo-50/40 dark:bg-white/5">
+                      <div className="w-12 h-12 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0">
+                        <img
+                          src={formData.logo_url}
+                          alt="Logo"
+                          className="max-h-full max-w-full object-contain"
+                        />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                          Arquivo de logo anexado
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          {formData.logo_url.startsWith('data:') ? 'Arquivo de imagem anexado' : formData.logo_url}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={uploadingLogo}
+                          className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white dark:bg-white/10 border border-slate-200 dark:border-white/10 hover:bg-slate-50 text-slate-700 dark:text-slate-200"
+                        >
+                          Substituir
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormData((prev) => ({ ...prev, logo_url: '' }))}
+                          className="p-1 text-rose-500 hover:text-rose-700"
+                          title="Remover"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingLogo}
+                      className="w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-white/15 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition"
+                    >
+                      {uploadingLogo ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
+                          <span>Carregando arquivo...</span>
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud className="w-4 h-4 text-indigo-500" />
+                          <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP)</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 <div className="sm:col-span-2">

@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { ID } from 'appwrite';
+import { storage } from '../lib/appwrite';
 import {
   Building2,
   Plus,
@@ -38,6 +40,9 @@ import {
   BookUser,
   Bell,
   PhoneCall,
+  UploadCloud,
+  Trash2,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { useTenant, Tenant } from '../context/TenantContext';
 import { useAuth } from '../context/AuthContext';
@@ -145,6 +150,62 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
   const [brandingLogoUrl, setBrandingLogoUrl] = useState<string>('');
   const [brandingColor, setBrandingColor] = useState<string>('#3b82f6');
   const [savingBranding, setSavingBranding] = useState<boolean>(false);
+  const [uploadingLogo, setUploadingLogo] = useState<boolean>(false);
+  const brandingFileInputRef = useRef<HTMLInputElement>(null);
+  const modalFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Processador de upload de arquivo de logo (Storage + Base64 fallback resiliente)
+  const handleFileUpload = async (file: File, isModal: boolean = false) => {
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Por favor, selecione um arquivo de imagem válido (PNG, SVG, JPG, WebP).');
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      setError('O arquivo de imagem deve ter no máximo 2MB.');
+      return;
+    }
+
+    setUploadingLogo(true);
+    setError(null);
+
+    try {
+      const bucketId = import.meta.env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments';
+      let uploadedUrl = '';
+
+      try {
+        const fileId = ID.unique();
+        await storage.createFile(bucketId, fileId, file);
+        uploadedUrl = storage.getFileView(bucketId, fileId).toString();
+      } catch (storageErr: any) {
+        console.warn('[Storage] Upload direto via Storage falhou ou bucket indisponível, usando DataURL seguro:', storageErr?.message);
+      }
+
+      if (!uploadedUrl) {
+        // Fallback resiliente: converter para DataURL base64 de alta resolução
+        uploadedUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target?.result as string);
+          reader.onerror = () => reject(new Error('Erro ao processar o arquivo da imagem.'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      if (isModal) {
+        setFormData((prev) => ({ ...prev, logo_url: uploadedUrl }));
+      } else {
+        setBrandingLogoUrl(uploadedUrl);
+      }
+
+      setSuccessNotice(`Arquivo da logo "${file.name}" carregado com sucesso!`);
+    } catch (err: any) {
+      setError(err.message || 'Falha ao processar arquivo da logo.');
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
 
   // Estado da aba de Políticas & Disjuntores
   const [policyDbId, setPolicyDbId] = useState<'crm_isolated_test' | 'crm_db'>('crm_db');
@@ -963,20 +1024,110 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                       Logo do CRM
                     </h3>
                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Insira o link direto de uma imagem (PNG com transparência ou SVG recomendado)
+                      Faça o upload do arquivo de imagem da logo (PNG transparente, SVG, JPG ou WebP)
                     </p>
                   </div>
                 </div>
 
-                <div>
-                  <input
-                    type="url"
-                    placeholder="https://exemplo.com/logo.png"
-                    value={brandingLogoUrl}
-                    onChange={(e) => setBrandingLogoUrl(e.target.value)}
-                    className="w-full p-3 bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl text-sm text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                </div>
+                {/* Input oculto para seleção de arquivo */}
+                <input
+                  ref={brandingFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileUpload(file, false);
+                    e.target.value = '';
+                  }}
+                />
+
+                {brandingLogoUrl ? (
+                  <div className="flex flex-col sm:flex-row items-center gap-4 p-4 rounded-xl border border-indigo-200 dark:border-indigo-500/20 bg-indigo-50/50 dark:bg-indigo-950/20">
+                    <div className="w-20 h-20 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-2 flex items-center justify-center shrink-0 shadow-xs">
+                      <img
+                        src={brandingLogoUrl}
+                        alt="Logo Atual"
+                        className="max-h-full max-w-full object-contain"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0 text-center sm:text-left">
+                      <div className="flex items-center justify-center sm:justify-start gap-2 text-emerald-600 dark:text-emerald-400 font-semibold text-xs mb-1">
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Arquivo de logo carregado com sucesso</span>
+                      </div>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                        {brandingLogoUrl.startsWith('data:') ? 'Arquivo de imagem de alta resolução anexado' : brandingLogoUrl}
+                      </p>
+                      <div className="flex items-center justify-center sm:justify-start gap-2 mt-3">
+                        <button
+                          type="button"
+                          onClick={() => brandingFileInputRef.current?.click()}
+                          disabled={uploadingLogo}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-white/10 border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-white/15 transition flex items-center gap-1.5 shadow-2xs"
+                        >
+                          {uploadingLogo ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <UploadCloud className="w-3.5 h-3.5 text-indigo-500" />
+                          )}
+                          <span>Substituir Arquivo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBrandingLogoUrl('')}
+                          disabled={uploadingLogo}
+                          className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/20 text-rose-600 dark:text-rose-400 hover:bg-rose-100 transition flex items-center gap-1.5"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remover Logo</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    onClick={() => brandingFileInputRef.current?.click()}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) handleFileUpload(file, false);
+                    }}
+                    className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2 group ${
+                      uploadingLogo
+                        ? 'border-indigo-400 bg-indigo-50/30 opacity-70 cursor-wait'
+                        : 'border-slate-300 dark:border-white/15 hover:border-indigo-500 dark:hover:border-indigo-400 hover:bg-indigo-50/20 dark:hover:bg-indigo-950/20'
+                    }`}
+                  >
+                    {uploadingLogo ? (
+                      <>
+                        <RefreshCw className="w-8 h-8 text-indigo-500 animate-spin" />
+                        <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                          Processando arquivo de imagem...
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center group-hover:scale-110 transition shadow-xs">
+                          <UploadCloud className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                            Clique ou arraste o arquivo da logo aqui
+                          </p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            Suporta PNG (com transparência), SVG, JPG ou WebP (máx. 2MB)
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 {/* Preview da Logo */}
                 <div className="grid grid-cols-2 gap-3 pt-2">
@@ -1731,6 +1882,80 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                     <option value="suspended">Suspenso</option>
                   </select>
                 </div>
+              </div>
+
+              {/* Upload da Logo da Empresa em formato de arquivo */}
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Logomarca da Empresa (Arquivo de Imagem)
+                </label>
+                <input
+                  ref={modalFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileUpload(file, true);
+                    e.target.value = '';
+                  }}
+                />
+                {formData.logo_url ? (
+                  <div className="flex items-center gap-3 p-3 rounded-xl border border-indigo-200 dark:border-white/10 bg-indigo-50/40 dark:bg-white/5">
+                    <div className="w-12 h-12 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0">
+                      <img
+                        src={formData.logo_url}
+                        alt="Logo"
+                        className="max-h-full max-w-full object-contain"
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                        Arquivo de logo anexado
+                      </p>
+                      <p className="text-[11px] text-slate-500 truncate">
+                        {formData.logo_url.startsWith('data:') ? 'Imagem de alta resolução' : formData.logo_url}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => modalFileInputRef.current?.click()}
+                        disabled={uploadingLogo}
+                        className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white dark:bg-white/10 border border-slate-200 dark:border-white/10 hover:bg-slate-50 text-slate-700 dark:text-slate-200"
+                      >
+                        Substituir
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormData((prev) => ({ ...prev, logo_url: '' }))}
+                        className="p-1 text-rose-500 hover:text-rose-700"
+                        title="Remover"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => modalFileInputRef.current?.click()}
+                    disabled={uploadingLogo}
+                    className="w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-white/15 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition"
+                  >
+                    {uploadingLogo ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
+                        <span>Carregando arquivo...</span>
+                      </>
+                    ) : (
+                      <>
+                        <UploadCloud className="w-4 h-4 text-indigo-500" />
+                        <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP)</span>
+                      </>
+                    )}
+                  </button>
+                )}
               </div>
 
               {/* Módulos Permitidos */}
