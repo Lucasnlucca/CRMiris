@@ -9,8 +9,10 @@ import {
   CalendarDays,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
   FileCheck2,
   FileText,
+  Folder,
   FolderOpen,
   GitBranch,
   Globe2,
@@ -30,6 +32,7 @@ import {
   ShieldCheck,
   Sparkles,
   Ticket,
+  TrendingUp,
   UserCog,
   Wallet,
 } from 'lucide-react';
@@ -93,168 +96,236 @@ interface NavItemDef {
   label: string;
   icon: any;
   roles: string[];
-  group?: string;
   superAdminOnly?: boolean;
 }
 
-const navItems: NavItemDef[] = [
-  // ATENDIMENTO & VISÃO GERAL
-  {
-    menuId: 'visao-geral',
-    path: '/',
-    label: 'Painel Geral',
-    icon: LayoutDashboard,
-    roles: ['admin', 'support', 'finance'],
-    group: 'VISÃO GERAL & ATENDIMENTO',
-  },
-  {
-    menuId: 'crm-contatos',
-    path: '/clientes',
-    label: 'Clientes & Contas',
-    icon: Building2,
-    roles: ['admin', 'support', 'finance'],
-  },
-  {
-    menuId: 'dstrack',
-    path: '/tickets',
-    label: 'Chamados de Suporte',
-    icon: Ticket,
-    roles: ['admin', 'support'],
-  },
-  {
-    menuId: 'agenda',
-    path: '/agenda',
-    label: 'Agenda Operacional',
-    icon: CalendarDays,
-    roles: ['admin', 'support', 'finance'],
-  },
+interface NavCategoryDef {
+  id: string;
+  label: string;
+  icon: any;
+  items: NavItemDef[];
+  superAdminOnly?: boolean;
+}
 
-  // COMERCIAL & VENDAS (CRM)
-  {
-    menuId: 'crm-pipeline',
-    path: '/pipeline',
-    label: 'Funil de Vendas',
-    icon: GitBranch,
-    roles: ['admin', 'support', 'finance'],
-    group: 'COMERCIAL & VENDAS',
-  },
-  {
-    menuId: 'crm-propostas',
-    path: '/propostas',
-    label: 'Propostas Comerciais',
-    icon: FileCheck2,
-    roles: ['admin', 'support', 'finance'],
-  },
-  {
-    menuId: 'crm-contratos',
-    path: '/contratos-crm',
-    label: 'Contratos & Assinaturas',
-    icon: ShieldCheck,
-    roles: ['admin', 'support', 'finance'],
-  },
-  {
-    menuId: 'crm-items',
-    path: '/itens',
-    label: 'Catálogo de Produtos',
-    icon: Package,
-    roles: ['admin', 'support'],
-  },
-  {
-    menuId: 'recursos-catalogo',
-    path: '/catalogo',
-    label: 'Agenda Telefônica',
-    icon: BookUser,
-    roles: ['admin', 'support'],
-  },
+const topItemDef: NavItemDef = {
+  menuId: 'visao-geral',
+  path: '/',
+  label: 'Dashboard',
+  icon: LayoutDashboard,
+  roles: ['admin', 'support', 'finance'],
+};
 
-  // OPERAÇÕES & INFRAESTRUTURA
-  {
-    menuId: 'servidores',
-    path: '/servidores',
-    label: 'Servidores & Domínios',
-    icon: Server,
-    roles: ['admin', 'support'],
-    group: 'OPERAÇÕES & INFRAESTRUTURA',
-  },
-  {
-    menuId: 'monitoramento',
-    path: '/monitoramento',
-    label: 'Monitoramento de Rede',
-    icon: Activity,
-    roles: ['admin', 'support'],
-  },
-  {
-    menuId: 'servicos',
-    path: '/servicos',
-    label: 'Serviços Contratados',
-    icon: Layers3,
-    roles: ['admin', 'support'],
-  },
-  {
-    menuId: 'documentos',
-    path: '/documentos',
-    label: 'Arquivos & Documentos',
-    icon: FolderOpen,
-    roles: ['admin', 'support', 'finance'],
-  },
+const portalTopItemDef: NavItemDef = {
+  menuId: 'portal',
+  path: '/portal',
+  label: 'Dashboard',
+  icon: LayoutDashboard,
+  roles: ['client'],
+};
 
-  // FINANCEIRO
+const navCategories: NavCategoryDef[] = [
   {
-    menuId: 'financeiro',
-    path: '/financeiro',
-    label: 'Cobranças & Faturamento',
+    id: 'cadastros',
+    label: 'Cadastros',
+    icon: ClipboardList,
+    items: [
+      {
+        menuId: 'crm-contatos',
+        path: '/clientes',
+        label: 'Clientes',
+        icon: Building2,
+        roles: ['admin', 'support', 'finance'],
+      },
+      {
+        menuId: 'dstrack',
+        path: '/tickets',
+        label: 'Chamados',
+        icon: Ticket,
+        roles: ['admin', 'support'],
+      },
+      {
+        menuId: 'agenda',
+        path: '/agenda',
+        label: 'Agenda Operacional',
+        icon: CalendarDays,
+        roles: ['admin', 'support', 'finance'],
+      },
+    ],
+  },
+  {
+    id: 'comercial',
+    label: 'Comercial & Vendas',
+    icon: TrendingUp,
+    items: [
+      {
+        menuId: 'crm-pipeline',
+        path: '/pipeline',
+        label: 'Funil de Vendas',
+        icon: GitBranch,
+        roles: ['admin', 'support', 'finance'],
+      },
+      {
+        menuId: 'crm-propostas',
+        path: '/propostas',
+        label: 'Propostas Comerciais',
+        icon: FileCheck2,
+        roles: ['admin', 'support', 'finance'],
+      },
+      {
+        menuId: 'crm-contratos',
+        path: '/contratos-crm',
+        label: 'Contratos & Assinaturas',
+        icon: ShieldCheck,
+        roles: ['admin', 'support', 'finance'],
+      },
+      {
+        menuId: 'crm-items',
+        path: '/itens',
+        label: 'Catálogo de Produtos',
+        icon: Package,
+        roles: ['admin', 'support'],
+      },
+      {
+        menuId: 'recursos-catalogo',
+        path: '/catalogo',
+        label: 'Agenda Telefônica',
+        icon: BookUser,
+        roles: ['admin', 'support'],
+      },
+    ],
+  },
+  {
+    id: 'arquivos-operacoes',
+    label: 'Arquivos & Operações',
+    icon: Folder,
+    items: [
+      {
+        menuId: 'documentos',
+        path: '/documentos',
+        label: 'Arquivos & Documentos',
+        icon: FolderOpen,
+        roles: ['admin', 'support', 'finance'],
+      },
+      {
+        menuId: 'servidores',
+        path: '/servidores',
+        label: 'Servidores & Domínios',
+        icon: Server,
+        roles: ['admin', 'support'],
+      },
+      {
+        menuId: 'monitoramento',
+        path: '/monitoramento',
+        label: 'Monitoramento de Rede',
+        icon: Activity,
+        roles: ['admin', 'support'],
+      },
+      {
+        menuId: 'servicos',
+        path: '/servicos',
+        label: 'Serviços Contratados',
+        icon: Layers3,
+        roles: ['admin', 'support'],
+      },
+    ],
+  },
+  {
+    id: 'financeiro',
+    label: 'Financeiro',
     icon: Wallet,
-    roles: ['admin', 'finance'],
-    group: 'FINANCEIRO',
-  },
-
-  // ADMINISTRAÇÃO & SISTEMA
-  {
-    menuId: 'automacoes',
-    path: '/automacoes',
-    label: 'Automações & Integrações',
-    icon: Sparkles,
-    roles: ['admin'],
-    group: 'ADMINISTRAÇÃO & SISTEMA',
+    items: [
+      {
+        menuId: 'financeiro',
+        path: '/financeiro',
+        label: 'Cobranças & Faturamento',
+        icon: Wallet,
+        roles: ['admin', 'finance'],
+      },
+    ],
   },
   {
-    menuId: 'usuarios',
-    path: '/usuarios',
-    label: 'Usuários & Permissões',
-    icon: UserCog,
-    roles: ['admin'],
-  },
-  {
-    menuId: 'administracao',
-    path: '/configuracoes',
-    label: 'Configurações da Empresa',
+    id: 'administracao',
+    label: 'Configurações & Sistema',
     icon: Settings2,
-    roles: ['admin'],
+    items: [
+      {
+        menuId: 'automacoes',
+        path: '/automacoes',
+        label: 'Automações & Integrações',
+        icon: Sparkles,
+        roles: ['admin'],
+      },
+      {
+        menuId: 'usuarios',
+        path: '/usuarios',
+        label: 'Usuários & Permissões',
+        icon: UserCog,
+        roles: ['admin'],
+      },
+      {
+        menuId: 'administracao',
+        path: '/configuracoes',
+        label: 'Configurações da Empresa',
+        icon: Settings2,
+        roles: ['admin'],
+      },
+    ],
   },
   {
-    menuId: 'superadmin-tenants',
-    path: '/empresas',
-    label: 'Gestão de Empresas',
-    icon: Building2,
-    roles: ['admin'],
-    superAdminOnly: true,
-    group: 'GOVERNANÇA SUPERADMIN',
-  },
-  {
-    menuId: 'superadmin-policy',
-    path: '/politicas',
-    label: 'Políticas & Disjuntores',
+    id: 'superadmin',
+    label: 'Governança SuperAdmin',
     icon: ShieldAlert,
-    roles: ['admin'],
     superAdminOnly: true,
+    items: [
+      {
+        menuId: 'superadmin-tenants',
+        path: '/empresas',
+        label: 'Gestão de Empresas',
+        icon: Building2,
+        roles: ['admin'],
+        superAdminOnly: true,
+      },
+      {
+        menuId: 'superadmin-policy',
+        path: '/politicas',
+        label: 'Políticas & Disjuntores',
+        icon: ShieldAlert,
+        roles: ['admin'],
+        superAdminOnly: true,
+      },
+    ],
   },
 ];
 
-const portalItems = [
-  { menuId: 'portal', path: '/portal', label: 'Visão Geral', icon: LayoutDashboard, group: 'PORTAL DO CLIENTE' },
-  { menuId: 'portal-tickets', path: '/portal/tickets', label: 'Meus Chamados', icon: Ticket },
-  { menuId: 'portal-docs', path: '/portal/documentos', label: 'Meus Documentos', icon: FileText },
-  { menuId: 'portal-fin', path: '/portal/financeiro', label: 'Minhas Faturas', icon: Wallet },
+const portalCategories: NavCategoryDef[] = [
+  {
+    id: 'portal-arquivos',
+    label: 'Arquivos & Atendimento',
+    icon: Folder,
+    items: [
+      {
+        menuId: 'portal-tickets',
+        path: '/portal/tickets',
+        label: 'Meus Chamados',
+        icon: Ticket,
+        roles: ['client'],
+      },
+      {
+        menuId: 'portal-docs',
+        path: '/portal/documentos',
+        label: 'Meus Documentos',
+        icon: FileText,
+        roles: ['client'],
+      },
+      {
+        menuId: 'portal-fin',
+        path: '/portal/financeiro',
+        label: 'Minhas Faturas',
+        icon: Wallet,
+        roles: ['client'],
+      },
+    ],
+  },
 ];
 
 function normalize(v: string) {
@@ -286,6 +357,37 @@ export function AppLayout() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [deniedUserMenus, setDeniedUserMenus] = useState<Set<string> | null>(null);
+
+  // Estado das pastas / categorias abertas
+  const [openFolders, setOpenFolders] = useState<Record<string, boolean>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('crm_sidebar_open_folders');
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return {
+      cadastros: true,
+      comercial: true,
+      'arquivos-operacoes': true,
+      financeiro: true,
+      administracao: true,
+      superadmin: true,
+      'portal-arquivos': true,
+    };
+  });
+
+  const toggleFolder = (folderId: string) => {
+    setOpenFolders((prev) => {
+      const next = { ...prev, [folderId]: !prev[folderId] };
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('crm_sidebar_open_folders', JSON.stringify(next));
+        } catch {}
+      }
+      return next;
+    });
+  };
 
   const profileRef = useRef<HTMLDivElement>(null);
   const bellRef = useRef<HTMLDivElement>(null);
@@ -393,10 +495,43 @@ export function AppLayout() {
       ? client?.tradeName || client?.name || 'Cliente'
       : authUser?.name || user?.name || 'Administrador';
 
-  const items =
-    role === 'client'
-      ? portalItems
-      : navItems.filter(isMenuPermitted);
+  const topItem = role === 'client' ? portalTopItemDef : topItemDef;
+  const categoriesDef = role === 'client' ? portalCategories : navCategories;
+
+  const activeCategories = categoriesDef
+    .map((cat) => ({
+      ...cat,
+      items: cat.items.filter(isMenuPermitted),
+    }))
+    .filter((cat) => {
+      if (cat.superAdminOnly && !isSuperAdmin) return false;
+      return cat.items.length > 0;
+    });
+
+  const allActiveNavItems: NavItemDef[] = [
+    topItem,
+    ...activeCategories.flatMap((cat) => cat.items),
+  ];
+
+  // Auto-abre a pasta da rota atual caso o usuário navegue diretamente para ela
+  useEffect(() => {
+    const matchingCat = activeCategories.find((cat) =>
+      cat.items.some((item) =>
+        item.path === '/'
+          ? location.pathname === '/'
+          : location.pathname.startsWith(item.path)
+      )
+    );
+    if (matchingCat && !openFolders[matchingCat.id]) {
+      setOpenFolders((prev) => {
+        const next = { ...prev, [matchingCat.id]: true };
+        try {
+          localStorage.setItem('crm_sidebar_open_folders', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    }
+  }, [location.pathname, activeCategories]);
 
   const openTickets = data.tickets.filter(
     (t) =>
@@ -409,10 +544,10 @@ export function AppLayout() {
       (role !== 'client' || c.clientId === session?.clientId),
   );
   const navLabel =
-    [...items]
+    [...allActiveNavItems]
       .sort((a, b) => b.path.length - a.path.length)
-      .find((n) => n.path !== '/' && location.pathname.startsWith(n.path))?.label ??
-    (location.pathname === '/' || location.pathname === '/portal' ? 'Painel Geral' : 'Página');
+      .find((n) => n.path !== '/' && n.path !== '/portal' && location.pathname.startsWith(n.path))?.label ??
+    (location.pathname === '/' || location.pathname === '/portal' ? 'Dashboard' : 'Página');
 
   const entityId = location.pathname.split('/').filter(Boolean).at(-1);
   const visibleTicket = location.pathname.includes('/tickets/')
@@ -543,9 +678,6 @@ export function AppLayout() {
         }),
       );
 
-  // Compute group headers dynamically so hidden items don't leave orphaned or missing group headers
-  let lastRenderedGroup = '';
-
   return (
     <div
       className={`app-shell ${!pinned ? 'shell-collapsed' : ''} ${mobile ? 'mobile-open' : ''} ${data.settings.density === 'compact' ? 'compact' : ''}`}
@@ -574,31 +706,85 @@ export function AppLayout() {
           <Brand tenant={tenant} />
         </Link>
         <nav className="nav-area" aria-label="Menu principal">
-          {items.map((item) => {
-            const groupName = item.group || lastRenderedGroup;
-            const showGroupHeader = item.group && item.group !== lastRenderedGroup;
-            if (groupName) lastRenderedGroup = groupName;
-            return (
-              <div key={item.path}>
-                {showGroupHeader && <div className="nav-group-label">{item.group}</div>}
-                <NavLink
-                  to={item.path}
-                  end={item.path === '/' || item.path === '/portal'}
-                  className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
-                  title={isCollapsed ? item.label : undefined}
-                >
-                  <item.icon size={17} strokeWidth={1.65} />
-                  <span className="nav-text">{item.label}</span>
-                  {item.path.endsWith('/tickets') && openTickets.length > 0 && (
-                    <span className="nav-count">{openTickets.length}</span>
+          {/* Top Standalone Item: Dashboard */}
+          <div className="nav-standalone-wrap">
+            <NavLink
+              to={topItem.path}
+              end
+              className={({ isActive }) => `nav-link nav-top-link ${isActive ? 'active' : ''}`}
+              title={isCollapsed ? topItem.label : undefined}
+            >
+              <topItem.icon size={18} strokeWidth={1.75} />
+              <span className="nav-text">{topItem.label}</span>
+            </NavLink>
+          </div>
+
+          {/* Divisor superior */}
+          <div className="nav-divider" />
+
+          {/* Pastas / Categorias expansíveis */}
+          <div className="nav-folders-list">
+            {activeCategories.map((cat) => {
+              const isOpen = !!openFolders[cat.id];
+              const hasActiveChild = cat.items.some((item) =>
+                item.path === '/'
+                  ? location.pathname === '/'
+                  : location.pathname.startsWith(item.path)
+              );
+
+              return (
+                <div key={cat.id} className={`nav-folder-group ${isOpen ? 'expanded' : 'collapsed'}`}>
+                  <button
+                    type="button"
+                    className={`nav-folder-btn ${isOpen ? 'is-open' : ''} ${hasActiveChild ? 'has-active-child' : ''}`}
+                    onClick={() => toggleFolder(cat.id)}
+                    aria-expanded={isOpen}
+                    title={isCollapsed ? cat.label : undefined}
+                  >
+                    <div className="nav-folder-header-left">
+                      <cat.icon size={17} strokeWidth={1.75} className="nav-folder-icon" />
+                      <span className="nav-folder-label">{cat.label}</span>
+                    </div>
+                    <ChevronDown
+                      size={14}
+                      strokeWidth={2.2}
+                      className={`nav-folder-chevron ${isOpen ? 'is-open' : ''}`}
+                    />
+                  </button>
+
+                  {isOpen && (
+                    <div className="nav-folder-content">
+                      {cat.items.map((item) => {
+                        const isTicketItem = item.path.endsWith('/tickets');
+                        const isFinItem = item.path.endsWith('/financeiro');
+
+                        return (
+                          <NavLink
+                            key={item.path}
+                            to={item.path}
+                            className={({ isActive }) => `nav-sublink ${isActive ? 'active' : ''}`}
+                            title={isCollapsed ? item.label : undefined}
+                          >
+                            <item.icon size={16} strokeWidth={1.65} className="nav-sublink-icon" />
+                            <span className="nav-text">{item.label}</span>
+                            {isTicketItem && openTickets.length > 0 && (
+                              <span className="nav-count">{openTickets.length}</span>
+                            )}
+                            {isFinItem && overdue.length > 0 && (
+                              <span className="nav-count alert-count">{overdue.length}</span>
+                            )}
+                          </NavLink>
+                        );
+                      })}
+                    </div>
                   )}
-                  {item.path.endsWith('/financeiro') && overdue.length > 0 && (
-                    <span className="nav-count alert-count">{overdue.length}</span>
-                  )}
-                </NavLink>
-              </div>
-            );
-          })}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Divisor inferior */}
+          <div className="nav-divider" style={{ marginTop: '12px' }} />
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-version">
