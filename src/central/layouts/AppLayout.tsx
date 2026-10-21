@@ -513,8 +513,16 @@ export function AppLayout() {
     ...activeCategories.flatMap((cat) => cat.items),
   ];
 
-  // Auto-abre a pasta da rota atual caso o usuário navegue diretamente para ela
+  // Auto-abre a pasta da rota atual APENAS quando há transição de rota (navegação para outra página),
+  // permitindo que o usuário feche a pasta livremente se desejar, mesmo estando com uma página dela ativa.
+  const lastNavigatedPath = useRef<string>(location.pathname);
   useEffect(() => {
+    // Se a rota não mudou (ex: re-render por fechar/abrir pasta), não força reabertura
+    if (lastNavigatedPath.current === location.pathname) {
+      return;
+    }
+    lastNavigatedPath.current = location.pathname;
+
     const matchingCat = activeCategories.find((cat) =>
       cat.items.some((item) =>
         item.path === '/'
@@ -522,8 +530,9 @@ export function AppLayout() {
           : location.pathname.startsWith(item.path)
       )
     );
-    if (matchingCat && !openFolders[matchingCat.id]) {
+    if (matchingCat) {
       setOpenFolders((prev) => {
+        if (prev[matchingCat.id]) return prev;
         const next = { ...prev, [matchingCat.id]: true };
         try {
           localStorage.setItem('crm_sidebar_open_folders', JSON.stringify(next));
@@ -531,7 +540,7 @@ export function AppLayout() {
         return next;
       });
     }
-  }, [location.pathname, activeCategories]);
+  }, [location.pathname]);
 
   const openTickets = data.tickets.filter(
     (t) =>

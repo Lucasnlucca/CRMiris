@@ -272,6 +272,14 @@ strong {
   background: #f1f4f9;
   color: #1e293b;
 }
+.nav-folder-btn.has-active-child:not(.is-open) {
+  color: #4338ca;
+  background: #f8fafc;
+  font-weight: 650;
+}
+.nav-folder-btn.has-active-child:not(.is-open) .nav-folder-icon {
+  color: #4f46e5;
+}
 .nav-folder-header-left {
   display: flex;
   align-items: center;
