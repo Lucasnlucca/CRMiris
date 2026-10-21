@@ -18,6 +18,8 @@
   --border: #e7ebf0;
   --green: #209b72;
   --radius: 12px;
+  --tenant-primary-color: #4f46e5;
+  --primary: var(--tenant-primary-color, #4f46e5);
 }
 * {
   box-sizing: border-box;
@@ -221,19 +223,17 @@ strong {
   background: #f7f8fa;
 }
 .nav-link.active {
-  color: #4338ca;
-  background: #eff3fe;
+  color: #ffffff;
+  background: var(--tenant-primary-color, #4f46e5);
   font-weight: 650;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+}
+.nav-link.active svg {
+  color: #ffffff;
 }
 .nav-link.active:before {
-  content: '';
-  position: absolute;
-  left: -14px;
-  top: 9px;
-  bottom: 9px;
-  width: 3.5px;
-  background: #6366f1;
-  border-radius: 0 4px 4px 0;
+  display: none;
 }
 
 /* Pastas e Categorias de Navegação */
@@ -273,12 +273,12 @@ strong {
   color: #1e293b;
 }
 .nav-folder-btn.has-active-child:not(.is-open) {
-  color: #4338ca;
+  color: var(--tenant-primary-color, #4338ca);
   background: #f8fafc;
   font-weight: 650;
 }
 .nav-folder-btn.has-active-child:not(.is-open) .nav-folder-icon {
-  color: #4f46e5;
+  color: var(--tenant-primary-color, #4f46e5);
 }
 .nav-folder-header-left {
   display: flex;
@@ -343,22 +343,21 @@ strong {
   color: #1e293b;
 }
 .nav-sublink.active {
-  color: #4338ca;
-  background: #eef2ff;
+  color: #ffffff;
+  background: var(--tenant-primary-color, #4f46e5);
   font-weight: 650;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 }
 .nav-sublink.active .nav-sublink-icon {
-  color: #4f46e5;
+  color: #ffffff;
 }
 .nav-sublink.active:before {
-  content: '';
-  position: absolute;
-  left: 8px;
-  top: 9px;
-  bottom: 9px;
-  width: 2.5px;
-  background: #6366f1;
-  border-radius: 2px;
+  display: none;
+}
+.nav-sublink.active .nav-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
 }
 .nav-sublink-icon {
   color: #6c788e;
@@ -640,7 +639,7 @@ strong {
   padding: 12px;
 }
 .shell-collapsed .nav-link.active:before {
-  left: -12px;
+  display: none;
 }
 .shell-collapsed .nav-folder-btn {
   justify-content: center;
@@ -657,7 +656,7 @@ strong {
   padding: 10px 0;
 }
 .shell-collapsed .nav-sublink.active:before {
-  left: -12px;
+  display: none;
 }
 .shell-collapsed .sidebar-version {
   justify-content: center;
@@ -719,7 +718,7 @@ strong {
 }
 .shell-collapsed .sidebar:hover .nav-sublink.active:before,
 .shell-collapsed .sidebar.sidebar-hovered .nav-sublink.active:before {
-  left: 8px;
+  display: none;
 }
 .shell-collapsed .sidebar:hover .sidebar-version span,
 .shell-collapsed .sidebar.sidebar-hovered .sidebar-version span {

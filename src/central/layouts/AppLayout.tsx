@@ -730,6 +730,10 @@ export function AppLayout() {
   return (
     <div
       className={`app-shell ${!pinned ? 'shell-collapsed' : ''} ${mobile ? 'mobile-open' : ''} ${data.settings.density === 'compact' ? 'compact' : ''}`}
+      style={{
+        '--tenant-primary-color': tenant?.primary_color || '#4f46e5',
+        '--primary': tenant?.primary_color || '#4f46e5',
+      } as React.CSSProperties}
     >
       <a
         href="#main-content"
@@ -761,6 +765,11 @@ export function AppLayout() {
               to={topItem.path}
               end
               className={({ isActive }) => `nav-link nav-top-link ${isActive ? 'active' : ''}`}
+              style={({ isActive }) =>
+                isActive && tenant?.primary_color
+                  ? { backgroundColor: tenant.primary_color, color: '#ffffff' }
+                  : undefined
+              }
               title={isCollapsed ? topItem.label : undefined}
             >
               <topItem.icon size={18} strokeWidth={1.75} />
@@ -819,6 +828,12 @@ export function AppLayout() {
                             key={item.path}
                             to={item.path}
                             className={({ isActive }) => `nav-sublink ${isItemActive(item.path, isActive) ? 'active' : ''}`}
+                            style={({ isActive }) => {
+                              const active = isItemActive(item.path, isActive);
+                              return active && tenant?.primary_color
+                                ? { backgroundColor: tenant.primary_color, color: '#ffffff' }
+                                : undefined;
+                            }}
                             title={isCollapsed ? item.label : undefined}
                           >
                             <item.icon size={16} strokeWidth={1.65} className="nav-sublink-icon" />

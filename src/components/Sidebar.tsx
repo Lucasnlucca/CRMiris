@@ -282,15 +282,20 @@ export default function Sidebar({
                         key={item.id}
                         onClick={() => onPageChange(item.id)}
                         title={item.label}
+                        style={
+                          isActive && tenant?.primary_color
+                            ? { backgroundColor: tenant.primary_color, color: '#ffffff', borderColor: tenant.primary_color }
+                            : undefined
+                        }
                         className={`w-10 h-10 mx-auto flex items-center justify-center rounded-xl transition-all duration-150 relative group ${
                           isActive
-                            ? 'bg-indigo-50 text-indigo-600 border border-indigo-200 shadow-xs shadow-indigo-500/10 dark:bg-indigo-600/[0.22] dark:text-indigo-400 dark:border-indigo-500/30 dark:shadow-indigo-500/20'
+                            ? 'shadow-xs shadow-indigo-500/10 dark:shadow-indigo-500/20 text-white'
                             : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100/80 dark:text-slate-400 dark:hover:text-white dark:hover:bg-white/[0.06] border border-transparent'
                         }`}
                       >
-                        <Icon className={`w-4.5 h-4.5 transition-colors ${isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 group-hover:text-slate-800 dark:text-slate-400 dark:group-hover:text-white'}`} />
+                        <Icon className={`w-4.5 h-4.5 transition-colors ${isActive ? 'text-white' : 'text-slate-500 group-hover:text-slate-800 dark:text-slate-400 dark:group-hover:text-white'}`} />
                         {item.badge && item.badge > 0 && (
-                          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-indigo-500 rounded-full" />
+                          <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-white rounded-full shadow-xs" />
                         )}
                       </button>
                     );
@@ -300,27 +305,32 @@ export default function Sidebar({
                     <button
                       key={item.id}
                       onClick={() => onPageChange(item.id)}
+                      style={
+                        isActive && tenant?.primary_color
+                          ? { backgroundColor: tenant.primary_color, color: '#ffffff', borderColor: tenant.primary_color }
+                          : undefined
+                      }
                       className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-[13px] font-medium transition-all duration-150 group ${
                         isActive
-                          ? 'bg-indigo-50/90 text-indigo-700 font-semibold border border-indigo-200/80 shadow-xs shadow-indigo-500/5 dark:bg-indigo-600/[0.14] dark:text-white dark:border-indigo-500/25 dark:shadow-indigo-500/10'
+                          ? 'font-semibold text-white shadow-xs shadow-indigo-500/10'
                           : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 dark:text-slate-400 dark:hover:text-slate-100 dark:hover:bg-white/[0.05] border border-transparent'
                       }`}
                     >
                       <div className="flex items-center gap-2.5 min-w-0">
                         <Icon
                           className={`w-4 h-4 flex-shrink-0 transition-colors ${
-                            isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 group-hover:text-slate-800 dark:text-slate-400 dark:group-hover:text-slate-200'
+                            isActive ? 'text-white' : 'text-slate-500 group-hover:text-slate-800 dark:text-slate-400 dark:group-hover:text-slate-200'
                           }`}
                         />
                         <span className="truncate tracking-tight">{item.label}</span>
                       </div>
 
                       {item.badge && item.badge > 0 ? (
-                        <span className="min-w-[18px] h-4.5 flex items-center justify-center rounded-full text-[10px] font-bold px-1.5 bg-indigo-600 text-white shadow-xs">
+                        <span className="min-w-[18px] h-4.5 flex items-center justify-center rounded-full text-[10px] font-bold px-1.5 bg-white text-slate-900 shadow-xs">
                           {item.badge > 99 ? '99+' : item.badge}
                         </span>
                       ) : isActive ? (
-                        <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 shadow-[0_0_8px_rgba(79,70,229,0.6)]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]" />
                       ) : null}
                     </button>
                   );

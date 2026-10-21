@@ -174,11 +174,13 @@ export function extractSlugFromPath(pathname: string): string | null {
 }
 
 // Aplica personalização de cores via CSS custom properties e sincroniza atributos de separação no HTML
-function applyTenantBranding(primaryColor?: string, tenantObj?: Tenant | null) {
+export function applyTenantBranding(primaryColor?: string, tenantObj?: Tenant | null) {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
   const color = primaryColor && /^#[0-9a-fA-F]{3,8}$/.test(primaryColor) ? primaryColor : '#4f46e5';
   root.style.setProperty('--tenant-primary-color', color);
+  root.style.setProperty('--primary', color);
+  root.style.setProperty('--primary-color', color);
 
   if (tenantObj) {
     root.setAttribute('data-tenant-id', tenantObj.id);

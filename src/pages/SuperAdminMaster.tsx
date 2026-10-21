@@ -44,7 +44,7 @@ import {
   Trash2,
   Image as ImageIcon,
 } from 'lucide-react';
-import { useTenant, Tenant } from '../context/TenantContext';
+import { useTenant, Tenant, applyTenantBranding } from '../context/TenantContext';
 import { useAuth } from '../context/AuthContext';
 import {
   fetchAdminTenants,
@@ -277,7 +277,19 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
     const t = tenants.find((item) => item.id === tenantId);
     if (t) {
       setBrandingLogoUrl(t.logo_url || '');
-      setBrandingColor(t.primary_color || '#3b82f6');
+      const color = t.primary_color || '#3b82f6';
+      setBrandingColor(color);
+      if (currentActiveTenant?.id === tenantId) {
+        applyTenantBranding(color, t);
+      }
+    }
+  };
+
+  // Atualiza cor em tempo real na interface da plataforma
+  const handleUpdateBrandingColor = (color: string) => {
+    setBrandingColor(color);
+    if (selectedBrandingTenantId === currentActiveTenant?.id || !currentActiveTenant) {
+      applyTenantBranding(color, selectedTenantObj);
     }
   };
 
@@ -298,6 +310,13 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
       const res = await updateAdminTenant(selectedBrandingTenantId, payload);
       if (res.tenant?.logo_url) {
         setBrandingLogoUrl(res.tenant.logo_url);
+      }
+      if (selectedBrandingTenantId === currentActiveTenant?.id) {
+        applyTenantBranding(brandingColor, {
+          ...target,
+          primary_color: brandingColor,
+          logo_url: brandingLogoUrl.trim(),
+        });
       }
       setSuccessNotice(`Personalização de "${target.name}" salva com sucesso!`);
       await loadTenants();
@@ -1175,7 +1194,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                         <button
                           key={color.hex}
                           type="button"
-                          onClick={() => setBrandingColor(color.hex)}
+                          onClick={() => handleUpdateBrandingColor(color.hex)}
                           title={`${color.name} (${color.hex})`}
                           className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${
                             isSelected
@@ -1203,13 +1222,13 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                     <input
                       type="color"
                       value={brandingColor}
-                      onChange={(e) => setBrandingColor(e.target.value)}
+                      onChange={(e) => handleUpdateBrandingColor(e.target.value)}
                       className="w-10 h-10 rounded-xl border border-slate-200 dark:border-white/10 cursor-pointer p-0.5 bg-transparent"
                     />
                     <input
                       type="text"
                       value={brandingColor}
-                      onChange={(e) => setBrandingColor(e.target.value)}
+                      onChange={(e) => handleUpdateBrandingColor(e.target.value)}
                       placeholder="#3b82f6"
                       className="w-36 p-2.5 bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl text-sm font-mono text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     />
