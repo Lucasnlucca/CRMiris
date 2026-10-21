@@ -96,6 +96,7 @@ interface NavItemDef {
   path: string;
   label: string;
   icon: any;
+  color?: string;
   roles: string[];
   superAdminOnly?: boolean;
 }
@@ -104,6 +105,7 @@ interface NavCategoryDef {
   id: string;
   label: string;
   icon: any;
+  color?: string;
   items: NavItemDef[];
   superAdminOnly?: boolean;
 }
@@ -113,6 +115,7 @@ const topItemDef: NavItemDef = {
   path: '/',
   label: 'Dashboard',
   icon: LayoutDashboard,
+  color: '#4f46e5',
   roles: ['admin', 'support', 'finance'],
 };
 
@@ -121,6 +124,7 @@ const portalTopItemDef: NavItemDef = {
   path: '/portal',
   label: 'Dashboard',
   icon: LayoutDashboard,
+  color: '#4f46e5',
   roles: ['client'],
 };
 
@@ -129,12 +133,14 @@ const navCategories: NavCategoryDef[] = [
     id: 'cadastros',
     label: 'Cadastros',
     icon: ClipboardList,
+    color: '#10b981',
     items: [
       {
         menuId: 'crm-contatos',
         path: '/clientes',
         label: 'Clientes',
         icon: Building2,
+        color: '#f59e0b',
         roles: ['admin', 'support', 'finance'],
       },
       {
@@ -142,6 +148,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/tickets',
         label: 'Chamados',
         icon: Ticket,
+        color: '#06b6d4',
         roles: ['admin', 'support'],
       },
       {
@@ -149,6 +156,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/agenda',
         label: 'Agenda Operacional',
         icon: CalendarDays,
+        color: '#10b981',
         roles: ['admin', 'support', 'finance'],
       },
     ],
@@ -157,12 +165,14 @@ const navCategories: NavCategoryDef[] = [
     id: 'comercial',
     label: 'Comercial & Vendas',
     icon: TrendingUp,
+    color: '#3b82f6',
     items: [
       {
         menuId: 'crm-pipeline',
         path: '/pipeline',
         label: 'Funil de Vendas',
         icon: GitBranch,
+        color: '#3b82f6',
         roles: ['admin', 'support', 'finance'],
       },
       {
@@ -170,6 +180,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/propostas',
         label: 'Propostas Comerciais',
         icon: FileCheck2,
+        color: '#8b5cf6',
         roles: ['admin', 'support', 'finance'],
       },
       {
@@ -177,6 +188,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/contratos-crm',
         label: 'Contratos & Assinaturas',
         icon: ShieldCheck,
+        color: '#10b981',
         roles: ['admin', 'support', 'finance'],
       },
       {
@@ -184,6 +196,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/itens',
         label: 'Catálogo de Produtos',
         icon: Package,
+        color: '#f97316',
         roles: ['admin', 'support'],
       },
       {
@@ -191,6 +204,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/catalogo',
         label: 'Agenda Telefônica',
         icon: BookUser,
+        color: '#ec4899',
         roles: ['admin', 'support'],
       },
     ],
@@ -199,12 +213,14 @@ const navCategories: NavCategoryDef[] = [
     id: 'arquivos-operacoes',
     label: 'Arquivos & Operações',
     icon: Folder,
+    color: '#06b6d4',
     items: [
       {
         menuId: 'documentos',
         path: '/documentos',
         label: 'Arquivos & Documentos',
         icon: FolderOpen,
+        color: '#0ea5e9',
         roles: ['admin', 'support', 'finance'],
       },
       {
@@ -212,6 +228,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/servidores',
         label: 'Servidores & Domínios',
         icon: Server,
+        color: '#6366f1',
         roles: ['admin', 'support'],
       },
       {
@@ -219,6 +236,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/monitoramento',
         label: 'Monitoramento de Rede',
         icon: Activity,
+        color: '#10b981',
         roles: ['admin', 'support'],
       },
       {
@@ -226,6 +244,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/servicos',
         label: 'Serviços Contratados',
         icon: Layers3,
+        color: '#8b5cf6',
         roles: ['admin', 'support'],
       },
     ],
@@ -234,12 +253,14 @@ const navCategories: NavCategoryDef[] = [
     id: 'financeiro',
     label: 'Financeiro',
     icon: Wallet,
+    color: '#f59e0b',
     items: [
       {
         menuId: 'financeiro',
         path: '/financeiro',
         label: 'Cobranças & Faturamento',
         icon: Wallet,
+        color: '#10b981',
         roles: ['admin', 'finance'],
       },
     ],
@@ -248,12 +269,14 @@ const navCategories: NavCategoryDef[] = [
     id: 'administracao',
     label: 'Configurações & Sistema',
     icon: Settings2,
+    color: '#8b5cf6',
     items: [
       {
         menuId: 'automacoes',
         path: '/automacoes',
         label: 'Automações & Integrações',
         icon: Sparkles,
+        color: '#ec4899',
         roles: ['admin'],
       },
       {
@@ -261,6 +284,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/usuarios',
         label: 'Usuários & Permissões',
         icon: UserCog,
+        color: '#3b82f6',
         roles: ['admin'],
       },
       {
@@ -268,6 +292,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/configuracoes',
         label: 'Configurações da Empresa',
         icon: Settings2,
+        color: '#64748b',
         roles: ['admin'],
       },
     ],
@@ -276,6 +301,7 @@ const navCategories: NavCategoryDef[] = [
     id: 'superadmin',
     label: 'Governança SuperAdmin',
     icon: ShieldAlert,
+    color: '#6366f1',
     superAdminOnly: true,
     items: [
       {
@@ -283,6 +309,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/empresas?tab=dashboard',
         label: 'Dashboard Master',
         icon: LayoutDashboard,
+        color: '#4f46e5',
         roles: ['admin'],
         superAdminOnly: true,
       },
@@ -291,6 +318,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/empresas?tab=tenants',
         label: 'Clientes (CRMs)',
         icon: Building2,
+        color: '#0ea5e9',
         roles: ['admin'],
         superAdminOnly: true,
       },
@@ -299,6 +327,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/empresas?tab=branding',
         label: 'Personalização do CRM',
         icon: Palette,
+        color: '#f59e0b',
         roles: ['admin'],
         superAdminOnly: true,
       },
@@ -307,6 +336,7 @@ const navCategories: NavCategoryDef[] = [
         path: '/empresas?tab=policy',
         label: 'Políticas & Disjuntores',
         icon: ShieldCheck,
+        color: '#ef4444',
         roles: ['admin'],
         superAdminOnly: true,
       },
@@ -319,12 +349,14 @@ const portalCategories: NavCategoryDef[] = [
     id: 'portal-arquivos',
     label: 'Arquivos & Atendimento',
     icon: Folder,
+    color: '#0ea5e9',
     items: [
       {
         menuId: 'portal-tickets',
         path: '/portal/tickets',
         label: 'Meus Chamados',
         icon: Ticket,
+        color: '#06b6d4',
         roles: ['client'],
       },
       {
@@ -332,6 +364,7 @@ const portalCategories: NavCategoryDef[] = [
         path: '/portal/documentos',
         label: 'Meus Documentos',
         icon: FileText,
+        color: '#3b82f6',
         roles: ['client'],
       },
       {
@@ -339,6 +372,7 @@ const portalCategories: NavCategoryDef[] = [
         path: '/portal/financeiro',
         label: 'Minhas Faturas',
         icon: Wallet,
+        color: '#10b981',
         roles: ['client'],
       },
     ],
@@ -799,7 +833,7 @@ export function AppLayout() {
               }
               title={isCollapsed ? topItem.label : undefined}
             >
-              <topItem.icon size={18} strokeWidth={1.75} />
+              <topItem.icon size={18} strokeWidth={1.8} className="nav-top-icon" style={{ color: topItem.color || '#4f46e5' }} />
               <span className="nav-text">{topItem.label}</span>
             </NavLink>
           </div>
@@ -834,7 +868,7 @@ export function AppLayout() {
                     title={isCollapsed ? cat.label : undefined}
                   >
                     <div className="nav-folder-header-left">
-                      <cat.icon size={17} strokeWidth={1.75} className="nav-folder-icon" />
+                      <cat.icon size={17} strokeWidth={1.8} className="nav-folder-icon" style={{ color: cat.color || '#5d6d84' }} />
                       <span className="nav-folder-label">{cat.label}</span>
                     </div>
                     <ChevronDown
@@ -863,7 +897,7 @@ export function AppLayout() {
                             }}
                             title={isCollapsed ? item.label : undefined}
                           >
-                            <item.icon size={16} strokeWidth={1.65} className="nav-sublink-icon" />
+                            <item.icon size={16} strokeWidth={1.75} className="nav-sublink-icon" style={{ color: item.color || '#64748b' }} />
                             <span className="nav-text">{item.label}</span>
                             {isTicketItem && openTickets.length > 0 && (
                               <span className="nav-count">{openTickets.length}</span>

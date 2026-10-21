@@ -276,12 +276,12 @@ strong {
   color: #1e293b;
 }
 .nav-folder-btn.has-active-child:not(.is-open) {
-  color: var(--tenant-primary-color, #4338ca);
+  color: #1e293b;
   background: #f8fafc;
   font-weight: 650;
 }
 .nav-folder-btn.has-active-child:not(.is-open) .nav-folder-icon {
-  color: var(--tenant-primary-color, #4f46e5);
+  filter: saturate(1.3) brightness(0.95);
 }
 .nav-folder-header-left {
   display: flex;
@@ -291,13 +291,12 @@ strong {
   flex: 1;
 }
 .nav-folder-icon {
-  color: #5d6d84;
   flex-shrink: 0;
-  transition: color 0.15s ease;
+  transition: transform 0.15s ease, filter 0.15s ease;
 }
 .nav-folder-btn:hover .nav-folder-icon,
 .nav-folder-btn.is-open .nav-folder-icon {
-  color: #1e293b;
+  filter: saturate(1.25);
 }
 .nav-folder-label {
   white-space: nowrap;
@@ -343,7 +342,7 @@ strong {
   background: #f7f9fc;
 }
 .nav-sublink:hover .nav-sublink-icon {
-  color: #1e293b;
+  filter: saturate(1.25);
 }
 .nav-sublink.active {
   color: #ffffff;
@@ -353,7 +352,7 @@ strong {
   box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 }
 .nav-sublink.active .nav-sublink-icon {
-  color: #ffffff;
+  color: #ffffff !important;
 }
 .nav-sublink.active:before {
   display: none;
@@ -363,9 +362,8 @@ strong {
   color: #ffffff;
 }
 .nav-sublink-icon {
-  color: #6c788e;
   flex-shrink: 0;
-  transition: color 0.15s ease;
+  transition: transform 0.15s ease, filter 0.15s ease;
 }
 
 .nav-count {
