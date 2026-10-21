@@ -90,7 +90,7 @@ export default function Login() {
               <img
                 src={resolvedTenant.logo_url}
                 alt={resolvedTenant.name}
-                className="h-14 w-auto object-contain"
+                className="h-14 w-auto object-contain rounded-xl shadow-xs"
               />
             ) : (
               <img
@@ -104,12 +104,20 @@ export default function Login() {
           {(resolvedTenant || detectedSlug) && (
             <div className="mb-6 p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div
-                  className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs flex-shrink-0"
-                  style={{ backgroundColor: resolvedTenant?.primary_color || "#4f46e5" }}
-                >
-                  <Building2 className="w-4 h-4" />
-                </div>
+                {resolvedTenant?.logo_url ? (
+                  <img
+                    src={resolvedTenant.logo_url}
+                    alt="Logo"
+                    className="w-8 h-8 object-contain rounded-lg flex-shrink-0"
+                  />
+                ) : (
+                  <div
+                    className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs flex-shrink-0"
+                    style={{ backgroundColor: resolvedTenant?.primary_color || "#4f46e5" }}
+                  >
+                    <Building2 className="w-4 h-4" />
+                  </div>
+                )}
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-white truncate">
                     {resolvedTenant ? resolvedTenant.trade_name || resolvedTenant.name : `Ambiente: ${detectedSlug}`}

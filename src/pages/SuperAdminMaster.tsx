@@ -63,6 +63,7 @@ import {
   AdminAuditLogEntry,
   PolicyStatusResponse,
 } from '../lib/adminPolicyApi';
+import { optimizeLogoImage, MAX_LOGO_FILE_SIZE } from '../lib/imageOptimizer';
 
 // Cores pré-definidas exatamente iguais às do print do usuário
 const PRESET_COLORS = [
@@ -154,7 +155,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
   const brandingFileInputRef = useRef<HTMLInputElement>(null);
   const modalFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Processador de upload de arquivo de logo (Storage + Base64 fallback resiliente)
+  // Processador de upload de arquivo de logo (Otimizador de imagem + Storage / Base64 fallback resiliente)
   const handleFileUpload = async (file: File, isModal: boolean = false) => {
     if (!file) return;
 
@@ -163,8 +164,8 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
       return;
     }
 
-    if (file.size > 2 * 1024 * 1024) {
-      setError('O arquivo de imagem deve ter no máximo 2MB.');
+    if (file.size > MAX_LOGO_FILE_SIZE) {
+      setError('O arquivo de imagem deve ter no máximo 5MB.');
       return;
     }
 
@@ -172,6 +173,9 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
     setError(null);
 
     try {
+      // Otimiza proporcionalmente no Canvas preservando transparência alfa (PNG/WebP) e SVGs vetoriais
+      const optimizedDataUrl = await optimizeLogoImage(file);
+
       const bucketId = import.meta.env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments';
       let uploadedUrl = '';
 
@@ -180,17 +184,11 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
         await storage.createFile(bucketId, fileId, file);
         uploadedUrl = storage.getFileView(bucketId, fileId).toString();
       } catch (storageErr: any) {
-        console.warn('[Storage] Upload direto via Storage falhou ou bucket indisponível, usando DataURL seguro:', storageErr?.message);
+        console.warn('[Storage] Upload via bucket não disponível, utilizando imagem otimizada em alta definição:', storageErr?.message);
       }
 
       if (!uploadedUrl) {
-        // Fallback resiliente: converter para DataURL base64 de alta resolução
-        uploadedUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = () => reject(new Error('Erro ao processar o arquivo da imagem.'));
-          reader.readAsDataURL(file);
-        });
+        uploadedUrl = optimizedDataUrl;
       }
 
       if (isModal) {
@@ -1044,11 +1042,11 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
 
                 {brandingLogoUrl ? (
                   <div className="flex flex-col sm:flex-row items-center gap-4 p-4 rounded-xl border border-indigo-200 dark:border-indigo-500/20 bg-indigo-50/50 dark:bg-indigo-950/20">
-                    <div className="w-20 h-20 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-2 flex items-center justify-center shrink-0 shadow-xs">
+                    <div className="w-20 h-20 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-2 flex items-center justify-center shrink-0 shadow-xs overflow-hidden">
                       <img
                         src={brandingLogoUrl}
                         alt="Logo Atual"
-                        className="max-h-full max-w-full object-contain"
+                        className="max-h-full max-w-full object-contain rounded-xl"
                       />
                     </div>
                     <div className="flex-1 min-w-0 text-center sm:text-left">
@@ -1121,7 +1119,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                             Clique ou arraste o arquivo da logo aqui
                           </p>
                           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                            Suporta PNG (com transparência), SVG, JPG ou WebP (máx. 2MB)
+                            Suporta PNG (com transparência), SVG, JPG ou WebP (máx. 5MB)
                           </p>
                         </div>
                       </>
@@ -1129,12 +1127,12 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                   </div>
                 )}
 
-                {/* Preview da Logo */}
+                {/* Preview da Logo com cantos arredondados */}
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <div className="p-4 rounded-xl border border-slate-200 bg-white flex flex-col items-center justify-center min-h-[90px]">
                     <span className="text-[11px] font-semibold text-slate-400 mb-2">Fundo Claro</span>
                     {brandingLogoUrl ? (
-                      <img src={brandingLogoUrl} alt="Logo Preview" className="max-h-10 object-contain" />
+                      <img src={brandingLogoUrl} alt="Logo Preview" className="max-h-12 max-w-full object-contain rounded-xl shadow-xs" />
                     ) : (
                       <span className="text-xs text-slate-400 italic">Sem imagem</span>
                     )}
@@ -1143,7 +1141,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                   <div className="p-4 rounded-xl border border-slate-800 bg-[#0f172a] flex flex-col items-center justify-center min-h-[90px]">
                     <span className="text-[11px] font-semibold text-slate-500 mb-2">Fundo Escuro</span>
                     {brandingLogoUrl ? (
-                      <img src={brandingLogoUrl} alt="Logo Preview" className="max-h-10 object-contain" />
+                      <img src={brandingLogoUrl} alt="Logo Preview" className="max-h-12 max-w-full object-contain rounded-xl shadow-xs" />
                     ) : (
                       <span className="text-xs text-slate-500 italic">Sem imagem</span>
                     )}
@@ -1254,16 +1252,20 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                   {/* Top Header Mockup */}
                   <div className="h-14 px-4 bg-white dark:bg-[#0c1017] border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs shadow-xs"
-                        style={{ backgroundColor: brandingColor }}
-                      >
-                        {brandingLogoUrl ? (
-                          <img src={brandingLogoUrl} alt="Logo" className="w-6 h-6 object-contain" />
-                        ) : (
+                      {brandingLogoUrl ? (
+                        <img
+                          src={brandingLogoUrl}
+                          alt="Logo"
+                          className="h-8 max-h-8 w-auto max-w-[120px] object-contain rounded-lg flex-shrink-0"
+                        />
+                      ) : (
+                        <div
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs shadow-xs flex-shrink-0"
+                          style={{ backgroundColor: brandingColor }}
+                        >
                           <PhoneCall className="w-4 h-4" />
-                        )}
-                      </div>
+                        </div>
+                      )}
                       <div>
                         <div className="text-xs font-bold text-slate-800 dark:text-white leading-tight">
                           {selectedTenantObj?.trade_name || selectedTenantObj?.name || 'Iris Horizon CRM'}
@@ -1902,11 +1904,11 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                 />
                 {formData.logo_url ? (
                   <div className="flex items-center gap-3 p-3 rounded-xl border border-indigo-200 dark:border-white/10 bg-indigo-50/40 dark:bg-white/5">
-                    <div className="w-12 h-12 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0">
+                    <div className="w-12 h-12 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
                       <img
                         src={formData.logo_url}
                         alt="Logo"
-                        className="max-h-full max-w-full object-contain"
+                        className="max-h-full max-w-full object-contain rounded-lg"
                       />
                     </div>
                     <div className="flex-1 min-w-0">
@@ -1951,7 +1953,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                     ) : (
                       <>
                         <UploadCloud className="w-4 h-4 text-indigo-500" />
-                        <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP)</span>
+                        <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP - máx. 5MB)</span>
                       </>
                     )}
                   </button>

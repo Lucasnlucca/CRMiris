@@ -135,8 +135,8 @@ export async function handleTenantProvisioningRoutes(
     res.end(JSON.stringify(payload));
   };
 
-  // Leitura segura do corpo JSON para métodos POST (S10)
-  const readBody = (): Promise<any> => readJsonBody(req, { maxBytes: 1024 * 1024 });
+  // Leitura segura do corpo JSON para métodos POST e PUT (S10) com suporte a logos de até 10MB
+  const readBody = (): Promise<any> => readJsonBody(req, { maxBytes: 10 * 1024 * 1024 });
 
   try {
     const endpoint = envConfig.ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';

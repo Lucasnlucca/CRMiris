@@ -14,7 +14,7 @@ export interface ReadJsonBodyOptions {
  * Lê o corpo da requisição com limite estrito de bytes e timeout de leitura (S10)
  */
 export function readJsonBody<T = any>(req: IncomingMessage, options: ReadJsonBodyOptions = {}): Promise<T> {
-  const maxBytes = options.maxBytes || 2 * 1024 * 1024; // 2MB padrão
+  const maxBytes = options.maxBytes || 10 * 1024 * 1024; // 10MB padrão (suporte a logos e payloads em alta resolução)
   const timeoutMs = options.timeoutMs || 15000; // 15 segundos
 
   return new Promise((resolve, reject) => {

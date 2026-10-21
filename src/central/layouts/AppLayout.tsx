@@ -59,20 +59,20 @@ export function Brand({ tenant }: { tenant?: any }) {
   const domainText = tenant?.slug ? `${tenant.slug}.lvplataform.com.br` : 'Central de Operações & CRM';
   return (
     <div className="brand" title={`${displayTitle} (${domainText})`}>
-      <div
-        className="brand-symbol"
-        style={tenant?.primary_color ? { backgroundColor: tenant.primary_color } : undefined}
-      >
-        {tenant?.logo_url ? (
-          <img
-            src={tenant.logo_url}
-            alt={displayTitle}
-            className="w-6 h-6 object-contain"
-          />
-        ) : (
+      {tenant?.logo_url ? (
+        <img
+          src={tenant.logo_url}
+          alt={displayTitle}
+          className="brand-logo-img h-9 max-h-9 w-auto max-w-[140px] object-contain rounded-xl flex-shrink-0"
+        />
+      ) : (
+        <div
+          className="brand-symbol"
+          style={tenant?.primary_color ? { backgroundColor: tenant.primary_color } : undefined}
+        >
           <PhoneCall size={21} strokeWidth={1.7} />
-        )}
-      </div>
+        </div>
+      )}
       <div className="brand-copy">
         <div className="brand-name" title={displayTitle}>
           {displayTitle ? (

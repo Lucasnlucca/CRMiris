@@ -26,6 +26,7 @@ import {
   UpdateTenantPayload,
 } from '../lib/adminTenantsApi';
 import { ALL_CRM_MENUS } from '../lib/tenantUsersApi';
+import { optimizeLogoImage, MAX_LOGO_FILE_SIZE } from '../lib/imageOptimizer';
 
 interface SuperAdminTenantsProps {
   onPageChange?: (page: string) => void;
@@ -81,8 +82,8 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
       setError('Por favor, selecione um arquivo de imagem válido (PNG, SVG, JPG, WebP).');
       return;
     }
-    if (file.size > 2 * 1024 * 1024) {
-      setError('O arquivo de imagem deve ter no máximo 2MB.');
+    if (file.size > MAX_LOGO_FILE_SIZE) {
+      setError('O arquivo de imagem deve ter no máximo 5MB.');
       return;
     }
 
@@ -90,6 +91,7 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
     setError(null);
 
     try {
+      const optimizedDataUrl = await optimizeLogoImage(file);
       const bucketId = import.meta.env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments';
       let uploadedUrl = '';
       try {
@@ -97,16 +99,11 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
         await storage.createFile(bucketId, fileId, file);
         uploadedUrl = storage.getFileView(bucketId, fileId).toString();
       } catch (storageErr: any) {
-        console.warn('[Storage] Fallback para DataURL:', storageErr?.message);
+        console.warn('[Storage] Fallback para imagem otimizada:', storageErr?.message);
       }
 
       if (!uploadedUrl) {
-        uploadedUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target?.result as string);
-          reader.onerror = () => reject(new Error('Erro ao processar o arquivo de imagem.'));
-          reader.readAsDataURL(file);
-        });
+        uploadedUrl = optimizedDataUrl;
       }
 
       setFormData((prev) => ({ ...prev, logo_url: uploadedUrl }));
@@ -695,11 +692,11 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
                   />
                   {formData.logo_url ? (
                     <div className="flex items-center gap-3 p-3 rounded-xl border border-indigo-200 dark:border-white/10 bg-indigo-50/40 dark:bg-white/5">
-                      <div className="w-12 h-12 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0">
+                      <div className="w-12 h-12 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
                         <img
                           src={formData.logo_url}
                           alt="Logo"
-                          className="max-h-full max-w-full object-contain"
+                          className="max-h-full max-w-full object-contain rounded-lg"
                         />
                       </div>
                       <div className="flex-1 min-w-0">
@@ -744,7 +741,7 @@ export default function SuperAdminTenants({ onPageChange }: SuperAdminTenantsPro
                       ) : (
                         <>
                           <UploadCloud className="w-4 h-4 text-indigo-500" />
-                          <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP)</span>
+                          <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP - máx. 5MB)</span>
                         </>
                       )}
                     </button>

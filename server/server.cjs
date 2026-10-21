@@ -140,7 +140,7 @@ initializeGovernance(writePolicyEngine, governanceConfig, {
 });
 
 // Proteção contra DoS: Limite de payload e Rate Limiter
-const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
+const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024; // 10 MB (suporte a logomarcas em alta resolução)
 const ipRateLimits = new Map();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 120;

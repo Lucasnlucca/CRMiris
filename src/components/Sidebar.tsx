@@ -196,16 +196,24 @@ export default function Sidebar({
           title="Ir para Painel Geral"
         >
           <div className="relative flex-shrink-0">
-            <div
-              className="w-10 h-10 rounded-xl p-0.5 shadow-md shadow-indigo-500/20 flex items-center justify-center transition-transform group-hover:scale-105"
-              style={{ backgroundColor: tenant?.primary_color || '#4f46e5' }}
-            >
+            {tenant?.logo_url ? (
               <img
-                src={tenant?.logo_url || '/logoicon.png'}
+                src={tenant.logo_url}
                 alt={tenant?.name || 'Iris Horizon'}
-                className="w-full h-full object-contain rounded-lg p-1"
+                className="w-10 h-10 object-contain rounded-xl shadow-xs transition-transform group-hover:scale-105"
               />
-            </div>
+            ) : (
+              <div
+                className="w-10 h-10 rounded-xl p-0.5 shadow-md shadow-indigo-500/20 flex items-center justify-center transition-transform group-hover:scale-105"
+                style={{ backgroundColor: tenant?.primary_color || '#4f46e5' }}
+              >
+                <img
+                  src="/logoicon.png"
+                  alt={tenant?.name || 'Iris Horizon'}
+                  className="w-full h-full object-contain rounded-lg p-1"
+                />
+              </div>
+            )}
             <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#0c1017]" />
           </div>
 
