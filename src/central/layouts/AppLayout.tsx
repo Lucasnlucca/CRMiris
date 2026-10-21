@@ -22,6 +22,7 @@ import {
   Menu,
   Network,
   Package,
+  Palette,
   PanelLeftClose,
   PanelLeftOpen,
   PhoneCall,
@@ -278,18 +279,34 @@ const navCategories: NavCategoryDef[] = [
     superAdminOnly: true,
     items: [
       {
+        menuId: 'superadmin-dashboard',
+        path: '/empresas?tab=dashboard',
+        label: 'Dashboard Master',
+        icon: LayoutDashboard,
+        roles: ['admin'],
+        superAdminOnly: true,
+      },
+      {
         menuId: 'superadmin-tenants',
-        path: '/empresas',
-        label: 'Gestão de Empresas',
+        path: '/empresas?tab=tenants',
+        label: 'Clientes (CRMs)',
         icon: Building2,
         roles: ['admin'],
         superAdminOnly: true,
       },
       {
+        menuId: 'superadmin-branding',
+        path: '/empresas?tab=branding',
+        label: 'Personalização do CRM',
+        icon: Palette,
+        roles: ['admin'],
+        superAdminOnly: true,
+      },
+      {
         menuId: 'superadmin-policy',
-        path: '/politicas',
+        path: '/empresas?tab=policy',
         label: 'Políticas & Disjuntores',
-        icon: ShieldAlert,
+        icon: ShieldCheck,
         roles: ['admin'],
         superAdminOnly: true,
       },
@@ -552,10 +569,33 @@ export function AppLayout() {
       effectiveChargeStatus(c) === 'Vencido' &&
       (role !== 'client' || c.clientId === session?.clientId),
   );
+  const isItemActive = (itemPath: string, isActiveByRouter: boolean) => {
+    if (itemPath.includes('?')) {
+      const [base, query] = itemPath.split('?');
+      if (location.pathname !== base) return false;
+      const targetParams = new URLSearchParams(query);
+      const currentParams = new URLSearchParams(location.search);
+      const targetTab = targetParams.get('tab');
+      const currentTab = currentParams.get('tab') || 'dashboard';
+      return targetTab === currentTab;
+    }
+    return isActiveByRouter;
+  };
+
   const navLabel =
     [...allActiveNavItems]
       .sort((a, b) => b.path.length - a.path.length)
-      .find((n) => n.path !== '/' && n.path !== '/portal' && location.pathname.startsWith(n.path))?.label ??
+      .find((n) => {
+        if (n.path === '/' || n.path === '/portal') return false;
+        if (n.path.includes('?')) {
+          const [base, query] = n.path.split('?');
+          if (location.pathname !== base) return false;
+          const targetTab = new URLSearchParams(query).get('tab');
+          const currentTab = new URLSearchParams(location.search).get('tab') || 'dashboard';
+          return targetTab === currentTab;
+        }
+        return location.pathname.startsWith(n.path);
+      })?.label ??
     (location.pathname === '/' || location.pathname === '/portal' ? 'Dashboard' : 'Página');
 
   const entityId = location.pathname.split('/').filter(Boolean).at(-1);
@@ -735,11 +775,18 @@ export function AppLayout() {
           <div className="nav-folders-list">
             {activeCategories.map((cat) => {
               const isOpen = !!openFolders[cat.id];
-              const hasActiveChild = cat.items.some((item) =>
-                item.path === '/'
+              const hasActiveChild = cat.items.some((item) => {
+                if (item.path.includes('?')) {
+                  const [base, query] = item.path.split('?');
+                  if (location.pathname !== base) return false;
+                  const targetTab = new URLSearchParams(query).get('tab');
+                  const currentTab = new URLSearchParams(location.search).get('tab') || 'dashboard';
+                  return targetTab === currentTab;
+                }
+                return item.path === '/'
                   ? location.pathname === '/'
-                  : location.pathname.startsWith(item.path)
-              );
+                  : location.pathname.startsWith(item.path);
+              });
 
               return (
                 <div key={cat.id} className={`nav-folder-group ${isOpen ? 'expanded' : 'collapsed'}`}>
@@ -771,7 +818,7 @@ export function AppLayout() {
                           <NavLink
                             key={item.path}
                             to={item.path}
-                            className={({ isActive }) => `nav-sublink ${isActive ? 'active' : ''}`}
+                            className={({ isActive }) => `nav-sublink ${isItemActive(item.path, isActive) ? 'active' : ''}`}
                             title={isCollapsed ? item.label : undefined}
                           >
                             <item.icon size={16} strokeWidth={1.65} className="nav-sublink-icon" />

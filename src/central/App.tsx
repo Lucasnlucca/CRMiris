@@ -24,8 +24,7 @@ import Contratos from '../pages/Contratos';
 import CrmItems from '../pages/CrmItems';
 import Automacoes from '../pages/Automacoes';
 import Usuarios from '../pages/Usuarios';
-import SuperAdminTenants from '../pages/SuperAdminTenants';
-import SuperAdminPolicyPanel from '../pages/SuperAdminPolicyPanel';
+import SuperAdminMaster from '../pages/SuperAdminMaster';
 import Phonebook from '../pages/Phonebook';
 import { useAuth } from '../context/AuthContext';
 
@@ -247,8 +246,9 @@ export function AppRoutes() {
           <Route path="itens" element={<CrmItems />} />
           <Route path="automacoes" element={<Automacoes />} />
           <Route path="usuarios" element={<Usuarios />} />
-          <Route path="empresas" element={<SuperAdminTenants />} />
-          <Route path="politicas" element={<SuperAdminPolicyPanel />} />
+          <Route path="empresas" element={<SuperAdminMaster defaultTab="dashboard" />} />
+          <Route path="politicas" element={<SuperAdminMaster defaultTab="policy" />} />
+          <Route path="administracao-master" element={<SuperAdminMaster defaultTab="dashboard" />} />
           <Route path="catalogo" element={<Phonebook />} />
           <Route path="chamados" element={<Navigate to="/tickets" replace />} />
           <Route path="suporte" element={<Navigate to="/tickets" replace />} />
