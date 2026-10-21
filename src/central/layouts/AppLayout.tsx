@@ -366,6 +366,33 @@ export function AppLayout() {
     return false;
   });
   const [hovered, setHovered] = useState(false);
+  const hoverTimerRef = useRef<any>(null);
+
+  const handleMouseEnter = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    setHovered(true);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+    }
+    hoverTimerRef.current = setTimeout(() => {
+      setHovered(false);
+    }, 120);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) {
+        clearTimeout(hoverTimerRef.current);
+      }
+    };
+  }, []);
+
   const isExpanded = pinned || hovered;
   const isCollapsed = !isExpanded;
   const [mobile, setMobile] = useState(false);
@@ -752,8 +779,8 @@ export function AppLayout() {
       />
       <aside
         className={`sidebar ${hovered ? 'sidebar-hovered' : ''}`}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
       >
         <Link to={role === 'client' ? '/portal' : '/'} aria-label="Início da Central" className="brand-link">
           <Brand tenant={tenant} />
