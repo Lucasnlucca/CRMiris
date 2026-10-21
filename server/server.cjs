@@ -281,6 +281,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // 2.2. Rota de serviço de logomarcas estáticas: /api/logos/:filename
+  if (req.url && req.url.startsWith('/api/logos/') && req.method === 'GET') {
+    const rawName = req.url.replace('/api/logos/', '').split('?')[0];
+    const filename = path.basename(decodeURIComponent(rawName));
+    const logosDir = path.join(__dirname, 'uploads', 'logos');
+    const filePath = path.join(logosDir, filename);
+
+    if (fs.existsSync(filePath)) {
+      const ext = path.extname(filename).toLowerCase();
+      const mimeTypes = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+        '.webp': 'image/webp',
+      };
+      res.writeHead(200, {
+        'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+        'Cache-Control': 'public, max-age=86400',
+      });
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+    res.statusCode = 404;
+    res.end('Logo not found');
+    return;
+  }
+
   // 2.5. Rotas de Governança e Disjuntores SuperAdmin: /api/admin/policy/*
   if (req.url && req.url.startsWith('/api/admin/policy')) {
     return handleAdminPolicyRoutes(req, res, writePolicyEngine, {

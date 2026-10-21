@@ -4,7 +4,9 @@
  * Gerencia o provisionamento autoritativo de empresas no backend standalone.
  */
 
-const { Client, Databases, Teams, ID, Query, Permission, Role } = require('node-appwrite');
+const { Client, Databases, Teams, Storage, ID, Query, Permission, Role } = require('node-appwrite');
+const fs = require('fs');
+const path = require('path');
 const url = require('url');
 const { authenticateAndAuthorizeSuperAdmin } = require('./adminPolicyHandler.cjs');
 const { resolveGovernanceConfig } = require('./governanceConfig.cjs');
@@ -89,6 +91,91 @@ function validateSlug(slug) {
   return cleanSlug;
 }
 
+/**
+ * Converte imagens enviadas em base64 em URLs curtas (< 150 caracteres)
+ * salvando no Appwrite Storage ou no armazenamento local do servidor.
+ * Evita o erro de Attribute "logo_url" no longer than 1000 chars no Appwrite Databases.
+ */
+async function persistLogoImage(logoInput, tenantSlug, adminStorage, endpoint, projectId) {
+  if (!logoInput || typeof logoInput !== 'string') return '';
+  const trimmed = logoInput.trim();
+
+  // Se já for uma URL convencional (http/https ou /api/logos), e couber em 1000 caracteres, mantém
+  if (!trimmed.startsWith('data:image/')) {
+    return trimmed.slice(0, 1000);
+  }
+
+  try {
+    const matches = trimmed.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+    if (!matches) {
+      console.warn('[LogoUpload] Formato dataURL inválido');
+      return '';
+    }
+
+    const imageSubtype = matches[1].toLowerCase();
+    const base64Data = matches[2];
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    let ext = 'png';
+    let mimeType = 'image/png';
+    if (imageSubtype.includes('svg')) {
+      ext = 'svg';
+      mimeType = 'image/svg+xml';
+    } else if (imageSubtype.includes('jpeg') || imageSubtype.includes('jpg')) {
+      ext = 'jpg';
+      mimeType = 'image/jpeg';
+    } else if (imageSubtype.includes('webp')) {
+      ext = 'webp';
+      mimeType = 'image/webp';
+    }
+
+    const safeSlug = (tenantSlug || 'tenant').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `logo_${safeSlug}_${Date.now()}.${ext}`;
+
+    // 1. Tentar salvar no Appwrite Storage com permissões públicas de leitura
+    if (adminStorage) {
+      const bucketId = process.env.VITE_APPWRITE_BUCKET_ID || 'crm_logos';
+      try {
+        try {
+          await adminStorage.getBucket(bucketId);
+        } catch (bErr) {
+          try {
+            await adminStorage.createBucket(
+              bucketId,
+              'Logos do CRM',
+              [Permission.read(Role.any()), Permission.create(Role.any())],
+              false,
+              true
+            );
+          } catch {}
+        }
+
+        const fileId = ID.unique();
+        const fileObj = new File([buffer], filename, { type: mimeType });
+        await adminStorage.createFile(bucketId, fileId, fileObj, [Permission.read(Role.any())]);
+        const storageUrl = `${endpoint}/storage/buckets/${bucketId}/files/${fileId}/view?project=${projectId}`;
+        console.log(`[LogoUpload] Logo salva com sucesso no Appwrite Storage: ${storageUrl}`);
+        return storageUrl;
+      } catch (storageErr) {
+        console.warn(`[LogoUpload] Appwrite Storage indisponível (${storageErr.message}), salvando localmente em /api/logos/...`);
+      }
+    }
+
+    // 2. Fallback resiliente: salvar no sistema de arquivos local (/api/logos/:filename)
+    const logosDir = path.join(__dirname, 'uploads', 'logos');
+    if (!fs.existsSync(logosDir)) {
+      fs.mkdirSync(logosDir, { recursive: true });
+    }
+    const localFilePath = path.join(logosDir, filename);
+    fs.writeFileSync(localFilePath, buffer);
+    console.log(`[LogoUpload] Logo salva localmente em: ${localFilePath}`);
+    return `/api/logos/${filename}`;
+  } catch (err) {
+    console.error('[LogoUpload] Erro ao persistir logo:', err.message);
+    return '';
+  }
+}
+
 async function handleTenantProvisioningRoutes(req, res, envConfig) {
   const parsedUrl = url.parse(req.url, true);
   const rawPath = parsedUrl.pathname || '';
@@ -127,6 +214,7 @@ async function handleTenantProvisioningRoutes(req, res, envConfig) {
     const adminClient = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
     const adminDb = new Databases(adminClient);
     const adminTeams = new Teams(adminClient);
+    const adminStorage = new Storage(adminClient);
 
     // 1. GET /api/admin/tenants
     if (normalizedPath === '/' && method === 'GET') {
@@ -244,6 +332,11 @@ async function handleTenantProvisioningRoutes(req, res, envConfig) {
       }
 
       const now = new Date().toISOString();
+      let resolvedLogoUrl = '';
+      if (body.logo_url) {
+        resolvedLogoUrl = await persistLogoImage(body.logo_url, slug, adminStorage, endpoint, projectId);
+      }
+
       const tenantDocData = {
         name: body.name.trim(),
         slug,
@@ -253,7 +346,7 @@ async function handleTenantProvisioningRoutes(req, res, envConfig) {
         phone: body.phone ? String(body.phone).trim() : '',
         status: body.status || 'active',
         plan: body.plan || 'pro',
-        logo_url: body.logo_url || '',
+        logo_url: resolvedLogoUrl,
         primary_color: body.primary_color || '#4f46e5',
         address: body.address || '',
         settings_json: body.settings_json || '{}',
@@ -365,7 +458,9 @@ async function handleTenantProvisioningRoutes(req, res, envConfig) {
       if (body.phone !== undefined) updateData.phone = String(body.phone).trim();
       if (body.status !== undefined) updateData.status = body.status;
       if (body.plan !== undefined) updateData.plan = body.plan;
-      if (body.logo_url !== undefined) updateData.logo_url = String(body.logo_url).trim();
+      if (body.logo_url !== undefined) {
+        updateData.logo_url = await persistLogoImage(body.logo_url, newSlug, adminStorage, endpoint, projectId);
+      }
       if (body.primary_color !== undefined) updateData.primary_color = String(body.primary_color).trim();
       if (body.address !== undefined) updateData.address = String(body.address).trim();
       if (body.settings_json !== undefined) updateData.settings_json = typeof body.settings_json === 'string' ? body.settings_json : JSON.stringify(body.settings_json);

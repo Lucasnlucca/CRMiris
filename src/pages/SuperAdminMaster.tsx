@@ -295,7 +295,10 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
         primary_color: brandingColor,
       };
 
-      await updateAdminTenant(selectedBrandingTenantId, payload);
+      const res = await updateAdminTenant(selectedBrandingTenantId, payload);
+      if (res.tenant?.logo_url) {
+        setBrandingLogoUrl(res.tenant.logo_url);
+      }
       setSuccessNotice(`Personalização de "${target.name}" salva com sucesso!`);
       await loadTenants();
       await refreshTenants();
