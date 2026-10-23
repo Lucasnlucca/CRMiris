@@ -2857,7 +2857,8 @@ strong {
   gap: 12px;
   margin-top: -5px;
 }
-.dashboard-quick-metrics > a {
+.dashboard-quick-metrics > a,
+.dashboard-quick-metrics > button {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2865,8 +2866,14 @@ strong {
   color: #94a0b1;
   padding: 0 2px;
   min-width: 0;
+  text-decoration: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  box-sizing: border-box;
 }
-.dashboard-quick-metrics > a > span:not(.quick-icon) {
+.dashboard-quick-metrics > a > span:not(.quick-icon),
+.dashboard-quick-metrics > button > span:not(.quick-icon) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2877,8 +2884,10 @@ strong {
   font-weight: 650;
   font-size: 11px;
 }
-.dashboard-quick-metrics > a > svg {
+.dashboard-quick-metrics > a > svg,
+.dashboard-quick-metrics > button > svg {
   color: #b3bdcb;
+  flex-shrink: 0;
 }
 .quick-icon {
   height: 25px;
@@ -2952,4 +2961,149 @@ strong {
   .financial-summary-row > div:first-child {
     width: 100%;
   }
+}
+
+/* Dashboard Monitoring View Switcher & Filters */
+.dashboard-view-switcher-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: white;
+  padding: 8px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 3px rgba(18, 30, 56, 0.04);
+  margin-bottom: 20px;
+}
+.dashboard-view-switcher-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.dashboard-view-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #58667c;
+  cursor: pointer;
+  transition: all 0.16s ease;
+}
+.dashboard-view-tab-btn:hover {
+  background: #f4f6fa;
+  color: var(--navy);
+}
+.dashboard-view-tab-btn.active-operacao {
+  background: #f0f5ff;
+  border-color: #3065e8;
+  color: #244ec4;
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(48, 101, 232, 0.08);
+}
+.dashboard-view-tab-btn.active-faturas {
+  background: #eaf8f3;
+  border-color: #209b72;
+  color: #126046;
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(32, 155, 114, 0.08);
+}
+.dashboard-view-tab-btn.active-propostas {
+  background: #f4f0fd;
+  border-color: #7c3aed;
+  color: #5b21b6;
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(124, 58, 237, 0.08);
+}
+.dashboard-view-tab-badge {
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: #edf1f7;
+  color: #64748b;
+  transition: all 0.16s ease;
+}
+.active-operacao .dashboard-view-tab-badge {
+  background: #dce7ff;
+  color: #244ec4;
+}
+.active-faturas .dashboard-view-tab-badge {
+  background: #c7eee1;
+  color: #126046;
+}
+.active-propostas .dashboard-view-tab-badge {
+  background: #e3d7fc;
+  color: #5b21b6;
+}
+.filter-pills-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.filter-pill-btn {
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid #e5ebf3;
+  background: white;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.filter-pill-btn:hover {
+  background: #f8fafc;
+  color: #1e293b;
+  border-color: #cbd5e1;
+}
+.filter-pill-btn.active {
+  background: #1e293b;
+  color: white;
+  border-color: #1e293b;
+  font-weight: 600;
+}
+.dark .dashboard-view-switcher-bar {
+  background: #121824;
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.dark .dashboard-view-tab-btn {
+  color: #94a3b8;
+}
+.dark .dashboard-view-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+.dark .dashboard-view-tab-btn.active-operacao {
+  background: rgba(48, 101, 232, 0.18);
+  border-color: #4f46e5;
+  color: #a5b4fc;
+}
+.dark .dashboard-view-tab-btn.active-faturas {
+  background: rgba(32, 155, 114, 0.18);
+  border-color: #10b981;
+  color: #6ee7b7;
+}
+.dark .dashboard-view-tab-btn.active-propostas {
+  background: rgba(124, 58, 237, 0.18);
+  border-color: #8b5cf6;
+  color: #c4b5fd;
+}
+.dark .filter-pill-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+}
+.dark .filter-pill-btn.active {
+  background: #4f46e5;
+  color: #fff;
+  border-color: #4f46e5;
 }

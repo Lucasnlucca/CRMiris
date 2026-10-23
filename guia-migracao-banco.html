@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Guia Técnico de Migração e Otimização de Banco de Dados - Iris CRM</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+    @page {
+      size: A4;
+      margin: 12mm 14mm 14mm 14mm;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #1e293b;
+      background: #ffffff;
+      line-height: 1.55;
+      font-size: 13px;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 60%, #312e81 100%);
+      color: #ffffff;
+      padding: 24px 28px;
+      border-radius: 12px;
+      margin-bottom: 22px;
+      box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.2);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header-content h1 {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 4px;
+      color: #ffffff;
+    }
+
+    .header-content p {
+      font-size: 12px;
+      color: #cbd5e1;
+      font-weight: 500;
+    }
+
+    .badge-doc {
+      background: rgba(99, 102, 241, 0.25);
+      border: 1px solid rgba(165, 180, 252, 0.4);
+      color: #e0e7ff;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .section {
+      margin-bottom: 20px;
+      page-break-inside: avoid;
+    }
+
+    h2 {
+      font-size: 15px;
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 2px solid #f1f5f9;
+      padding-bottom: 6px;
+      margin-bottom: 12px;
+    }
+
+    h2 .icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      background: #eff6ff;
+      color: #2563eb;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    p {
+      margin-bottom: 10px;
+      color: #334155;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 14px 16px;
+      page-break-inside: avoid;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-danger {
+      border-left: 4px solid #ef4444;
+      background: #fffafa;
+    }
+
+    .card-success {
+      border-left: 4px solid #10b981;
+      background: #f0fdf4;
+    }
+
+    .card-info {
+      border-left: 4px solid #3b82f6;
+      background: #eff6ff;
+    }
+
+    .step-box {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      display: flex;
+      gap: 14px;
+      page-break-inside: avoid;
+    }
+
+    .step-number {
+      flex-shrink: 0;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: #4f46e5;
+      color: #ffffff;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+    }
+
+    .step-content {
+      flex: 1;
+    }
+
+    .step-content h3 {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 4px;
+    }
+
+    .code-box {
+      font-family: 'JetBrains Mono', monospace;
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 11px;
+      margin: 8px 0;
+      line-height: 1.45;
+      border: 1px solid #1e293b;
+    }
+
+    .code-box .highlight {
+      color: #38bdf8;
+    }
+
+    .code-box .comment {
+      color: #94a3b8;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0;
+      font-size: 12px;
+    }
+
+    th {
+      background: #f1f5f9;
+      color: #0f172a;
+      text-align: left;
+      padding: 8px 10px;
+      font-weight: 700;
+      border-bottom: 2px solid #cbd5e1;
+    }
+
+    td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #e2e8f0;
+      color: #334155;
+    }
+
+    tr:nth-child(even) td {
+      background: #f8fafc;
+    }
+
+    .pill-green {
+      background: #dcfce7;
+      color: #166534;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 10px;
+      display: inline-block;
+    }
+
+    .pill-red {
+      background: #fee2e2;
+      color: #991b1b;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 10px;
+      display: inline-block;
+    }
+
+    .footer {
+      margin-top: 24px;
+      padding-top: 12px;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      justify-content: space-between;
+      color: #94a3b8;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .checklist-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+
+    .checklist-item input {
+      accent-color: #4f46e5;
+      width: 14px;
+      height: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-content">
+      <h1>Guia Prático: Migração & Otimização de Banco de Dados</h1>
+      <p>Iris Horizon CRM Multi-tenant • Procedimentos de Infraestrutura, Limpeza e Desacoplamento</p>
+    </div>
+    <div class="badge-doc">Manual de Infra</div>
+  </div>
+
+  <!-- SEÇÃO 1: DIAGNÓSTICO -->
+  <div class="section">
+    <h2><span class="icon">01</span> Diagnóstico Real: Por que um banco fica "cheio e pesado"?</h2>
+    <p>O seu CRM opera com arquitetura <strong>desacoplada</strong>: o Frontend React/Node roda separado do banco Appwrite (BaaS). Em sistemas como esse, é fundamental entender de onde vem o peso real:</p>
+    
+    <div class="grid-2">
+      <div class="card card-success">
+        <div class="card-title">✅ O que NÃO Pesa (Dados de Texto)</div>
+        <p style="font-size: 11.5px; margin: 0;">
+          Tabelas de clientes, itens, propostas, colunas de Kanban e permissões de usuários são registros JSON minúsculos.<br><br>
+          <strong>Exemplo:</strong> Uma base com <strong>100.000 clientes</strong> em texto consome aproximadamente <strong>50 MB</strong> de disco. O banco não fica lento por causa disso.
+        </p>
+      </div>
+
+      <div class="card card-danger">
+        <div class="card-title">⚠️ O que REALMENTE Pesa (Vilões de Espaço)</div>
+        <p style="font-size: 11.5px; margin: 0;">
+          <strong>1. Buckets de Arquivos (Storage):</strong> PDFs de contratos assinados, imagens e anexos em chamados de suporte.<br>
+          <strong>2. Logs de Containers Docker:</strong> Logs acumulados no Easypanel/VPS que nunca foram rotacionados.<br>
+          <strong>3. Trilha de Auditoria Antiga:</strong> Milhares de logs de acesso de anos anteriores.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SEÇÃO 2: AÇÕES PREVENTIVAS -->
+  <div class="section">
+    <h2><span class="icon">02</span> Opção A: Aliviar o Banco Atual (Sem precisar migrar)</h2>
+    <div class="card card-info" style="margin-bottom: 12px;">
+      <p style="margin: 0; font-size: 12px;">
+        Antes de contratar outra plataforma ou abandonar o banco existente, você pode recuperar até <strong>85% do espaço livre</strong> com 3 ações no próprio servidor:
+      </p>
+    </div>
+
+    <div class="checklist-item">
+      <strong>1. Limpeza de Logs Docker no Servidor (Easypanel/VPS):</strong>
+    </div>
+    <div class="code-box">
+      <span class="comment"># Libera gigabytes de logs de containers acumulados</span><br>
+      docker system prune -a --volumes -f
+    </div>
+
+    <div class="checklist-item" style="margin-top: 8px;">
+      <strong>2. Desacoplar Arquivos Pesados para Nuvem de Armazenamento Externa:</strong>
+    </div>
+    <p style="font-size: 11.5px; margin-left: 22px; color: #475569;">
+      Armazene PDFs de contratos e anexos pesados em buckets externos como <strong>Cloudflare R2, Wasabi ou Amazon S3</strong>. Custam centavos por terabyte e mantêm seu Appwrite ultra-leve, cuidando apenas das consultas relacionais.
+    </p>
+  </div>
+
+  <!-- SEÇÃO 3: PASSO A PASSO DA MIGRAÇÃO -->
+  <div class="section" style="page-break-before: always; padding-top: 10px;">
+    <h2><span class="icon">03</span> Opção B: Subir Novo Banco em Outra Plataforma (Passo a Passo)</h2>
+    <p>Se você preferir mudar para outra hospedagem (Hetzner, DigitalOcean, AWS ou Appwrite Cloud) e começar com um banco <strong>100% novo e limpo</strong>, siga este fluxo:</p>
+
+    <!-- PASSO 1 -->
+    <div class="step-box">
+      <div class="step-number">1</div>
+      <div class="step-content">
+        <h3>Subir a Nova Instância do Appwrite</h3>
+        <p style="font-size: 11.5px; margin: 0;">
+          Instale o Appwrite na nova máquina ou crie um projeto no Appwrite Cloud. Acesse o console e crie um novo Database com o ID: <code>crm_db</code>.
+        </p>
+      </div>
+    </div>
+
+    <!-- PASSO 2 -->
+    <div class="step-box">
+      <div class="step-number">2</div>
+      <div class="step-content">
+        <h3>Criar a Estrutura (Schema) Vazia</h3>
+        <p style="font-size: 11.5px; margin-bottom: 6px;">
+          Replique as coleções vazias com seus atributos e índices, sem carregar o lixo ou dados pesados antigos:
+        </p>
+        <p style="font-size: 11px; color: #475569; margin: 0;">
+          Coleções essenciais: <code>tenants</code>, <code>users_hydra</code>, <code>clients</code>, <code>proposals</code>, <code>contracts</code>, <code>kanban_columns</code>, <code>catalog_items</code>, <code>support_tickets</code>.
+        </p>
+      </div>
+    </div>
+
+    <!-- PASSO 3 -->
+    <div class="step-box">
+      <div class="step-number">3</div>
+      <div class="step-content">
+        <h3>Provisionar o SuperAdmin e a Empresa Matriz</h3>
+        <p style="font-size: 11.5px; margin: 0;">
+          1. No menu <strong>Auth</strong> do novo Appwrite, crie seu usuário SuperAdmin com seu e-mail e senha.<br>
+          2. Crie a equipe <code>superadmins</code> e adicione seu usuário a ela.<br>
+          3. Crie o registro da sua empresa matriz na coleção <code>tenants</code> e registre seu perfil na coleção <code>users_hydra</code> com <code>is_super_admin = true</code>.
+        </p>
+      </div>
+    </div>
+
+    <!-- PASSO 4 -->
+    <div class="step-box">
+      <div class="step-number">4</div>
+      <div class="step-content">
+        <h3>Apontar o CRM para a Nova Plataforma (Sem mexer no código)</h3>
+        <p style="font-size: 11.5px; margin-bottom: 6px;">
+          O seu CRM lê toda a infraestrutura através do arquivo de variáveis de ambiente. Altere apenas o arquivo <code>.env</code>:
+        </p>
+        <div class="code-box">
+          <span class="comment"># Arquivo .env / .env.production</span><br>
+          <span class="highlight">VITE_APPWRITE_URL</span>=https://novo-appwrite.suaempresa.com/v1<br>
+          <span class="highlight">VITE_APPWRITE_PROJECT_ID</span>=novo_project_id<br>
+          <span class="highlight">VITE_APPWRITE_DATABASE_ID</span>=crm_db<br>
+          <span class="highlight">APPWRITE_API_KEY</span>=nova_api_key_gerada_com_escopos_totais
+        </div>
+        <p style="font-size: 11px; color: #166534; font-weight: 600; margin: 0;">
+          ✨ Pronto! Ao reiniciar a aplicação, todo o CRM já estará operando instantaneamente no novo banco limpo.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SEÇÃO 4: MIGRAÇÃO SELETIVA -->
+  <div class="section">
+    <h2><span class="icon">04</span> Migração Seletiva: Trazer Clientes Sem o Lixo Antigo</h2>
+    <p>Caso não queira começar do zero absoluto, você pode migrar somente os dados úteis através de uma exportação simples:</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Coleção / Dado</th>
+          <th>Ação na Migração</th>
+          <th>Motivo & Benefício</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Tenants & Empresas Ativas</strong></td>
+          <td><span class="pill-green">MIGRAR</span></td>
+          <td>Garante acesso contínuo às empresas clientes sem recadastro.</td>
+        </tr>
+        <tr>
+          <td><strong>Usuários Ativos (users_hydra)</strong></td>
+          <td><span class="pill-green">MIGRAR</span></td>
+          <td>Mantém permissões, cargos e vínculos com as empresas.</td>
+        </tr>
+        <tr>
+          <td><strong>Clientes & Contatos (clients)</strong></td>
+          <td><span class="pill-green">MIGRAR</span></td>
+          <td>Preserva a carteira comercial e histórico de relacionamento.</td>
+        </tr>
+        <tr>
+          <td><strong>Propostas Ativas & Em Aberto</strong></td>
+          <td><span class="pill-green">MIGRAR</span></td>
+          <td>Mantém o pipeline de vendas e negociações em andamento.</td>
+        </tr>
+        <tr>
+          <td><strong>Histórico de Auditoria & Acessos</strong></td>
+          <td><span class="pill-red">DESCARTAR</span></td>
+          <td>Descarte seguro após backup externo; alivia milhões de linhas.</td>
+        </tr>
+        <tr>
+          <td><strong>Chamados de Suporte Antigos Resolvidos</strong></td>
+          <td><span class="pill-red">DESCARTAR / EXPORTAR</span></td>
+          <td>Gera backup frio em CSV/JSON e deixa a fila de atendimento limpa.</td>
+        </tr>
+        <tr>
+          <td><strong>Arquivos e PDFs de Contratos Anteriores</strong></td>
+          <td><span class="pill-red">ARQUIVAR EM S3</span></td>
+          <td>Move para armazenamento frio para economizar espaço de banco.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SEÇÃO 5: SHARDING -->
+  <div class="section">
+    <h2><span class="icon">05</span> Escalabilidade Futura: Sharding Multi-Tenant</h2>
+    <div class="card card-info">
+      <p style="font-size: 12px; margin: 0;">
+        Como o seu sistema foi arquitetado com isolamento estrito por <code>tenant_id</code>, se no futuro um cliente corporativo crescer a ponto de gerar milhões de requisições, você pode usar a técnica de <strong>Sharding (Divisão de Instâncias)</strong>:
+      </p>
+      <ul style="margin: 8px 0 0 18px; font-size: 11.5px; color: #334155;">
+        <li><strong>Instância A:</strong> CRM Geral para Pequenas e Médias Empresas (Banco Geral).</li>
+        <li><strong>Instância B:</strong> CRM Corporativo dedicado para Grandes Contas (Banco Dedicado).</li>
+      </ul>
+      <p style="font-size: 11.5px; margin: 6px 0 0 0; color: #475569;">
+        O código é <strong>100% idêntico</strong>. Apenas as variáveis do arquivo <code>.env</code> diferenciam para qual banco cada versão envia as requisições.
+      </p>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <span>Iris Horizon CRM • Arquitetura & Governança de Dados</span>
+    <span>Documento Técnico de Apoio • Versão 1.0</span>
+  </div>
+
+</body>
+</html>
