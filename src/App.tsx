@@ -10,6 +10,7 @@ import ProposalPreview from './pages/ProposalPreview';
 import ContractSignPreview from './pages/ContractSignPreview';
 import { AppProvider } from './central/context/AppContext';
 import { AppRoutes } from './central/App';
+import Preloader from './components/Preloader';
 
 function AuthenticatedApp() {
   const {
@@ -19,17 +20,16 @@ function AuthenticatedApp() {
     tenantNotFound,
     tenantSuspended,
   } = useTenant();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const isClientUser =
+    user?.role === 'client' ||
+    (typeof window !== 'undefined' && (
+      !!localStorage.getItem('portal_client_id') ||
+      window.location.pathname.startsWith('/portal')
+    ));
 
   if (tenantLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#edf0f5] dark:bg-[#090d15]">
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-3 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-400">Carregando ambiente da empresa...</p>
-        </div>
-      </div>
-    );
+    return <Preloader message="Carregando ambiente da empresa..." />;
   }
 
   if (tenantNotFound) {
@@ -96,7 +96,7 @@ function AuthenticatedApp() {
     );
   }
 
-  if (!isAuthorized && tenantError) {
+  if (!isAuthorized && tenantError && !isClientUser) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#edf0f5] dark:bg-[#090d15] p-4">
         <div className="max-w-md w-full bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/[0.1] p-6 text-center shadow-xl">
@@ -140,8 +140,18 @@ function AppContent() {
   const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
   const isRegisterPage = pathname === '/register';
   const isAcessoPage = pathname === '/acesso';
+  const isPortalLogin = pathname === '/portal-login' || pathname === '/portal/login';
+  const isPortalArea = pathname.startsWith('/portal');
   const proposalPreviewMatch = pathname.match(/^\/proposta\/(.+)$/);
   const contractSignMatch = pathname.match(/^\/(?:contrato|assinar)\/(.+)$/);
+
+  // Se já está autenticado e tenta acessar o portal-login, redireciona diretamente para o portal
+  if (isAuthenticated && isPortalLogin) {
+    if (typeof window !== 'undefined') {
+      window.location.replace('/portal');
+      return null;
+    }
+  }
 
   if (contractSignMatch) {
     return <ContractSignPreview />;
@@ -152,15 +162,29 @@ function AppContent() {
   }
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
-        <div className="text-white text-xl">Carregando...</div>
-      </div>
-    );
+    return <Preloader message="Carregando LVPlatform..." />;
   }
 
   if (!isAuthenticated && !isAcessoPage) {
-    return isRegisterPage ? <Register /> : <Login />;
+    if (isRegisterPage) {
+      return <Register />;
+    }
+
+    // Se o usuário não autenticado está acessando a área do portal ou rota de login do portal
+    if (isPortalLogin || isPortalArea) {
+      if (pathname !== '/portal-login' && typeof window !== 'undefined') {
+        window.history.replaceState(null, '', '/portal-login');
+      }
+      return <Login isPortal={true} />;
+    }
+
+    // Se o usuário não autenticado está em qualquer rota interna específica (ex: /contratos-crm, /pipeline, etc.)
+    // normaliza o URL para o endereço principal (/) sem ficar preso na subpágina
+    if (pathname !== '/' && pathname !== '/login' && typeof window !== 'undefined') {
+      window.history.replaceState(null, '', '/');
+    }
+
+    return <Login isPortal={false} />;
   }
 
   return <AuthenticatedApp />;

@@ -22,12 +22,14 @@ import {
   MoreVertical,
   CheckCircle2,
   FileSpreadsheet,
+  AlertTriangle,
 } from "lucide-react";
-import { databases, client } from "../lib/appwrite";
+import { databases, client, currentTenantId } from "../lib/appwrite";
 import { Query, ID } from "appwrite";
 import { useAuth } from "../context/AuthContext";
+import { useTenant } from "../context/TenantContext";
 
-const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || "default";
+const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || "crm_db";
 const COLLECTION_ID = "crm_items";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -46,6 +48,7 @@ export interface CrmItem {
   unit?: string;
   is_active?: boolean;
   created_at?: string;
+  tenant_id?: string;
 }
 
 export type ItemForm = {
@@ -102,6 +105,66 @@ function currency(v: number) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
+async function fetchAllCrmItemsPages(baseQueries: string[] = [], pageSize = 100): Promise<any[]> {
+  const allDocs: any[] = [];
+  const seenIds = new Set<string>();
+  let lastId: string | null = null;
+  let offset = 0;
+  let useOffsetFallback = false;
+  const maxPages = 100;
+
+  for (let page = 0; page < maxPages; page++) {
+    const pageQueries = [...baseQueries, Query.limit(pageSize)];
+    if (useOffsetFallback) {
+      if (offset > 0) pageQueries.push(Query.offset(offset));
+    } else if (lastId) {
+      pageQueries.push(Query.cursorAfter(lastId));
+    }
+
+    let response: any;
+    try {
+      response = await databases.listDocuments(DATABASE_ID, COLLECTION_ID, pageQueries);
+    } catch (err) {
+      if (!useOffsetFallback && lastId) {
+        useOffsetFallback = true;
+        const fallbackQueries = [...baseQueries, Query.limit(pageSize), Query.offset(offset)];
+        response = await databases.listDocuments(DATABASE_ID, COLLECTION_ID, fallbackQueries);
+      } else {
+        throw err;
+      }
+    }
+
+    const docs: any[] = Array.isArray(response?.documents) ? response.documents : [];
+    if (docs.length === 0) break;
+
+    let addedInBatch = 0;
+    for (const doc of docs) {
+      const docId = String(doc?.$id || doc?.id || "");
+      if (docId) {
+        if (seenIds.has(docId)) continue;
+        seenIds.add(docId);
+      }
+      allDocs.push(doc);
+      addedInBatch++;
+    }
+
+    if (docs.length < pageSize || addedInBatch === 0) {
+      break;
+    }
+
+    const tailDoc = docs[docs.length - 1];
+    const tailId = String(tailDoc?.$id || tailDoc?.id || "");
+    if (!tailId) {
+      useOffsetFallback = true;
+    } else {
+      lastId = tailId;
+    }
+    offset += docs.length;
+  }
+
+  return allDocs;
+}
+
 // ─── Modal de Criação / Edição de Item ────────────────────────────────────────
 
 export function ItemModal({
@@ -112,6 +175,7 @@ export function ItemModal({
   error,
   onClose,
   onSave,
+  onDelete,
 }: {
   editing: CrmItem | null;
   form: ItemForm;
@@ -120,6 +184,7 @@ export function ItemModal({
   error: string;
   onClose: () => void;
   onSave: (f: ItemForm) => void;
+  onDelete?: (id: string) => Promise<void>;
 }) {
   const onSaveRef = useRef(onSave);
   useEffect(() => {
@@ -308,10 +373,16 @@ export function ItemModal({
           {editing ? (
             <button
               type="button"
-              onClick={() => {
-                if (confirm("Tem certeza que deseja excluir este item do catálogo?")) {
-                  databases.deleteDocument(DATABASE_ID, COLLECTION_ID, editing.id).catch(console.error);
-                  onClose();
+              onClick={async () => {
+                if (onDelete) {
+                  await onDelete(editing.id);
+                } else if (confirm("Tem certeza que deseja excluir este item do catálogo?")) {
+                  try {
+                    await databases.deleteDocument(DATABASE_ID, COLLECTION_ID, editing.id);
+                    onClose();
+                  } catch (err) {
+                    console.error(err);
+                  }
                 }
               }}
               className="text-xs font-semibold text-rose-600 dark:text-rose-400 hover:text-rose-700 hover:underline transition"
@@ -348,8 +419,13 @@ export function ItemModal({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function CrmItems() {
+  const { user } = useAuth();
+  const { tenant } = useTenant();
+  const activeTenantId = tenant?.id || currentTenantId || "";
+
   const [items, setItems] = useState<CrmItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [search, setSearch] = useState("");
@@ -361,20 +437,43 @@ export default function CrmItems() {
   const [editing, setEditing] = useState<CrmItem | null>(null);
   const [form, setForm] = useState<ItemForm>(INITIAL_FORM);
 
+  // Generation counter bound to userId + tenantId to discard delayed/out-of-order responses
+  const loadGenerationRef = useRef<number>(0);
+
   useEffect(() => {
-    load();
+    loadGenerationRef.current += 1;
+    const currentGen = loadGenerationRef.current;
+
+    // Clear state immediately on tenant/user change so stale cross-tenant items are never rendered
+    setItems([]);
+    setEditing(null);
+    setShowModal(false);
+    setSaveError("");
+    setLoadError(null);
+
+    if (!activeTenantId) {
+      setLoading(false);
+      return;
+    }
+
+    load(currentGen, activeTenantId);
 
     const itemsChannel = `databases.${DATABASE_ID}.collections.${COLLECTION_ID}.documents`;
     const unsubscribe = client.subscribe(itemsChannel, (response: any) => {
+      if (currentGen !== loadGenerationRef.current) return;
       const events: string[] = response.events || [];
       const payload = response.payload;
-      if (!payload) return;
+
+      // Mandatory tenant isolation check for all realtime events (create, update, delete)
+      if (!payload || !activeTenantId || payload.tenant_id !== activeTenantId) return;
+
+      const docId = payload.$id || payload.id;
 
       if (events.some((e: string) => e.includes(".create"))) {
         const newItem: CrmItem = {
           ...payload,
-          id: payload.$id,
-          created_at: payload.$createdAt,
+          id: docId,
+          created_at: payload.$createdAt || payload.created_at,
         };
         setItems((prev) => {
           if (prev.some((i) => i.id === newItem.id)) return prev;
@@ -383,13 +482,14 @@ export default function CrmItems() {
       } else if (events.some((e: string) => e.includes(".update"))) {
         const updatedItem: CrmItem = {
           ...payload,
-          id: payload.$id,
-          created_at: payload.$createdAt,
+          id: docId,
+          created_at: payload.$createdAt || payload.created_at,
         };
-        setItems((prev) => prev.map((i) => (i.id === updatedItem.id ? { ...i, ...updatedItem } : i)));
+        setItems((prev) =>
+          prev.map((i) => (i.id === updatedItem.id ? { ...i, ...updatedItem } : i))
+        );
       } else if (events.some((e: string) => e.includes(".delete"))) {
-        const deletedId = payload.$id;
-        setItems((prev) => prev.filter((i) => i.id !== deletedId));
+        setItems((prev) => prev.filter((i) => i.id !== docId));
       }
     });
 
@@ -398,27 +498,47 @@ export default function CrmItems() {
         unsubscribe();
       } catch (e) {}
     };
-  }, []);
+  }, [activeTenantId, user?.id]);
 
-  async function load() {
-    setLoading(true);
+  async function load(gen = loadGenerationRef.current, targetTenantId = activeTenantId) {
+    if (!targetTenantId) {
+      if (gen === loadGenerationRef.current) {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (gen === loadGenerationRef.current) {
+      setLoading(true);
+      setLoadError(null);
+    }
+
     try {
-      const { documents } = await databases.listDocuments(DATABASE_ID, COLLECTION_ID, [
-        Query.limit(500),
+      const documents = await fetchAllCrmItemsPages([
+        Query.equal("tenant_id", targetTenantId),
         Query.orderAsc("name"),
       ]);
 
-      const mapped = documents.map((d) => ({
-        ...d,
-        id: d.$id,
-        created_at: d.$createdAt,
-      })) as unknown as CrmItem[];
+      if (gen !== loadGenerationRef.current) return;
+
+      const mapped = (documents || [])
+        .filter((d: any) => !d.tenant_id || d.tenant_id === targetTenantId)
+        .map((d: any) => ({
+          ...d,
+          id: d.$id || d.id,
+          created_at: d.$createdAt || d.created_at,
+        })) as unknown as CrmItem[];
 
       setItems(mapped);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Erro ao carregar itens:", err);
+      if (gen === loadGenerationRef.current) {
+        setLoadError(err?.message || "Erro ao carregar itens do catálogo.");
+      }
     } finally {
-      setLoading(false);
+      if (gen === loadGenerationRef.current) {
+        setLoading(false);
+      }
     }
   }
 
@@ -485,6 +605,7 @@ export default function CrmItems() {
 
   async function save(currentForm: ItemForm) {
     if (!currentForm.name.trim()) return;
+    const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
     setSaving(true);
     setSaveError("");
     try {
@@ -498,15 +619,33 @@ export default function CrmItems() {
         group_name: currentForm.group_name || "Telecom",
         type: currentForm.type,
         is_active: currentForm.is_active,
+        tenant_id: targetTenantId,
       };
 
       if (editing) {
-        await databases.updateDocument(DATABASE_ID, COLLECTION_ID, editing.id, payload);
+        const updatedDoc = await databases.updateDocument(DATABASE_ID, COLLECTION_ID, editing.id, payload);
+        const normalizedUpdated: CrmItem = {
+          ...editing,
+          ...payload,
+          ...(updatedDoc || {}),
+          id: updatedDoc?.$id || (updatedDoc as any)?.id || editing.id,
+        };
+        setItems((prev) => prev.map((i) => (i.id === editing.id ? normalizedUpdated : i)));
       } else {
-        await databases.createDocument(DATABASE_ID, COLLECTION_ID, ID.unique(), payload);
+        const createdDoc = await databases.createDocument(DATABASE_ID, COLLECTION_ID, ID.unique(), payload);
+        const normalizedCreated: CrmItem = {
+          ...payload,
+          ...(createdDoc || {}),
+          id: createdDoc?.$id || (createdDoc as any)?.id || ID.unique(),
+          created_at: createdDoc?.$createdAt || new Date().toISOString(),
+        };
+        setItems((prev) => {
+          if (prev.some((i) => i.id === normalizedCreated.id)) return prev;
+          return [normalizedCreated, ...prev];
+        });
       }
       closeModal();
-      window.location.reload();
+      await load(loadGenerationRef.current, activeTenantId || targetTenantId);
     } catch (err: any) {
       setSaveError(err?.message || "Erro ao salvar item.");
       console.error(err);
@@ -519,9 +658,13 @@ export default function CrmItems() {
     if (!confirm("Tem certeza que deseja excluir este item?")) return;
     try {
       await databases.deleteDocument(DATABASE_ID, COLLECTION_ID, id);
-      window.location.reload();
-    } catch (err) {
+      setItems((prev) => prev.filter((i) => i.id !== id));
+      if (editing?.id === id) {
+        closeModal();
+      }
+    } catch (err: any) {
       console.error(err);
+      setSaveError(err?.message || "Erro ao excluir item.");
     }
   }
 
@@ -535,12 +678,32 @@ export default function CrmItems() {
         error={saveError}
         onClose={closeModal}
         onSave={save}
+        onDelete={remove}
       />
     );
   }
 
   return (
     <div className="space-y-6 pb-12">
+      {loadError && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-2xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-4 py-3 text-xs font-medium text-rose-700 dark:text-rose-300"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span>{loadError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => load(loadGenerationRef.current, activeTenantId)}
+            className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500 transition"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
+
       {/* 1. Header Executivo com Métricas do Catálogo */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white dark:bg-[#121824] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl p-6 shadow-xs">
         <div>
@@ -563,7 +726,7 @@ export default function CrmItems() {
 
         <div className="flex items-center gap-2.5 flex-wrap">
           <button
-            onClick={load}
+            onClick={() => load(loadGenerationRef.current, activeTenantId)}
             className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-white/[0.05] hover:bg-slate-200 dark:hover:bg-white/[0.08] border border-slate-200/80 dark:border-white/[0.08] rounded-xl transition"
             title="Atualizar lista"
           >

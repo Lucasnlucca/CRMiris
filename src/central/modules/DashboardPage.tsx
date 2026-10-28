@@ -52,6 +52,7 @@ import { date, dateTime, localDateTime, money, time, today } from '../utils/form
 import { chargeDay, effectiveChargeStatus, isPaidInMonth } from '../utils/finance';
 import type { Database, TicketStatus, Charge, Invoice, DocumentRecord } from '../types';
 import { databases, DATABASE_ID } from '../../lib/appwrite';
+import { useTenant } from '../../context/TenantContext';
 
 export type MonitoringViewMode = 'operacao' | 'faturas' | 'propostas';
 
@@ -138,10 +139,11 @@ interface CrmContractDoc {
 }
 
 export function DashboardPage() {
-  const { data, session, refresh, notify } = useApp();
+  const { data, session, notice, refresh, notify } = useApp();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const { tenant } = useTenant();
   const isSupport = session?.role === 'support';
   const isFinance = session?.role === 'finance';
 
@@ -170,35 +172,79 @@ export function DashboardPage() {
   const [proposalsFilter, setProposalsFilter] = useState<'all' | 'aceitas' | 'contratos' | 'analise'>('all');
   const [proposalsSearch, setProposalsSearch] = useState('');
 
-  // Carregamento de Propostas e Contratos do Appwrite
+  // Carregamento paginado de Propostas e Contratos do Appwrite
   const [crmProposals, setCrmProposals] = useState<CrmProposalDoc[]>([]);
   const [crmContracts, setCrmContracts] = useState<CrmContractDoc[]>([]);
   const [loadingCrm, setLoadingCrm] = useState(false);
+  const [crmLoadWarning, setCrmLoadWarning] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
+    async function fetchAllCollectionDocs<T>(colId: string): Promise<{ docs: T[]; isPartial: boolean }> {
+      const allDocs: T[] = [];
+      const pageSize = 100;
+      const safetyCap = 10000;
+      let cursor: string | undefined = undefined;
+      let total = 0;
+
+      while (allDocs.length < safetyCap) {
+        const queries = [Query.orderDesc('$createdAt'), Query.limit(pageSize)];
+        if (tenant?.id) {
+          queries.push(Query.equal('tenant_id', tenant.id));
+        }
+        if (cursor) {
+          queries.push(Query.cursorAfter(cursor));
+        }
+        const res = await databases.listDocuments(DATABASE_ID, colId, queries);
+        const batch = (res.documents as unknown as T[]) || [];
+        total = typeof res.total === 'number' ? res.total : allDocs.length + batch.length;
+        allDocs.push(...batch);
+        if (batch.length < pageSize || allDocs.length >= total) {
+          break;
+        }
+        cursor = (batch[batch.length - 1] as any)?.$id;
+        if (!cursor) break;
+      }
+
+      return { docs: allDocs, isPartial: total > allDocs.length };
+    }
+
     async function loadCrmData() {
       setLoadingCrm(true);
       try {
         const [propRes, contRes] = await Promise.allSettled([
-          databases.listDocuments(DATABASE_ID, 'crm_proposals', [
-            Query.orderDesc('$createdAt'),
-            Query.limit(100),
-          ]),
-          databases.listDocuments(DATABASE_ID, 'crm_contracts', [
-            Query.orderDesc('$createdAt'),
-            Query.limit(100),
-          ]),
+          fetchAllCollectionDocs<CrmProposalDoc>('crm_proposals'),
+          fetchAllCollectionDocs<CrmContractDoc>('crm_contracts'),
         ]);
         if (!alive) return;
+        let hasError = false;
+        let isPartial = false;
+
         if (propRes.status === 'fulfilled') {
-          setCrmProposals((propRes.value.documents as any) || []);
+          setCrmProposals(propRes.value.docs);
+          if (propRes.value.isPartial) isPartial = true;
+        } else {
+          hasError = true;
         }
         if (contRes.status === 'fulfilled') {
-          setCrmContracts((contRes.value.documents as any) || []);
+          setCrmContracts(contRes.value.docs);
+          if (contRes.value.isPartial) isPartial = true;
+        } else {
+          hasError = true;
+        }
+
+        if (hasError) {
+          setCrmLoadWarning('Alguns indicadores comerciais não puderam ser atualizados. Exibindo últimos dados disponíveis.');
+        } else if (isPartial) {
+          setCrmLoadWarning('Indicadores comerciais carregados parcialmente devido ao alto volume de registros.');
+        } else {
+          setCrmLoadWarning(null);
         }
       } catch (err) {
         console.warn('Erro ao carregar propostas e contratos:', err);
+        if (alive) {
+          setCrmLoadWarning('Não foi possível atualizar propostas e contratos no momento.');
+        }
       } finally {
         if (alive) setLoadingCrm(false);
       }
@@ -207,7 +253,7 @@ export function DashboardPage() {
     return () => {
       alive = false;
     };
-  }, [data.version]);
+  }, [data.version, tenant?.id]);
 
   // ─── DADOS DO MONITORAMENTO OPERACIONAL ─────────────────────────────────────
   const counts = (Object.keys(statusColors) as TicketStatus[]).map((name) => ({
@@ -391,6 +437,8 @@ export function DashboardPage() {
       amount: number;
       date: string;
       signedBy?: string;
+      signedAt?: string;
+      hasVerifiedSignature?: boolean;
       status: string;
       targetUrl: string;
     };
@@ -399,6 +447,8 @@ export function DashboardPage() {
 
     // Propostas do Appwrite
     crmProposals.forEach((p) => {
+      const pAny = p as any;
+      const isAccepted = p.status === 'accepted' || Boolean(pAny.accepted_at);
       list.push({
         id: p.$id || p.id || '',
         kind: 'proposta',
@@ -407,101 +457,77 @@ export function DashboardPage() {
         clientName: p.to_name || 'Cliente',
         amount: Number(p.total) || 0,
         date: p.created_at || p.$createdAt || today(),
-        status: p.status === 'accepted' ? 'Assinada / Aceita' : p.status,
+        status: isAccepted ? 'Assinada / Aceita' : p.status,
+        signedAt: pAny.accepted_at || undefined,
+        hasVerifiedSignature: isAccepted,
         targetUrl: `/propostas`,
       });
     });
 
     // Contratos assinados do Appwrite
     crmContracts.forEach((cnt) => {
+      const cntAny = cnt as any;
+      const hasEvidence = Boolean(cnt.signed_at || cntAny.signature_hash || cntAny.certificate_hash || cnt.signed_by_name);
+      const isSigned = hasEvidence || cnt.status === 'signed';
       list.push({
         id: cnt.$id || cnt.id || '',
         kind: 'contrato',
         code: cnt.contract_number || `CONTR-${(cnt.$id || '').slice(0, 6).toUpperCase()}`,
         title: cnt.title || 'Contrato de Prestação de Serviços',
         clientName: cnt.client_name || 'Cliente Contratante',
-        amount: Number(cnt.total_value) || 0,
+        amount: Number(cnt.total_value ?? 0),
         date: cnt.signed_at || cnt.created_at || cnt.$createdAt || today(),
-        signedBy: cnt.signed_by_name || 'Assinado digitalmente',
-        status: cnt.signed_at || cnt.status === 'signed' ? 'Assinado / Vigente' : (cnt.status || 'Minuta'),
+        ...(isSigned ? { signedBy: cnt.signed_by_name || 'Assinado eletronicamente' } : {}),
+        signedAt: cnt.signed_at || undefined,
+        hasVerifiedSignature: isSigned,
+        status: isSigned ? 'Assinado / Vigente' : (cnt.status || 'Minuta'),
         targetUrl: `/contratos-crm`,
       });
     });
 
-    // Documentos da base local se não houver registros nas coleções
+    // Documentos da base local se não houver registros nas coleções dedicadas
     if (list.length === 0) {
       data.documents
         .filter((d) => d.category === 'Contrato' || d.category === 'Proposta')
         .forEach((doc) => {
           const client = data.clients.find((c) => c.id === doc.clientId);
+          const extDoc = doc as typeof doc & {
+            signedAt?: string;
+            signatureHash?: string;
+            signerName?: string;
+          };
+          const hasVerifiedSignature = Boolean(extDoc.signedAt && extDoc.signatureHash);
           list.push({
             id: doc.id,
             kind: doc.category === 'Contrato' ? 'contrato' : 'proposta',
             code: doc.number || `DOC-${doc.id.slice(0, 6)}`,
             title: doc.name,
             clientName: client?.tradeName || client?.name || 'Cliente Contratante',
-            amount: doc.value || 1250,
+            amount: Number(doc.value ?? 0),
             date: doc.startDate || doc.createdAt,
-            signedBy: 'Assinatura Registrada',
+            ...(hasVerifiedSignature
+              ? { signedBy: extDoc.signerName || 'Assinatura Verificada' }
+              : {}),
             status: doc.status || 'Vigente',
             targetUrl: `/documentos?id=${doc.id}`,
           });
         });
     }
 
-    // Se ainda vazio, adiciona amostras realistas para demonstração imediata
-    if (list.length === 0) {
-      list.push(
-        {
-          id: 'mock-1',
-          kind: 'proposta',
-          code: 'PROP-2026-0048',
-          title: 'Implantação Telefonia IP Nuvem & 30 Ramais PABX',
-          clientName: 'Hospital São Lucas & Saúde',
-          amount: 3890.0,
-          date: offsetDay(nowDay, -2),
-          signedBy: 'Carlos Eduardo Silva (Diretor)',
-          status: 'Assinada / Aceita',
-          targetUrl: '/propostas',
-        },
-        {
-          id: 'mock-2',
-          kind: 'contrato',
-          code: 'CONTR-2026-0112',
-          title: 'Contrato de Licenciamento & Suporte Telefonia Dedicada',
-          clientName: 'Advocacia Rocha & Associados',
-          amount: 1450.0,
-          date: offsetDay(nowDay, -6),
-          signedBy: 'Mariana Rocha (Sócia)',
-          status: 'Assinado / Vigente',
-          targetUrl: '/contratos-crm',
-        },
-        {
-          id: 'mock-3',
-          kind: 'proposta',
-          code: 'PROP-2026-0045',
-          title: 'Portabilidade Numérica & Tronco SIP 60 Canais',
-          clientName: 'Rede Logística Brasil S/A',
-          amount: 2790.0,
-          date: offsetDay(nowDay, -11),
-          signedBy: 'Roberto Ferreira (Gerente TI)',
-          status: 'Assinada / Aceita',
-          targetUrl: '/propostas',
-        },
-      );
-    }
-
     return list.sort((a, b) => b.date.localeCompare(a.date));
   }, [crmProposals, crmContracts, data.documents, data.clients, nowDay]);
 
+  // F34: Indicadores de receita assinada exigem estritamente evidência verificada de assinatura
+  // Contratos apenas "Vigente" sem evidência de assinatura jamais são computados
   const signedOnlyItems = useMemo(() => {
     return unifiedSignedList.filter(
-      (item) =>
-        item.status.toLowerCase().includes('assina') ||
-        item.status.toLowerCase().includes('aceit') ||
-        item.status.toLowerCase().includes('vigent') ||
+      (item: any) =>
+        item.hasVerifiedSignature === true ||
+        Boolean(item.signedAt) ||
         item.status === 'accepted' ||
-        item.status === 'signed',
+        item.status === 'signed' ||
+        item.status === 'Assinada / Aceita' ||
+        item.status === 'Assinado / Vigente'
     );
   }, [unifiedSignedList]);
 
@@ -515,7 +541,7 @@ export function DashboardPage() {
 
   const conversionRate = useMemo(() => {
     const total = unifiedSignedList.length;
-    return total > 0 ? Math.round((signedOnlyItems.length / total) * 100) : 100;
+    return total > 0 ? Math.round((signedOnlyItems.length / total) * 100) : 0;
   }, [unifiedSignedList, signedOnlyItems]);
 
   // Gráfico de evolução de propostas assinadas
@@ -532,7 +558,7 @@ export function DashboardPage() {
     });
   }, [signedOnlyItems, days, nowDay]);
 
-  // Distribuição de propostas por estágio
+  // Distribuição de propostas por estágio (valores reais, sem inflar com mínimo 1)
   const proposalDistribution = useMemo(() => {
     const aceitas = signedOnlyItems.length;
     const emAnalise = unifiedSignedList.filter((p) => p.status.toLowerCase().includes('anális') || p.status === 'open').length;
@@ -540,10 +566,10 @@ export function DashboardPage() {
     const rascunhos = unifiedSignedList.filter((p) => p.status.toLowerCase().includes('rascunho') || p.status === 'draft').length;
 
     return [
-      { name: 'Assinadas / Aceitas', value: Math.max(aceitas, 1), color: '#209b72' },
-      { name: 'Em Análise', value: Math.max(emAnalise, 1), color: '#f59e0b' },
-      { name: 'Enviadas', value: Math.max(enviadas, 1), color: '#3065e8' },
-      { name: 'Rascunhos', value: Math.max(rascunhos, 0), color: '#94a3b8' },
+      { name: 'Assinadas / Aceitas', value: aceitas, color: '#209b72' },
+      { name: 'Em Análise', value: emAnalise, color: '#f59e0b' },
+      { name: 'Enviadas', value: enviadas, color: '#3065e8' },
+      { name: 'Rascunhos', value: rascunhos, color: '#94a3b8' },
     ].filter((p) => p.value > 0);
   }, [signedOnlyItems, unifiedSignedList]);
 
@@ -888,6 +914,33 @@ export function DashboardPage() {
           </>
         }
       />
+
+      {(notice || crmLoadWarning || (data as any).__loadMeta?.loadError || (data as any).__loadMeta?.isPartial) && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: '12px',
+            padding: '10px 14px',
+            borderRadius: '10px',
+            backgroundColor: '#fffbeb',
+            border: '1px solid #fde68a',
+            color: '#92400e',
+            fontSize: '13px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+          }}
+        >
+          <CircleAlert size={16} style={{ flexShrink: 0 }} />
+          <span>
+            {notice ||
+              crmLoadWarning ||
+              ((data as any).__loadMeta?.loadError
+                ? `Alguns dados não puderam ser sincronizados (${(data as any).__loadMeta.loadError}).`
+                : 'Exibindo amostra parcial do conjunto de dados.')}
+          </span>
+        </div>
+      )}
 
       {/* ═══════════════════════════════════════════════════════════════════════ */}
       {/* MODO 1: OPERAÇÃO & CHAMADOS                                           */}
@@ -1907,12 +1960,18 @@ export function DashboardPage() {
                         </strong>
                       </td>
                       <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                          <CheckCheck size={13} className="text-emerald-600" />
-                          <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                            {item.signedBy || 'Assinado Eletronicamente'}
-                          </span>
-                        </div>
+                        {item.signedBy ||
+                        item.status === 'Assinada / Aceita' ||
+                        item.status === 'Assinado / Vigente' ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                            <CheckCheck size={13} className="text-emerald-600" />
+                            <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                              {item.signedBy || 'Assinado Eletronicamente'}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-400">Aguardando assinatura</span>
+                        )}
                       </td>
                       <td>
                         <Link

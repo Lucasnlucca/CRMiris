@@ -1,860 +1,902 @@
 /**
- * Servidor de Produção do Backend API Bridge do Iris Horizon CRM
- *
- * Executa de forma desacoplada ou como sidecar para atender
- * requisições da rota /api/crm/write enviadas pelo Nginx / frontend.
- *
- * Controles de Segurança Implementados:
- * 1. Rate limiting por IP (janela de 60s, máximo 120 reqs).
- * 2. Limite rígido de tamanho do payload (máximo 5MB).
- * 3. Trava Fail-Closed: Bloqueio estrito de escritas em crm_db sem ALLOW_PROD_BUSINESS_WRITES=true.
- * 4. Validação criptográfica de sessão via JWT do Appwrite Auth.
- * 5. Sanitização de erros sem vazamento de stack traces ou segredos.
- * 6. Suporte nativo a servir arquivos estáticos (dist/) com SPA fallback para produção autônoma.
+ * ============================================================================
+ * PRODUCTION SERVER & BACKEND API BRIDGE (Fase 6.1, 6.2 & 6.4)
+ * ============================================================================
+ * Serves the static Vite build (`dist/`) and exposes the authoritative
+ * Backend API Bridge (`/api/data`, `/api/admin/policies/*`, `/api/admin/tenants/*`,
+ * `/api/admin/users/*`, `/api/portal/*`, `/api/asaas/*`, `/api/contracts/*`,
+ * `/api/auth/login`, `/api/health`) using `node-appwrite` with server-side
+ * JWT/Session validation, tenant membership resolution, Write Policy Engine
+ * governance, S08 contract immutability, S10 crash resilience, S11 global/tenant
+ * suspension enforcement, F17 pagination, F22 atomic JSON merge, F36 durable
+ * governance persistence, and F37 circuit breaker instrumentation.
+ * ============================================================================
  */
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
+const { Client, Account, Databases, Teams, ID, Query } = require('node-appwrite');
+const { WritePolicyEngine, CONTRACT_SIGNATURE_FORBIDDEN_FIELDS } = require('./writePolicyEngine.cjs');
+const { resolveGovernanceConfig } = require('./governanceConfig.cjs');
+const { GovernancePersistencePrototype } = require('./governancePersistencePrototype.cjs');
+const { handleAdminPolicyRoutes } = require('./adminPolicyHandler.cjs');
+const { handleUserManagementRoutes } = require('./userManagementHandler.cjs');
+const { handleTenantProvisioningRoutes } = require('./tenantProvisioningHandler.cjs');
+const { handlePortalRoutes } = require('./portalHandler.cjs');
+const { handleAuthLoginRoute } = require('./authLoginHandler.cjs');
+const { handleAsaasRoutes } = require('./asaasHandler.cjs');
+const { handleContractRoutes } = require('./signContractHandler.cjs');
+const {
+    readJsonBody,
+    listAllTeams,
+    listAllMemberships,
+    mergeJsonArrayById
+} = require('./requestUtils.cjs');
 
+// Load .env files if present (development / local docker fallback)
 function loadEnvFile(filePath) {
-  if (!fs.existsSync(filePath)) return;
-  const content = fs.readFileSync(filePath, 'utf8');
-  const lines = content.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eqIdx = trimmed.indexOf('=');
-    if (eqIdx === -1) continue;
-    const key = trimmed.slice(0, eqIdx).trim();
-    const value = trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, '');
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
-  }
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf-8');
+    content.split(/\r?\n/).forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx === -1) return;
+        const key = trimmed.slice(0, eqIdx).trim();
+        let val = trimmed.slice(eqIdx + 1).trim();
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+        }
+        if (!process.env[key]) {
+            process.env[key] = val;
+        }
+    });
 }
 
-loadEnvFile(path.join(__dirname, '../.env.local'));
-loadEnvFile(path.join(__dirname, '../.env'));
+loadEnvFile(path.resolve(__dirname, '../.env.local'));
+loadEnvFile(path.resolve(__dirname, '../.env'));
 
-const { Client, Databases, Users, Teams, Account, Permission, Role, ID } = require('node-appwrite');
+const PORT = Number(process.env.PORT || 3000);
+const DIST_DIR = path.resolve(__dirname, '../dist');
 
-// Porta interna do Backend Bridge (fixa em 3001 para não colidir com o Nginx nas portas 80/3000/4173)
-const PORT = process.env.BRIDGE_PORT || 3001;
-const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
-const API_KEY = process.env.APPWRITE_API_KEY || '';
-const DEFAULT_DATABASE_ID = process.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
+const APPWRITE_ENDPOINT = process.env.VITE_APPWRITE_URL || process.env.VITE_APPWRITE_ENDPOINT || process.env.APPWRITE_ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+const APPWRITE_PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || process.env.APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
+const APPWRITE_DATABASE_ID = process.env.VITE_APPWRITE_DATABASE_ID || process.env.APPWRITE_DATABASE_ID || 'crm_db';
+const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY || '';
 
-const {
-  assertNotUnderMaintenance,
-  enterPrivilegedOperation,
-} = require('./maintenanceGuard.cjs');
-
-const {
-  WritePolicyEngine,
-  CircuitBreaker,
-  validatePolicyConfiguration,
-  SANDBOX_PILOT_CLIENTS_RULES,
-  PROD_PILOT_CLIENTS_RULES,
-  PROD_CLIENTS_RULES,
-  createAuditLog,
-} = require('./writePolicyEngine.cjs');
-
-const { handleAdminPolicyRoutes } = require('./adminPolicyHandler.cjs');
-const { readJsonBody } = require('./requestUtils.cjs');
-const { handleSignContractServer } = require('./signContractHandler.cjs');
-const { validatePublicAccessToken } = require('./publicTokenService.cjs');
-
-const ALLOWED_BUSINESS_COLLECTIONS = new Set([
-  'crm_contracts',
-  'crm_proposals',
-  'crm_proposal_items',
-  'clients',
-  'support_tickets',
-  'servers',
-  'services',
-  'documents',
-  'charges',
-  'invoices',
-  'events',
-  'pipeline_deals',
-  'pipeline_columns',
-  'pipeline_attachments',
-  'pipeline_history',
-  'activities',
-  'crm_items',
-  'items',
-  'phonebook',
-  'test_deals',
-  'test_pipeline_history',
-  'test_clients',
-  'test_crm_proposals',
-  'test_crm_contracts',
-  'test_crm_items',
-  'test_contacts',
-]);
-
-const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
-
-// Controle de ativação dos Módulos Operacionais em Produção (habilitado por padrão)
-const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE !== 'false';
-
-const initialRules = [
-  ...SANDBOX_PILOT_CLIENTS_RULES,
-  ...(ENABLE_PROD_CLIENTS_MODULE ? prodClientsRules : []),
-];
-
-const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true, autoSeedProdTenants: true });
-
-const { GovernancePersistencePrototype } = require('./governancePersistencePrototype.cjs');
-const {
-  resolveGovernanceConfig,
-  initializeGovernance,
-} = require('./governanceConfig.cjs');
-
-const targetGovDb = process.env.GOVERNANCE_DATABASE_ID || DEFAULT_DATABASE_ID;
-const isSandboxGov = targetGovDb === 'crm_isolated_test' || targetGovDb === 'crm_sandbox_test';
-const standaloneEnv = {
-  ...process.env,
-  GOVERNANCE_ENVIRONMENT: process.env.GOVERNANCE_ENVIRONMENT || (isSandboxGov ? 'sandbox' : 'production'),
-  GOVERNANCE_DATABASE_ID: targetGovDb,
-};
-
-const governanceConfig = resolveGovernanceConfig(standaloneEnv, { runtime: 'standalone' });
-
-// Inicialização segura de governança: sem fallback automático, sem persistência quando desabilitada
-initializeGovernance(writePolicyEngine, governanceConfig, {
-  logPrefix: '[SERVER_STARTUP]',
-  createAdapter: (targetDb) => {
-    return new GovernancePersistencePrototype({
-      endpoint: ENDPOINT,
-      projectId: PROJECT_ID,
-      apiKey: API_KEY,
-      databaseId: targetDb,
-    });
-  },
-}).catch((err) => {
-  console.warn('[SERVER_STARTUP] Erro durante inicialização de governança:', err.message);
+// Initialize Write Policy Engine
+const writePolicyEngine = new WritePolicyEngine({
+    mode: process.env.WRITE_POLICY_MODE || 'enforce'
 });
 
-// Proteção contra DoS: Limite de payload e Rate Limiter
-const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024; // 10 MB (suporte a logomarcas em alta resolução)
-const ipRateLimits = new Map();
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const MAX_REQUESTS_PER_WINDOW = 120;
+// F22: Document lock queue for atomic document writes and race-free concurrent messages
+const documentLocks = new Map();
+async function withDocumentLock(lockKey, fn) {
+    const prev = documentLocks.get(lockKey) || Promise.resolve();
+    let release;
+    const current = new Promise(resolve => { release = resolve; });
+    documentLocks.set(lockKey, prev.then(() => current, () => current));
+    await prev;
+    try {
+        return await fn();
+    } finally {
+        release();
+        if (documentLocks.get(lockKey) === current) {
+            documentLocks.delete(lockKey);
+        }
+    }
+}
 
-function checkRateLimit(ip) {
-  const now = Date.now();
-  const entry = ipRateLimits.get(ip) || { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
-  if (now > entry.resetAt) {
-    entry.count = 1;
-    entry.resetAt = now + RATE_LIMIT_WINDOW_MS;
-  } else {
-    entry.count += 1;
-  }
-  ipRateLimits.set(ip, entry);
-  return entry.count <= MAX_REQUESTS_PER_WINDOW;
+const MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf'
+};
+
+// F08: Complete operational collections list matching frontend official collections
+const ALLOWED_BUSINESS_COLLECTIONS = new Set([
+    'leads', 'clients', 'opportunities',
+    'proposals', 'crm_proposals', 'proposal_items', 'crm_proposal_items', 'crm_items', 'items',
+    'contracts', 'crm_contracts', 'charges', 'invoices', 'transactions', 'financial_transactions',
+    'support_tickets', 'tickets', 'projects', 'tasks', 'pbx_lines', 'cloud_instances',
+    'servers', 'services', 'kb_articles', 'documents', 'crm_documents', 'client_documents', 'files',
+    'service_Catalog', 'audit_logs',
+    'pipeline_deals', 'pipeline_columns', 'pipeline_history', 'pipeline_attachments',
+    'pipeline_activities', 'pipeline_comments', 'pipeline_checklist',
+    'events', 'activities', 'phonebook', 'call_history',
+    'whatsapp_contacts', 'whatsapp_messages', 'whatsapp_config', 'sip_config',
+    'integration_configs', 'message_templates', 'automation_config', 'messages',
+    'user_menu_permissions', 'notifications',
+    'tenants', 'users_hydra',
+    'test_tenants', 'test_users_hydra', 'test_leads', 'test_clients',
+    'test_opportunities', 'test_proposals', 'test_crm_proposals', 'test_contracts', 'test_crm_contracts',
+    'test_charges', 'test_invoices', 'test_support_tickets', 'test_projects', 'test_tasks', 'test_audit_logs'
+]);
+
+const TENANT_AWARE_COLLECTIONS = new Set([
+    'leads', 'clients', 'opportunities',
+    'proposals', 'crm_proposals', 'proposal_items', 'crm_proposal_items', 'crm_items', 'items',
+    'contracts', 'crm_contracts', 'charges', 'invoices', 'transactions', 'financial_transactions',
+    'support_tickets', 'tickets', 'projects', 'tasks', 'pbx_lines', 'cloud_instances',
+    'servers', 'services', 'kb_articles', 'documents', 'crm_documents', 'client_documents', 'files',
+    'service_Catalog', 'audit_logs',
+    'pipeline_deals', 'pipeline_columns', 'pipeline_history', 'pipeline_attachments',
+    'pipeline_activities', 'pipeline_comments', 'pipeline_checklist',
+    'events', 'activities', 'phonebook', 'call_history',
+    'whatsapp_contacts', 'whatsapp_messages', 'whatsapp_config', 'sip_config',
+    'integration_configs', 'message_templates', 'automation_config', 'messages',
+    'user_menu_permissions', 'notifications',
+    'users_hydra',
+    'test_users_hydra', 'test_leads', 'test_clients', 'test_opportunities',
+    'test_proposals', 'test_crm_proposals', 'test_contracts', 'test_crm_contracts',
+    'test_charges', 'test_invoices', 'test_support_tickets', 'test_projects', 'test_tasks', 'test_audit_logs'
+]);
+
+function sendJson(res, statusCode, payload) {
+    if (res.headersSent) return;
+    res.writeHead(statusCode, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Appwrite-JWT, X-Appwrite-Session, X-Target-Database, X-Tenant-Id, X-Portal-Token'
+    });
+    res.end(JSON.stringify(payload));
+}
+
+function getAdminClient() {
+    if (!APPWRITE_PROJECT_ID || !APPWRITE_API_KEY) {
+        throw new Error('Server misconfigured: Missing APPWRITE_PROJECT_ID or APPWRITE_API_KEY.');
+    }
+    return new Client()
+        .setEndpoint(APPWRITE_ENDPOINT)
+        .setProject(APPWRITE_PROJECT_ID)
+        .setKey(APPWRITE_API_KEY);
 }
 
 /**
- * Validação Estrita de Liberação Canário para Produção (crm_db)
- * 
- * Regra da Fase 5F: Todas as escritas em crm_db estão 100% DESABILITADAS por padrão.
- * Qualquer liberação futura DEVE ser granular, auditada e com restrição temporal estrita.
+ * Helper to check whether a tenant document is suspended/inactive (S11).
  */
-function validateProductionCanaryGuard({ databaseId, action, collectionId, documentId, data, userId, tenantId }) {
-  if (databaseId !== 'crm_db') {
-    return { allowed: true };
-  }
-
-  // 1. Verificação da Chave Mestra Canário (DEVE SER EXPLICITAMENTE 'true')
-  const canaryEnabled = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
-  if (!canaryEnabled) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: '[CANARY FAIL-CLOSED GUARD] Escritas em crm_db bloqueadas: liberação canário está desativada.',
-    };
-  }
-
-  // 2. Janela Temporal Estrita (Expiração Automática)
-  const windowExpiresAt = process.env.CANARY_WINDOW_EXPIRES_AT;
-  if (!windowExpiresAt || isNaN(Date.parse(windowExpiresAt)) || new Date(windowExpiresAt).getTime() <= Date.now()) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Janela temporal canário expirada ou inválida (${windowExpiresAt || 'NÃO CONFIGURADA'}).`,
-    };
-  }
-
-  // 3. Restrição de Operação Autorizada
-  const allowedAction = process.env.CANARY_ALLOWED_ACTION;
-  if (!allowedAction || action !== allowedAction) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Operação "${action}" não autorizada no perfil canário (Permitido: "${allowedAction || 'NENHUMA'}").`,
-    };
-  }
-
-  // 4. Restrição de Coleção Autorizada
-  const allowedCollection = process.env.CANARY_ALLOWED_COLLECTION;
-  if (!allowedCollection || collectionId !== allowedCollection) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Coleção "${collectionId}" não autorizada no perfil canário (Permitido: "${allowedCollection || 'NENHUMA'}").`,
-    };
-  }
-
-  // 5. Restrição de Tenant Autorizado
-  const allowedTenant = process.env.CANARY_ALLOWED_TENANT;
-  if (!allowedTenant || tenantId !== allowedTenant) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Tenant "${tenantId}" não autorizado no perfil canário (Permitido: "${allowedTenant || 'NENHUM'}").`,
-    };
-  }
-
-  // 6. Restrição de Usuário Autorizado
-  const allowedUser = process.env.CANARY_ALLOWED_USER;
-  if (!allowedUser || userId !== allowedUser) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Usuário "${userId}" não autorizado no perfil canário (Permitido: "${allowedUser || 'NENHUM'}").`,
-    };
-  }
-
-  // 7. Restrição de Marcador de Registro de Teste
-  const isMarked = data && data._is_canary_test === true;
-  const hasCanaryDocId = !documentId || documentId.startsWith('canary_');
-  if (!isMarked || !hasCanaryDocId) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: '[CANARY FAIL-CLOSED GUARD] Registro rejeitado: requer marcador "_is_canary_test: true" e prefixo "canary_".',
-    };
-  }
-
-  return { allowed: true };
+async function isTenantSuspended(adminDatabases, databaseId, tenantId) {
+    if (!tenantId || !adminDatabases || typeof adminDatabases.getDocument !== 'function') return false;
+    const cols = databaseId === 'crm_isolated_test' ? ['test_tenants', 'tenants'] : ['tenants', 'test_tenants'];
+    for (const col of cols) {
+        try {
+            const doc = await adminDatabases.getDocument(databaseId, col, tenantId);
+            if (doc) {
+                const status = String(doc.status || 'active').toLowerCase();
+                return status === 'suspended' || status === 'cancelled' || doc.is_active === false;
+            }
+        } catch {
+            // Tenant doc may not exist in this collection
+        }
+    }
+    return false;
 }
 
-// MIME types para suporte a SPA
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-};
+/**
+ * Validates the caller's identity via Appwrite JWT or Session cookie/header,
+ * enforces S11 global account/profile active checks and tenant suspension checks,
+ * and resolves their authoritative tenant membership across all pages (F17).
+ */
+async function authenticateAndResolveTenant(req, requestedTenantId, effectiveDatabaseId = APPWRITE_DATABASE_ID) {
+    const authHeader = req.headers['authorization'] || '';
+    const jwtHeader = req.headers['x-appwrite-jwt'] || '';
+    const sessionHeader = req.headers['x-appwrite-session'] || '';
 
-const server = http.createServer(async (req, res) => {
-  const clientIp = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    let token = '';
+    let isJwt = false;
 
-  // 1. CORS Headers Restritos
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Appwrite-Session, X-Appwrite-User-Id');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-
-  if (req.method === 'OPTIONS') {
-    res.statusCode = 204;
-    res.end();
-    return;
-  }
-
-  // 2. Health Check Seguro
-  if (req.url === '/healthz' || req.url === '/api/healthz') {
-    res.statusCode = 200;
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ status: 'UP', service: 'crm-backend-api-bridge', timestamp: new Date().toISOString() }));
-    return;
-  }
-
-  // 2.2. Rota de serviço de logomarcas estáticas: /api/logos/:filename
-  if (req.url && req.url.startsWith('/api/logos/') && req.method === 'GET') {
-    const rawName = req.url.replace('/api/logos/', '').split('?')[0];
-    const filename = path.basename(decodeURIComponent(rawName));
-    const logosDir = path.join(__dirname, 'uploads', 'logos');
-    const filePath = path.join(logosDir, filename);
-
-    if (fs.existsSync(filePath)) {
-      const ext = path.extname(filename).toLowerCase();
-      const mimeTypes = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.svg': 'image/svg+xml',
-        '.webp': 'image/webp',
-      };
-      res.writeHead(200, {
-        'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-        'Cache-Control': 'public, max-age=86400',
-      });
-      fs.createReadStream(filePath).pipe(res);
-      return;
-    }
-    res.statusCode = 404;
-    res.end('Logo not found');
-    return;
-  }
-
-  // 2.5. Rotas de Governança e Disjuntores SuperAdmin: /api/admin/policy/*
-  if (req.url && req.url.startsWith('/api/admin/policy')) {
-    return handleAdminPolicyRoutes(req, res, writePolicyEngine, {
-      ENDPOINT,
-      PROJECT_ID,
-      API_KEY,
-      governanceConfig,
-    });
-  }
-
-  // 2.6. Rotas de Provisionamento e Gestão de Empresas SuperAdmin: /api/admin/tenants/*
-  if (req.url && req.url.startsWith('/api/admin/tenants')) {
-    const { handleTenantProvisioningRoutes } = require('./tenantProvisioningHandler.cjs');
-    return handleTenantProvisioningRoutes(req, res, {
-      ENDPOINT,
-      PROJECT_ID,
-      API_KEY,
-      governanceConfig,
-    });
-  }
-
-  // 2.7. Rotas de Gestão de Membros e Convites por Empresa: /api/admin/users/*
-  if (req.url && req.url.startsWith('/api/admin/users')) {
-    const { handleUserManagementRoutes } = require('./userManagementHandler.cjs');
-    return handleUserManagementRoutes(req, res, {
-      ENDPOINT,
-      PROJECT_ID,
-      API_KEY,
-      governanceConfig,
-    });
-  }
-
-  // 3. Rota de Escrita Autoritativa: /api/crm/write
-  if (req.url === '/api/crm/write' && req.method === 'POST') {
-    // Validação de Rate Limit
-    if (!checkRateLimit(clientIp)) {
-      res.statusCode = 429;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: false, error: 'Taxa limite de requisições excedida. Tente novamente mais tarde.', code: 429 }));
-      return;
+    if (jwtHeader) {
+        token = String(jwtHeader).trim();
+        isJwt = true;
+    } else if (authHeader.startsWith('Bearer ')) {
+        token = authHeader.slice(7).trim();
+        isJwt = token.split('.').length === 3;
+    } else if (sessionHeader) {
+        token = String(sessionHeader).trim();
+        isJwt = false;
     }
 
-    let body;
+    if (!token) {
+        const err = new Error('Não autenticado. Token de sessão ou JWT ausente.');
+        err.statusCode = 401;
+        throw err;
+    }
+
+    const userClient = new Client()
+        .setEndpoint(APPWRITE_ENDPOINT)
+        .setProject(APPWRITE_PROJECT_ID);
+
+    if (isJwt) {
+        userClient.setJWT(token);
+    } else {
+        userClient.setSession(token);
+    }
+
+    const account = new Account(userClient);
+    let user;
     try {
-      body = await readJsonBody(req, { maxBytes: MAX_PAYLOAD_BYTES, timeoutMs: 15000 });
-    } catch (err) {
-      res.statusCode = err.statusCode || 400;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: false, error: err.message, code: res.statusCode }));
-      return;
+        user = await account.get();
+    } catch (e) {
+        const err = new Error(`Sessão inválida ou expirada: ${e.message}`);
+        err.statusCode = 401;
+        throw err;
     }
 
-    try {
-      // Validar Maintenance Guard
-      assertNotUnderMaintenance('StandaloneServerWrite');
-      const exitOp = enterPrivilegedOperation();
+    // S11: Reject globally deactivated Appwrite user accounts
+    if (user.status === false) {
+        const err = new Error('Acesso negado: Conta de usuário desativada globalmente.');
+        err.statusCode = 403;
+        err.code = 'ACCOUNT_DEACTIVATED';
+        throw err;
+    }
 
-      try {
-        const databaseId = body.databaseId || DEFAULT_DATABASE_ID;
+    const userId = user.$id;
+    const adminClient = getAdminClient();
+    const adminTeams = new Teams(adminClient);
+    const adminDatabases = new Databases(adminClient);
 
-        // Inicializar Clientes Appwrite
-        const adminClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
-        const adminDb = new Databases(adminClient);
-        const adminTeams = new Teams(adminClient);
-
-        // AÇÃO PÚBLICA: SIGN CONTRACT (Assinatura externa com token público autoritativo)
-        if (body.action === 'signContract') {
-          const contractId = body.documentId || body.data?.contractId;
-          if (!contractId) {
-            res.statusCode = 400;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'ID do contrato é obrigatório para assinatura.', code: 400 }));
-            return;
-          }
-
-          const publicContractCollection = 'crm_contracts';
-          const mockDb = {
-            async getContractById(id) {
-              return await adminDb.getDocument(databaseId, publicContractCollection, id);
-            },
-            async updateContract(id, updatePayload) {
-              return await adminDb.updateDocument(databaseId, publicContractCollection, id, updatePayload);
-            },
-          };
-
-          try {
-            const auditResult = await handleSignContractServer(
-              {
-                headers: req.headers,
-                socket: req.socket,
-                body: {
-                  contractId,
-                  signerName: body.data?.signerName || body.data?.signed_by_name || '',
-                  signerDocument: body.data?.signerDocument || body.data?.signed_by_document || '',
-                  signerEmail: body.data?.signerEmail || body.data?.signed_by_email,
-                  signerPhone: body.data?.signerPhone || body.data?.signed_by_phone,
-                  termsAccepted: Boolean(body.data?.termsAccepted),
-                  publicToken: body.data?.publicToken || req.headers['x-public-token'] || undefined,
-                },
-              },
-              mockDb
-            );
-
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({
-              success: true,
-              action: 'signContract',
-              collectionId: publicContractCollection,
-              documentId: contractId,
-              data: auditResult,
-            }));
-            return;
-          } catch (signErr) {
-            res.statusCode = 400;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: signErr.message, code: 400 }));
-            return;
-          }
-        }
-
-        // S03: Restrição de coleções permitidas no CRUD genérico
-        const isSelfPresenceCandidate = body.collectionId === 'users_hydra' &&
-          body.action === 'update' &&
-          body.documentId &&
-          Object.keys(body.data || {}).every(k => k === 'is_online' || k === 'last_seen');
-
-        if (!ALLOWED_BUSINESS_COLLECTIONS.has(body.collectionId) && !isSelfPresenceCandidate) {
-          res.statusCode = 403;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({
-            success: false,
-            error: `Acesso negado: a coleção "${body.collectionId}" não é permitida para operações genéricas de escrita. Coleções globais sensíveis requerem endpoints administrativos dedicados.`,
-            code: 403,
-          }));
-          return;
-        }
-
-        // 1. AUTENTICAÇÃO MANDATÓRIA (S01: Rejeição imediata sem fallbackUserId)
-        const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-        let jwt = '';
-        if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-          jwt = authHeader.slice(7).trim();
-        }
-
-        const sessionHeader = req.headers['x-appwrite-session'] || req.headers['X-Appwrite-Session'];
-        let sessionSecret = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
-
-        if (sessionSecret.startsWith('{')) {
-          try {
-            const parsed = JSON.parse(sessionSecret);
-            sessionSecret = parsed[`a_session_${PROJECT_ID}`] || parsed[`a_session_${PROJECT_ID}_legacy`] || Object.values(parsed)[0] || '';
-          } catch (e) {}
-        }
-
-        if (!jwt && !sessionSecret && req.headers['cookie']) {
-          const rawCookie = Array.isArray(req.headers['cookie']) ? req.headers['cookie'].join('; ') : String(req.headers['cookie']);
-          const match = rawCookie.match(new RegExp(`(?:^|;\\s*)a_session_${PROJECT_ID}(?:_legacy)?=([^;]+)`)) ||
-                        rawCookie.match(/(?:^|;\s*)a_session=([^;]+)/);
-          if (match && match[1]) {
-            sessionSecret = decodeURIComponent(match[1]).trim();
-          }
-        }
-
-        if (!jwt && !sessionSecret) {
-          res.statusCode = 401;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: 'Autenticação necessária: credencial (JWT ou Sessão) ausente.', code: 401 }));
-          return;
-        }
-
-        let userId = null;
+    // S11: Check profile table to block deactivated users
+    for (const colName of ['users_hydra', 'test_users_hydra']) {
         try {
-          const userClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID);
-          if (jwt) userClient.setJWT(jwt);
-          else userClient.setSession(sessionSecret);
-          const userAccount = new Account(userClient);
-          const user = await userAccount.get();
-          userId = user.$id;
-        } catch (err) {
-          res.statusCode = 401;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: `Sessão inválida ou expirada: ${err.message}`, code: 401 }));
-          return;
-        }
-
-        // Tratamento seguro de presença/heartbeat do próprio usuário em users_hydra
-        if (body.collectionId === 'users_hydra') {
-          if (isSelfPresenceCandidate && body.documentId === userId) {
-            const updatePayload = {};
-            if (typeof body.data.is_online === 'boolean') updatePayload.is_online = body.data.is_online;
-            if (typeof body.data.last_seen === 'string') updatePayload.last_seen = body.data.last_seen;
-            else updatePayload.last_seen = new Date().toISOString();
-
-            try {
-              const updatedDoc = await adminDb.updateDocument(databaseId, 'users_hydra', userId, updatePayload);
-              res.statusCode = 200;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: true, action: 'update', documentId: userId, data: updatedDoc }));
-              return;
-            } catch (upErr) {
-              res.statusCode = upErr.code || 500;
-              res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ success: false, error: upErr.message, code: res.statusCode }));
-              return;
+            const userDoc = await adminDatabases.getDocument(effectiveDatabaseId, colName, userId);
+            if (userDoc && userDoc.is_active === false) {
+                const err = new Error('Acesso negado: Perfil de usuário desativado.');
+                err.statusCode = 403;
+                err.code = 'PROFILE_DEACTIVATED';
+                throw err;
             }
-          } else {
-            res.statusCode = 403;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({
-              success: false,
-              error: 'Acesso negado: operações em "users_hydra" são restritas a batimento cardíaco da própria conta.',
-              code: 403,
-            }));
-            return;
-          }
+        } catch (e) {
+            if (e && (e.code === 'PROFILE_DEACTIVATED' || e.statusCode === 403)) throw e;
+            // Collection/document may not exist
         }
+    }
 
-        // Identificar times
-        const knownTeamsSet = new Set(['tenant_default', 'superadmins', 'test_team_alpha', 'test_team_beta', 'test_team_superadmins']);
-        if (body.targetTenantId) {
-          knownTeamsSet.add(body.targetTenantId);
-        }
+    // F17: Paginate all teams and memberships
+    const allTeams = await listAllTeams(adminTeams, Query);
+    const userTeams = [];
+    let isSuperAdmin = false;
+    const superAdminTeams = [process.env.SUPERADMIN_TEAM_ID || 'superadmins'];
+    if (process.env.NODE_ENV === 'test' || effectiveDatabaseId.includes('test')) {
+        superAdminTeams.push('test_team_superadmins');
+    }
+
+    for (const team of allTeams) {
         try {
-          const allTeamsRes = await adminTeams.list();
-          if (allTeamsRes && Array.isArray(allTeamsRes.teams)) {
-            for (const t of allTeamsRes.teams) {
-              if (t && t.$id) knownTeamsSet.add(t.$id);
-            }
-          }
-        } catch (e) {}
-
-        const userTeams = [];
-        const teamRolesMap = new Map();
-        if (userId) {
-          for (const t of knownTeamsSet) {
-            try {
-              const mems = await adminTeams.listMemberships(t);
-              const mem = mems.memberships.find((m) => m.userId === userId);
-              if (mem) {
-                userTeams.push(t);
-                const rolesForThisTeam = [];
-                if (Array.isArray(mem.roles)) {
-                  mem.roles.forEach((r) => { if (r && !rolesForThisTeam.includes(r)) rolesForThisTeam.push(r); });
+            const memberships = await listAllMemberships(adminTeams, team.$id, Query);
+            const match = memberships.find(m => m.userId === userId && m.confirm !== false);
+            if (match) {
+                userTeams.push({
+                    teamId: team.$id,
+                    teamName: team.name,
+                    roles: match.roles || []
+                });
+                // S01: Authoritative team ID verification ONLY, never trust team.name
+                if (superAdminTeams.includes(team.$id)) {
+                    isSuperAdmin = true;
                 }
-                teamRolesMap.set(t, rolesForThisTeam);
-              }
-            } catch (e) {}
-          }
+            }
+        } catch {
+            // Ignore errors on individual team checks
         }
+    }
 
-        // Verificação estrita de SuperAdmin por igualdade exata de ID de Team:
-        const isSuperAdminTeam = (t) => databaseId === 'crm_db' ? (t === 'superadmins') : (t === 'superadmins' || t === 'test_team_superadmins');
-        const isSuper = userTeams.some((t) => isSuperAdminTeam(t));
+    const operationalTeams = userTeams.filter(
+        t => t.teamId !== 'superadmins' && t.teamId !== 'test_team_superadmins' && (!t.teamName || t.teamName.toLowerCase() !== 'superadmins')
+    );
 
-        let authoritativeTenantId = '';
-        if (body.targetTenantId) {
-          if (userTeams.includes(body.targetTenantId) || isSuper) {
-            authoritativeTenantId = body.targetTenantId;
-          } else {
-            res.statusCode = 403;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'Acesso negado à organização solicitada.', code: 403 }));
-            return;
-          }
+    if (operationalTeams.length === 0 && !isSuperAdmin) {
+        const err = new Error('Acesso negado: Usuário não possui vínculo ativo com nenhuma empresa (Team).');
+        err.statusCode = 403;
+        throw err;
+    }
+
+    let authoritativeTenantId = null;
+    let activeRoles = [];
+
+    if (requestedTenantId) {
+        const matched = operationalTeams.find(t => t.teamId === requestedTenantId);
+        if (matched) {
+            authoritativeTenantId = matched.teamId;
+            activeRoles = matched.roles;
+        } else if (isSuperAdmin) {
+            authoritativeTenantId = requestedTenantId;
+            activeRoles = ['superadmin', 'owner', 'admin'];
         } else {
-          const operationalTenant = userTeams.find((t) => !isSuperAdminTeam(t));
-          if (operationalTenant) {
-            authoritativeTenantId = operationalTenant;
-          } else if (isSuper) {
-            authoritativeTenantId = databaseId === 'crm_db' ? 'tenant_default' : (userTeams.includes('test_team_superadmins') ? 'test_team_alpha' : 'tenant_default');
-          } else {
-            res.statusCode = 403;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: false, error: 'Usuário não vinculado a nenhuma organização ativa.', code: 403 }));
-            return;
-          }
+            const err = new Error(`Violação de Isolamento Multi-Tenant: Usuário não pertence ao tenant solicitado (${requestedTenantId}).`);
+            err.statusCode = 403;
+            throw err;
         }
 
-        // S08: Papéis estritamente limitados ao tenant autorizado
-        const tenantSpecificRoles = teamRolesMap.get(authoritativeTenantId) || [];
-        const userRoles = [...tenantSpecificRoles];
-        if (isSuper && !userRoles.includes('superadmin')) {
-          userRoles.push('superadmin');
+        // S11: Check if the explicitly requested tenant is suspended
+        if (!isSuperAdmin && await isTenantSuspended(adminDatabases, effectiveDatabaseId, authoritativeTenantId)) {
+            const err = new Error(`Acesso negado: A empresa '${authoritativeTenantId}' encontra-se suspensa ou inativa.`);
+            err.statusCode = 403;
+            err.code = 'TENANT_SUSPENDED';
+            throw err;
         }
-        if (userRoles.length === 0 && userTeams.includes(authoritativeTenantId)) {
-          userRoles.push('agent');
-        }
-
-          // 3.5. AUTORIZAÇÃO DE PRODUÇÃO EXCLUSIVA VIA WRITE POLICY ENGINE (Fases 5H.3 / 5H.4)
-          // O mecanismo canário da Fase 5G foi aposentado em favor do motor de políticas declarativo.
-
-          // AVALIAÇÃO CENTRAL DE POLÍTICA DE MENOR PRIVILÉGIO (WRITE POLICY ENGINE)
-          const policyCheck = writePolicyEngine.evaluate({
-            databaseId,
-            collectionId: body.collectionId,
-            action: body.action,
-            tenantId: authoritativeTenantId,
-            userId,
-            userRoles,
-            data: body.data,
-            documentId: body.documentId,
-            clientIp,
-          });
-
-          if (!policyCheck.allowed) {
-            const auditLog = createAuditLog({
-              clientIp,
-              userId,
-              userRole: userRoles.join(','),
-              tenantId: authoritativeTenantId,
-              databaseId,
-              collectionId: body.collectionId,
-              action: body.action,
-              documentId: body.documentId,
-              decision: policyCheck.code === 503 ? 'CIRCUIT_TRIPPED' : 'DENIED',
-              reason: policyCheck.reason,
-              statusCode: policyCheck.code || 403,
-              payloadSample: body.data,
-            });
-            console.warn('[AUDIT_REJECTED]', JSON.stringify(auditLog));
-
-            res.statusCode = policyCheck.code || 403;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(
-              JSON.stringify({
-                success: false,
-                error: policyCheck.reason,
-                code: policyCheck.code || 403,
-              })
-            );
-            return;
-          }
-
-          const collectionId = body.collectionId;
-          const docData = { ...(body.data || {}) };
-
-          delete docData.$id;
-          delete docData.$createdAt;
-          delete docData.$updatedAt;
-          delete docData.$permissions;
-          delete docData.tenant_id;
-          delete docData._is_canary_test;
-
-          // Validação de Integridade Relacional Multi-Tenant:
-          // Impede referências cruzadas a registros pertencentes a outros tenants (Etapas 2, 3 e 4)
-          const refChecks = [
-            { field: 'client_id', collection: (collectionId === 'test_contacts' || collectionId === 'test_deals' || collectionId === 'test_crm_contracts') ? 'test_clients' : 'clients' },
-            { field: 'contact_id', collection: (collectionId === 'test_deals') ? 'test_contacts' : 'phonebook' },
-            { field: 'deal_id', collection: (collectionId === 'test_crm_contracts') ? 'test_deals' : 'pipeline_deals' },
-          ];
-
-          for (const ref of refChecks) {
-            const refVal = docData[ref.field];
-            if (refVal && typeof refVal === 'string' && refVal.trim()) {
-              try {
-                const targetRefDoc = await adminDb.getDocument(databaseId, ref.collection, refVal.trim());
-                if (targetRefDoc.tenant_id && targetRefDoc.tenant_id !== authoritativeTenantId && !isSuper) {
-                  res.statusCode = 403;
-                  res.setHeader('Content-Type', 'application/json');
-                  res.end(JSON.stringify({
-                    success: false,
-                    error: `[CROSS_TENANT_VIOLATION] Referência cruzada proibida: "${ref.field}" (${refVal}) pertence a outro tenant.`,
-                    code: 403,
-                  }));
-                  return;
+    } else if (operationalTeams.length > 0) {
+        // S11: Pick the first non-suspended operational team for the caller
+        if (isSuperAdmin) {
+            authoritativeTenantId = operationalTeams[0].teamId;
+            activeRoles = operationalTeams[0].roles;
+        } else {
+            for (const candidate of operationalTeams) {
+                const suspended = await isTenantSuspended(adminDatabases, effectiveDatabaseId, candidate.teamId);
+                if (!suspended) {
+                    authoritativeTenantId = candidate.teamId;
+                    activeRoles = candidate.roles;
+                    break;
                 }
-              } catch (e) {
-                if (e.code === 404) {
-                  res.statusCode = 404;
-                  res.setHeader('Content-Type', 'application/json');
-                  res.end(JSON.stringify({
-                    success: false,
-                    error: `[REFERENCE_NOT_FOUND] Registro referenciado em "${ref.field}" não encontrado.`,
-                    code: 404,
-                  }));
-                  return;
-                }
-                throw e;
-              }
             }
-          }
-
-          // AÇÃO: CREATE
-          if (body.action === 'create') {
-            docData.tenant_id = authoritativeTenantId;
-
-            const superAdminTeamForPerms = databaseId === 'crm_db'
-              ? 'superadmins'
-              : ((authoritativeTenantId === 'test_team_alpha' || authoritativeTenantId === 'test_team_beta') ? 'test_team_superadmins' : 'superadmins');
-            const permissions = [
-              Permission.read(Role.team(authoritativeTenantId)),
-              Permission.read(Role.team(superAdminTeamForPerms)),
-            ];
-            const created = await adminDb.createDocument(databaseId, collectionId, body.documentId || ID.unique(), docData, permissions);
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, action: 'create', documentId: created.$id, data: created, tenantId: authoritativeTenantId }));
-            return;
-          }
-
-          // AÇÃO: UPDATE (S03: Enforce strict tenant ownership)
-          if (body.action === 'update') {
-            const existing = await adminDb.getDocument(databaseId, collectionId, body.documentId);
-            if (!isSuper) {
-              if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
-                res.statusCode = 403;
-                res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify({ success: false, error: 'Acesso negado: o documento não pertence à sua organização.', code: 403 }));
-                return;
-              }
+            if (!authoritativeTenantId) {
+                const err = new Error('Acesso negado: Todas as empresas vinculadas à sua conta encontram-se suspensas.');
+                err.statusCode = 403;
+                err.code = 'TENANT_SUSPENDED';
+                throw err;
             }
-            delete docData.tenant_id;
-            const updated = await adminDb.updateDocument(databaseId, collectionId, body.documentId, docData);
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, action: 'update', documentId: updated.$id, data: updated, tenantId: authoritativeTenantId }));
-            return;
-          }
-
-          // AÇÃO: DELETE (S03: Enforce strict tenant ownership)
-          if (body.action === 'delete') {
-            const existing = await adminDb.getDocument(databaseId, collectionId, body.documentId);
-            if (!isSuper) {
-              if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
-                res.statusCode = 403;
-                res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify({ success: false, error: 'Acesso negado: o documento não pertence à sua organização.', code: 403 }));
-                return;
-              }
-            }
-            await adminDb.deleteDocument(databaseId, collectionId, body.documentId);
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/json');
-            res.end(JSON.stringify({ success: true, action: 'delete', documentId: body.documentId, tenantId: authoritativeTenantId }));
-            return;
-          }
-
-          res.statusCode = 400;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: `Ação desconhecida: ${body.action}`, code: 400 }));
-        } finally {
-          exitOp();
         }
-      } catch (err) {
-        res.statusCode = err.code || err.statusCode || 500;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: err.message, code: res.statusCode }));
-      }
-    return;
-  }
+    } else if (isSuperAdmin) {
+        authoritativeTenantId = null;
+        activeRoles = ['superadmin', 'owner', 'admin'];
+    }
 
-  // 4. Suporte a Servir Arquivos Estáticos SPA (dist/) para execução autônoma (S04: Contenção Rigorosa)
-  const distDir = path.resolve(__dirname, '../dist');
-  if (fs.existsSync(distDir) && req.method === 'GET') {
-    let safeUrlPath = '/';
+    return {
+        userId,
+        email: user.email,
+        authoritativeTenantId,
+        isSuperAdmin,
+        roles: activeRoles
+    };
+}
+
+/**
+ * Handles POST /api/data and POST /api/crm/write (R01 & F08 Backend API Bridge)
+ */
+async function handleDataBridge(req, res) {
     try {
-      safeUrlPath = decodeURIComponent((req.url || '/').split('?')[0].split('#')[0]);
-    } catch {
-      res.statusCode = 400;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'URL inválida ou codificação corrompida.' }));
-      return;
-    }
+        const body = await readJsonBody(req);
+        const operation = body.operation || body.action;
+        const targetDatabaseId = body.targetDatabaseId || body.databaseId;
+        const {
+            collectionId,
+            documentId,
+            data,
+            queries = [],
+            targetTenantId
+        } = body;
 
-    // S04: Bloquear terminantemente qualquer tentativa de traversal com '..' ou bytes nulos
-    if (safeUrlPath.includes('..') || safeUrlPath.includes('\0')) {
-      res.statusCode = 403;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Acesso negado: tentativa de traversal proibida.' }));
-      return;
-    }
-
-    let normalizedRelative = path.normalize(safeUrlPath);
-    if (normalizedRelative.startsWith('\\') || normalizedRelative.startsWith('/')) {
-      normalizedRelative = normalizedRelative.slice(1);
-    }
-
-    let targetPath = path.resolve(distDir, normalizedRelative);
-
-    // Contenção estrita: targetPath DEVE residir dentro de distDir
-    if (!targetPath.startsWith(distDir + path.sep) && targetPath !== distDir) {
-      res.statusCode = 403;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Acesso negado: fora do diretório público.' }));
-      return;
-    }
-
-    // Validação de link simbólico para impedir escape da raiz
-    if (fs.existsSync(targetPath)) {
-      try {
-        const realTarget = fs.realpathSync(targetPath);
-        const realDist = fs.realpathSync(distDir);
-        if (!realTarget.startsWith(realDist + path.sep) && realTarget !== realDist) {
-          res.statusCode = 403;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ error: 'Acesso negado: fora do diretório público.' }));
-          return;
+        // If client requests contract signing via bridge, route directly to contract handler
+        if (operation === 'signContract') {
+            return await handleContractRoutes(req, res, {
+                endpoint: APPWRITE_ENDPOINT,
+                projectId: APPWRITE_PROJECT_ID,
+                apiKey: APPWRITE_API_KEY,
+                databaseId: targetDatabaseId || APPWRITE_DATABASE_ID
+            });
         }
-      } catch (e) {
-        res.statusCode = 403;
-        res.end();
-        return;
-      }
+
+        if (!operation || !collectionId) {
+            return sendJson(res, 400, {
+                success: false,
+                error: 'Parâmetros obrigatórios ausentes: operation/action, collectionId.'
+            });
+        }
+
+        if (!ALLOWED_BUSINESS_COLLECTIONS.has(collectionId)) {
+            return sendJson(res, 403, {
+                success: false,
+                error: `Coleção não autorizada na ponte de API: ${collectionId}`
+            });
+        }
+
+        const effectiveDatabaseId = (targetDatabaseId === 'crm_isolated_test' || targetDatabaseId === 'crm_db_sandbox')
+            ? targetDatabaseId
+            : APPWRITE_DATABASE_ID;
+
+        const authContext = await authenticateAndResolveTenant(req, targetTenantId, effectiveDatabaseId);
+        const { authoritativeTenantId, isSuperAdmin, userId, roles } = authContext;
+        const isTenantAdmin = isSuperAdmin || (roles || []).some(r => ['owner', 'admin', 'superadmin'].includes(String(r).toLowerCase()));
+
+        // R04: Strict authorization - users with only "viewer" role must never be permitted to execute writes
+        if (['create', 'update', 'delete'].includes(operation) && !isSuperAdmin) {
+            const userRolesLower = (roles || []).map(r => String(r).toLowerCase());
+            const hasWriteRole = userRolesLower.some(r => ['owner', 'admin', 'agent', 'member', 'superadmin', 'manager'].includes(r));
+            if (!hasWriteRole || (userRolesLower.length === 1 && userRolesLower[0] === 'viewer')) {
+                return sendJson(res, 403, {
+                    success: false,
+                    error: 'Acesso negado: Usuário com permissão apenas de visualização (viewer) não possui autorização de escrita.',
+                    code: 'ROLE_NOT_AUTHORIZED_FOR_WRITE'
+                });
+            }
+        }
+
+        const adminClient = getAdminClient();
+        const adminDatabases = new Databases(adminClient);
+        const isTenantAware = TENANT_AWARE_COLLECTIONS.has(collectionId);
+        const isContractCol = collectionId === 'contracts' || collectionId === 'test_contracts' || collectionId === 'crm_contracts' || collectionId === 'test_crm_contracts';
+        const isNotificationCol = collectionId === 'notifications';
+        const isTicketCol = collectionId === 'support_tickets' || collectionId === 'test_support_tickets' || collectionId === 'tickets';
+        const isServerCol = collectionId === 'servers';
+
+        let existingDocForWrite = null;
+        if (['update', 'delete'].includes(operation)) {
+            if (!documentId) {
+                return sendJson(res, 400, { success: false, error: `documentId é obrigatório para ${operation}.` });
+            }
+            existingDocForWrite = await adminDatabases.getDocument(effectiveDatabaseId, collectionId, documentId);
+
+            if (isTenantAware && authoritativeTenantId && existingDocForWrite.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+                return sendJson(res, 403, {
+                    success: false,
+                    error: `Violação de Isolamento Multi-Tenant: Tentativa de ${operation === 'update' ? 'atualizar' : 'excluir'} documento de outro tenant.`
+                });
+            }
+
+            // F08: Notification ownership check on update/delete
+            if (isNotificationCol && !isTenantAdmin) {
+                if (existingDocForWrite.user_id && existingDocForWrite.user_id !== userId) {
+                    return sendJson(res, 403, {
+                        success: false,
+                        code: 'NOTIFICATION_OWNERSHIP_VIOLATION',
+                        error: 'Acesso negado: Você só pode alterar ou excluir suas próprias notificações.'
+                    });
+                }
+            }
+
+            // S08: Hard immutability check on already-signed contracts (regardless of policy mode)
+            if (isContractCol) {
+                const existingStatus = String(existingDocForWrite.status || '').trim().toLowerCase();
+                if (existingStatus === 'signed' || existingStatus === 'assinado' || existingDocForWrite.signed_at) {
+                    return sendJson(res, 403, {
+                        success: false,
+                        code: 'CONTRACT_IMMUTABLE_SIGNED',
+                        error: 'Contratos já assinados são imutáveis e não podem ser alterados ou excluídos via CRUD.'
+                    });
+                }
+            }
+        }
+
+        // S08: Hard protection against setting contract signature fields or 'signed' status via CRUD
+        if (isContractCol && (operation === 'create' || operation === 'update') && data && typeof data === 'object') {
+            for (const forbiddenField of CONTRACT_SIGNATURE_FORBIDDEN_FIELDS) {
+                if (Object.prototype.hasOwnProperty.call(data, forbiddenField) && data[forbiddenField] !== undefined) {
+                    return sendJson(res, 403, {
+                        success: false,
+                        code: 'FORBIDDEN_CONTRACT_SIGNATURE_FIELD',
+                        error: `O campo de assinatura '${forbiddenField}' não pode ser gravado via CRUD. Utilize /api/contracts/sign.`
+                    });
+                }
+            }
+            if (data.status) {
+                const statusLower = String(data.status).trim().toLowerCase();
+                if (statusLower === 'signed' || statusLower === 'assinado') {
+                    return sendJson(res, 403, {
+                        success: false,
+                        code: 'FORBIDDEN_CONTRACT_SIGNATURE_STATUS',
+                        error: 'O status de contrato assinado só pode ser atribuído pelo endpoint público de assinatura (/api/contracts/sign).'
+                    });
+                }
+            }
+        }
+
+        // ====================================================================
+        // WRITE POLICY ENGINE EVALUATION
+        // ====================================================================
+        if (['create', 'update', 'delete'].includes(operation)) {
+            const policyEval = writePolicyEngine.evaluate({
+                collectionId,
+                operation,
+                tenantId: authoritativeTenantId,
+                userId,
+                roles,
+                isSuperAdmin,
+                payload: data || {},
+                existingDocument: existingDocForWrite
+            });
+
+            if (!policyEval.allowed) {
+                return sendJson(res, 422, {
+                    error: 'Operação bloqueada pelo Motor de Políticas de Escrita (Write Policy Engine).',
+                    code: 'WRITE_POLICY_VIOLATION',
+                    mode: policyEval.mode,
+                    violations: policyEval.violations
+                });
+            }
+        }
+
+        switch (operation) {
+            case 'list': {
+                const finalQueries = [...queries];
+                if (isTenantAware) {
+                    if (authoritativeTenantId) {
+                        finalQueries.push(Query.equal('tenant_id', [authoritativeTenantId]));
+                    } else if (!isSuperAdmin) {
+                        return sendJson(res, 403, { error: 'Tenant ID não resolvido para listagem.' });
+                    }
+                }
+                const result = await adminDatabases.listDocuments(effectiveDatabaseId, collectionId, finalQueries);
+
+                if (isNotificationCol && !isTenantAdmin) {
+                    const filteredDocs = (result.documents || []).filter(
+                        doc => !doc.user_id || doc.user_id === userId
+                    );
+                    return sendJson(res, 200, {
+                        ...result,
+                        total: filteredDocs.length,
+                        documents: filteredDocs
+                    });
+                }
+
+                return sendJson(res, 200, result);
+            }
+
+            case 'get': {
+                if (!documentId) {
+                    return sendJson(res, 400, { error: 'documentId é obrigatório para operação get.' });
+                }
+                const doc = await adminDatabases.getDocument(effectiveDatabaseId, collectionId, documentId);
+                if (isTenantAware && authoritativeTenantId && doc.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+                    return sendJson(res, 403, { error: 'Violação de Isolamento Multi-Tenant: Documento pertence a outra empresa.' });
+                }
+                if (isNotificationCol && !isTenantAdmin && doc.user_id && doc.user_id !== userId) {
+                    return sendJson(res, 403, { error: 'Acesso negado: Esta notificação pertence a outro usuário.' });
+                }
+                return sendJson(res, 200, doc);
+            }
+
+            case 'create': {
+                if (!data || typeof data !== 'object') {
+                    return sendJson(res, 400, { error: 'Objeto data é obrigatório para operação create.' });
+                }
+                const cleanData = { ...data };
+                delete cleanData.$id;
+                delete cleanData.$createdAt;
+                delete cleanData.$updatedAt;
+                delete cleanData.$permissions;
+                delete cleanData.$databaseId;
+                delete cleanData.$collectionId;
+
+                if (isTenantAware) {
+                    if (!authoritativeTenantId && !isSuperAdmin) {
+                        return sendJson(res, 403, { error: 'Não é possível criar registro sem Tenant ativo.' });
+                    }
+                    if (authoritativeTenantId) {
+                        cleanData.tenant_id = authoritativeTenantId;
+                    }
+                }
+
+                if (isNotificationCol && !cleanData.user_id) {
+                    cleanData.user_id = userId;
+                }
+
+                const finalDocId = documentId || ID.unique();
+                const writeStartMs = Date.now();
+                try {
+                    const created = await adminDatabases.createDocument(effectiveDatabaseId, collectionId, finalDocId, cleanData);
+                    writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
+                    return sendJson(res, 201, {
+                        success: true,
+                        action: operation,
+                        collectionId,
+                        documentId: created.$id,
+                        data: created,
+                        ...created
+                    });
+                } catch (dbErr) {
+                    writePolicyEngine.recordFailure(dbErr, Date.now() - writeStartMs, effectiveDatabaseId);
+                    throw dbErr;
+                }
+            }
+
+            case 'update': {
+                if (!documentId || !data || typeof data !== 'object') {
+                    return sendJson(res, 400, { success: false, error: 'documentId e data são obrigatórios para operação update.' });
+                }
+
+                const docLockKey = `${effectiveDatabaseId}:${collectionId}:${documentId}`;
+                return await withDocumentLock(docLockKey, async () => {
+                    // F22: Re-read the latest document inside the lock to prevent lost updates under concurrency
+                    let latestDoc = existingDocForWrite;
+                    try {
+                        latestDoc = await adminDatabases.getDocument(effectiveDatabaseId, collectionId, documentId);
+                    } catch {
+                        // fallback to existing
+                    }
+
+                    const cleanUpdateData = { ...data };
+                    delete cleanUpdateData.$id;
+                    delete cleanUpdateData.$createdAt;
+                    delete cleanUpdateData.$updatedAt;
+                    delete cleanUpdateData.$permissions;
+                    delete cleanUpdateData.$databaseId;
+                    delete cleanUpdateData.$collectionId;
+
+                    if (isTenantAware && authoritativeTenantId && !isSuperAdmin) {
+                        cleanUpdateData.tenant_id = authoritativeTenantId;
+                    }
+
+                    // F22: Atomic JSON array merge for support_tickets (messages_json) and servers (incidents_json)
+                    if (isTicketCol && latestDoc && (cleanUpdateData.messages_json !== undefined || cleanUpdateData._append_message !== undefined)) {
+                        cleanUpdateData.messages_json = mergeJsonArrayById(
+                            latestDoc.messages_json,
+                            cleanUpdateData.messages_json,
+                            cleanUpdateData._append_message,
+                            'timestamp'
+                        );
+                        delete cleanUpdateData._append_message;
+                    }
+
+                    if (isServerCol && latestDoc && (cleanUpdateData.incidents_json !== undefined || cleanUpdateData._append_incident !== undefined)) {
+                        cleanUpdateData.incidents_json = mergeJsonArrayById(
+                            latestDoc.incidents_json,
+                            cleanUpdateData.incidents_json,
+                            cleanUpdateData._append_incident,
+                            'date'
+                        );
+                        delete cleanUpdateData._append_incident;
+                    }
+
+                    const writeStartMs = Date.now();
+                    try {
+                        const updated = await adminDatabases.updateDocument(effectiveDatabaseId, collectionId, documentId, cleanUpdateData);
+                        writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
+                        return sendJson(res, 200, {
+                            success: true,
+                            action: operation,
+                            collectionId,
+                            documentId: updated.$id || documentId,
+                            data: updated,
+                            ...updated
+                        });
+                    } catch (dbErr) {
+                        writePolicyEngine.recordFailure(dbErr, Date.now() - writeStartMs, effectiveDatabaseId);
+                        throw dbErr;
+                    }
+                });
+            }
+
+            case 'delete': {
+                const writeStartMs = Date.now();
+                try {
+                    await adminDatabases.deleteDocument(effectiveDatabaseId, collectionId, documentId);
+                    writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
+                    return sendJson(res, 200, {
+                        success: true,
+                        action: operation,
+                        collectionId,
+                        documentId,
+                        deletedId: documentId,
+                        data: { success: true, documentId, message: `Documento '${documentId}' excluído com sucesso.` },
+                        message: `Documento '${documentId}' excluído com sucesso.`
+                    });
+                } catch (dbErr) {
+                    writePolicyEngine.recordFailure(dbErr, Date.now() - writeStartMs, effectiveDatabaseId);
+                    throw dbErr;
+                }
+            }
+
+            default:
+                return sendJson(res, 400, { success: false, error: `Operação desconhecida: ${operation}` });
+        }
+    } catch (err) {
+        const status = err.statusCode || err.code || 500;
+        const httpStatus = (typeof status === 'number' && status >= 100 && status < 600) ? status : 500;
+        return sendJson(res, httpStatus, {
+            success: false,
+            error: err.message || 'Erro interno no servidor de API.',
+            code: err.type || err.code || 'INTERNAL_ERROR'
+        });
     }
+}
 
-    if (fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()) {
-      targetPath = path.join(targetPath, 'index.html');
+// ============================================================================
+// GOVERNANCE & PERSISTENCE INITIALIZATION (Fase 6.4 - F36)
+// ============================================================================
+const govConfig = resolveGovernanceConfig(process.env);
+let persistenceAdapter = null;
+let bootPromise = Promise.resolve();
+
+if (govConfig.status === 'INVALID') {
+    console.error(`🚨 [FATAL GOVERNANCE BOOT ERROR] ${govConfig.reason}`);
+} else {
+    console.log(`🛡️ [Governance Boot] Status: ${govConfig.status} | Mode: ${govConfig.mode} | DB: ${govConfig.targetDb} | Reason: ${govConfig.reason}`);
+    if (govConfig.mode === 'PERSISTENT') {
+        try {
+            let adminDb = null;
+            if (APPWRITE_PROJECT_ID && APPWRITE_API_KEY) {
+                const adminClient = getAdminClient();
+                adminDb = new Databases(adminClient);
+            }
+            persistenceAdapter = new GovernancePersistencePrototype(adminDb, govConfig.targetDb);
+            bootPromise = persistenceAdapter.restoreIntoEngine(writePolicyEngine).then(res => {
+                console.log(`🔄 [Governance Persistence] Estado restaurado (${res.source || 'DB'}):`, res);
+            }).catch(err => {
+                console.error(`⚠️ [Governance Persistence] Falha ao restaurar estado no boot (Fail-Closed ativado):`, err.message);
+                writePolicyEngine.setMode('enforce', 'system:boot-fail-closed', `Fail-closed activated due to restore error: ${err.message}`, govConfig.targetDb);
+            });
+        } catch (e) {
+            console.error(`⚠️ [Governance Persistence] Erro ao inicializar adaptador:`, e.message);
+            writePolicyEngine.setMode('enforce', 'system:boot-fail-closed', `Fail-closed activated due to adapter init error: ${e.message}`, govConfig.targetDb);
+        }
     }
+}
 
-    if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
-      targetPath = path.join(distDir, 'index.html'); // SPA fallback
+// ============================================================================
+// HTTP SERVER (API + STATIC SPA FALLBACK) — S10 Top-Level Resilience
+// ============================================================================
+const server = http.createServer(async (req, res) => {
+    try {
+        await bootPromise;
+        const urlObj = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+        const pathname = urlObj.pathname;
+
+        const sharedEnvConfig = {
+            endpoint: APPWRITE_ENDPOINT,
+            projectId: APPWRITE_PROJECT_ID,
+            apiKey: APPWRITE_API_KEY,
+            databaseId: APPWRITE_DATABASE_ID,
+            governanceConfig: govConfig
+        };
+
+        // 0. Admin Policy & Governance Routes (/api/admin/policies/* and /api/admin/policy/*)
+        if (pathname.startsWith('/api/admin/policies') || pathname.startsWith('/api/admin/policy')) {
+            await handleAdminPolicyRoutes(req, res, writePolicyEngine, sharedEnvConfig, govConfig, persistenceAdapter);
+            return;
+        }
+
+        // 0.1 Tenant Provisioning Routes (/api/admin/tenants/*)
+        if (pathname.startsWith('/api/admin/tenants')) {
+            await handleTenantProvisioningRoutes(req, res, sharedEnvConfig);
+            return;
+        }
+
+        // 0.2 User Management & RBAC Routes (/api/admin/users/*)
+        if (pathname.startsWith('/api/admin/users')) {
+            await handleUserManagementRoutes(req, res, sharedEnvConfig, govConfig);
+            return;
+        }
+
+        // 0.3 Client Portal Routes (/api/portal/*)
+        if (pathname === '/api/portal' || pathname.startsWith('/api/portal/')) {
+            const subPath = pathname.slice('/api/portal'.length) || '/';
+            await handlePortalRoutes(req, res, subPath, sharedEnvConfig);
+            return;
+        }
+
+        // 0.4 Asaas Financial Gateway Routes (/api/asaas/*) — F01 CJS module
+        if (pathname === '/api/asaas' || pathname.startsWith('/api/asaas/')) {
+            const subPath = pathname.slice('/api/asaas'.length) || '/';
+            await handleAsaasRoutes(req, res, subPath, sharedEnvConfig);
+            return;
+        }
+
+        // 0.5 Authoritative Contract Public View, Token & Signature Routes (/api/contracts/*) — F02 & F04
+        if (pathname === '/api/contracts' || pathname.startsWith('/api/contracts/')) {
+            await handleContractRoutes(req, res, sharedEnvConfig);
+            return;
+        }
+
+        // 0.6 Unified Auth Login Proxy (/api/auth/login)
+        if (pathname === '/api/auth/login') {
+            await handleAuthLoginRoute(req, res, sharedEnvConfig);
+            return;
+        }
+
+        // 1. CORS Preflight
+        if (req.method === 'OPTIONS' && pathname.startsWith('/api/')) {
+            sendJson(res, 204, {});
+            return;
+        }
+
+        // 2. Healthcheck Endpoint
+        if (pathname === '/api/health' && req.method === 'GET') {
+            sendJson(res, 200, {
+                status: 'ok',
+                service: 'crm-hydra-production-server',
+                bridgeActive: Boolean(APPWRITE_PROJECT_ID && APPWRITE_API_KEY),
+                policyEngineMode: writePolicyEngine.mode,
+                governanceMode: govConfig.mode,
+                timestamp: new Date().toISOString()
+            });
+            return;
+        }
+
+        // 3. Backend API Bridge Endpoint (/api/data and /api/crm/write - R01 & F08)
+        if ((pathname === '/api/data' || pathname === '/api/crm/write') && req.method === 'POST') {
+            await handleDataBridge(req, res);
+            return;
+        }
+
+        // 3.5Uploaded Tenant Logos Serving (/api/logos/*) — S10 safe decodeURIComponent
+        if (pathname.startsWith('/api/logos/') && req.method === 'GET') {
+            let decodedName = '';
+            try {
+                decodedName = decodeURIComponent(pathname.replace('/api/logos/', ''));
+            } catch {
+                sendJson(res, 400, { success: false, error: 'URI de arquivo malformada.' });
+                return;
+            }
+            const fileName = path.basename(decodedName);
+            const logoPath = path.resolve(process.cwd(), 'public', 'uploads', 'logos', fileName);
+            if (fs.existsSync(logoPath) && fs.statSync(logoPath).isFile()) {
+                const ext = path.extname(logoPath).toLowerCase();
+                const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+                res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': 'public, max-age=86400' });
+                fs.createReadStream(logoPath).pipe(res);
+                return;
+            }
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Logo not found' }));
+            return;
+        }
+
+        // 4. Static Asset Serving from `dist/`
+        let safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+        let filePath = path.join(DIST_DIR, safePath);
+
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+            filePath = path.join(filePath, 'index.html');
+        }
+
+        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+            const ext = path.extname(filePath).toLowerCase();
+            const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+            res.writeHead(200, { 'Content-Type': contentType });
+            fs.createReadStream(filePath).pipe(res);
+            return;
+        }
+
+        // 5. SPA Fallback -> `dist/index.html`
+        const indexHtmlPath = path.join(DIST_DIR, 'index.html');
+        if (fs.existsSync(indexHtmlPath)) {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            fs.createReadStream(indexHtmlPath).pipe(res);
+            return;
+        }
+
+        sendJson(res, 404, { error: 'Not Found (Build dist/ directory not found. Run npm run build first).' });
+    } catch (unhandledErr) {
+        const statusCode = unhandledErr.statusCode || unhandledErr.code || 500;
+        const httpStatus = (typeof statusCode === 'number' && statusCode >= 100 && statusCode < 600) ? statusCode : 500;
+        console.error('[Server Unhandled Request Error]:', unhandledErr.message);
+        sendJson(res, httpStatus, {
+            success: false,
+            code: unhandledErr.code || 'INTERNAL_SERVER_ERROR',
+            error: unhandledErr.message || 'Erro interno ao processar requisição.'
+        });
     }
-
-    if (fs.existsSync(targetPath)) {
-      const baseName = path.basename(targetPath);
-      // Bloquear acesso a arquivos ocultos, de ambiente ou código-fonte
-      if (baseName.startsWith('.') || baseName.endsWith('.env') || baseName.endsWith('.ts') || baseName.endsWith('.cjs')) {
-        res.statusCode = 403;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: 'Acesso proibido.' }));
-        return;
-      }
-
-      const ext = path.extname(targetPath).toLowerCase();
-      const contentType = MIME_TYPES[ext] || 'application/octet-stream';
-      res.statusCode = 200;
-      res.setHeader('Content-Type', contentType);
-      const stream = fs.createReadStream(targetPath);
-      stream.pipe(res);
-      return;
-    }
-  }
-
-  res.statusCode = 404;
-  res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify({ error: 'Endpoint não localizado' }));
 });
 
 if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`[Backend API Bridge Server] Ativo na porta ${PORT}`);
-  });
+    server.listen(PORT, '0.0.0.0', () => {
+        console.log(`================================================================`);
+        console.log(`🚀 CRM HYDRA PRODUCTION SERVER & API BRIDGE ACTIVE`);
+        console.log(`📡 Listening on: http://0.0.0.0:${PORT}`);
+        console.log(`🔗 Appwrite Endpoint: ${APPWRITE_ENDPOINT}`);
+        console.log(`🗄️  Appwrite Database: ${APPWRITE_DATABASE_ID}`);
+        console.log(`🛡️  Server API Key Configured: ${APPWRITE_API_KEY ? 'YES' : 'NO (WARNING!)'}`);
+        console.log(`================================================================`);
+    });
 }
 
-server.writePolicyEngine = writePolicyEngine;
-server.governanceConfig = governanceConfig;
-module.exports = server;
-
+module.exports = {
+    server,
+    writePolicyEngine,
+    govConfig,
+    persistenceAdapter,
+    handleDataBridge,
+    authenticateAndResolveTenant
+};

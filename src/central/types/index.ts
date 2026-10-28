@@ -19,6 +19,12 @@ export interface Contact {
   email: string;
   primary: boolean;
 }
+export interface ClientPortalAccess {
+  enabled: boolean;
+  email: string;
+  password?: string;
+  lastAccess?: string;
+}
 export interface Client {
   id: string;
   personType: 'PJ' | 'PF';
@@ -38,6 +44,7 @@ export interface Client {
   notes: string;
   createdAt: string;
   contacts: Contact[];
+  portalAccess?: ClientPortalAccess;
 }
 export type TicketStatus =
   | 'Novo'
@@ -178,6 +185,18 @@ export interface Activity extends HistoryEntry {
   clientId?: string;
   ticketId?: string;
 }
+export type PermissionLevel = 'manage' | 'view' | 'none' | 'own';
+
+export interface ModulePermissionRule {
+  moduleId: string;
+  moduleName: string;
+  description: string;
+  admin: PermissionLevel;
+  support: PermissionLevel;
+  finance: PermissionLevel;
+  client: PermissionLevel;
+}
+
 export interface Settings {
   company: {
     name: string;
@@ -190,6 +209,7 @@ export interface Settings {
   ticketCategories: string[];
   serviceTypes: string[];
   density: 'comfortable' | 'compact';
+  rolePermissions?: ModulePermissionRule[];
 }
 export interface Collections {
   clients: Client;

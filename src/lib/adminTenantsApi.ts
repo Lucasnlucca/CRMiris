@@ -109,3 +109,25 @@ export async function updateAdminTenant(tenantId: string, payload: UpdateTenantP
 
   return json;
 }
+
+export async function deleteAdminTenant(tenantId: string, databaseId?: string): Promise<{
+  success: boolean;
+  tenantId: string;
+  message: string;
+}> {
+  const headers = await getAuthHeaders();
+  const query = databaseId ? `?databaseId=${encodeURIComponent(databaseId)}` : '';
+  const res = await fetch(`/api/admin/tenants/${encodeURIComponent(tenantId)}${query}`, {
+    method: 'DELETE',
+    headers,
+    credentials: 'include',
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || `Erro HTTP ${res.status} ao excluir servidor/empresa.`);
+  }
+
+  return json;
+}
+

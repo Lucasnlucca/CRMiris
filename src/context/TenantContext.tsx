@@ -7,6 +7,7 @@ import React, {
   useRef,
   useMemo,
 } from 'react';
+import { Query } from 'appwrite';
 import { databases, teams, DATABASE_ID, setTenantId, setIsSuperAdmin as setGlobalIsSuperAdmin } from '../lib/appwrite';
 import { useAuth } from './AuthContext';
 
@@ -83,6 +84,7 @@ export function extractTenantSlugFromLocation(locationObj?: { hostname?: string;
     'negocios',
     'pipeline',
     'contratos',
+    'contratos-crm',
     'propostas',
     'itens',
     'produtos',
@@ -102,57 +104,58 @@ export function extractTenantSlugFromLocation(locationObj?: { hostname?: string;
     'financeiro',
     'agenda',
     'integracoes',
+    'administracao-master',
   ]);
 
-  // 1. Resolução por Subdomínio Principal: empresaa.lvplataform.com.br ou empresab.lvplataform.com.br (e *.lvplatform.com.br / *.localhost)
+  // 1. Resolução por Subdomínio Principal (*.lvplatform.com.br, *.lvplataform.com.br, *.localhost, ou custom domains)
   if (hostname && !hostname.startsWith('127.0.0.1') && !hostname.startsWith('192.168.')) {
-    if (hostname.endsWith('.lvplataform.com.br') || hostname.endsWith('.lvplatform.com.br')) {
-      const baseRemoved = hostname
+    let cleanHost = hostname;
+    if (cleanHost.startsWith('www.')) {
+      cleanHost = cleanHost.slice(4);
+    }
+
+    if (cleanHost.endsWith('.lvplataform.com.br') || cleanHost.endsWith('.lvplatform.com.br')) {
+      const baseRemoved = cleanHost
         .replace(/\.lvplataform\.com\.br$/, '')
         .replace(/\.lvplatform\.com\.br$/, '');
       const parts = baseRemoved.split('.').filter(Boolean);
-      if (parts.length > 0) {
-        const candidate = parts[0];
-        if (!reservedSlugs.has(candidate)) {
-          return candidate;
+      for (const part of parts) {
+        if (!reservedSlugs.has(part)) {
+          return part;
         }
       }
-    } else if (hostname.endsWith('.localhost')) {
-      const parts = hostname.split('.');
-      if (parts.length > 1 && !reservedSlugs.has(parts[0])) {
-        return parts[0];
+    } else if (cleanHost.endsWith('.localhost')) {
+      const parts = cleanHost.split('.').filter(Boolean);
+      for (const part of parts) {
+        if (!reservedSlugs.has(part)) {
+          return part;
+        }
       }
-    } else if (hostname.split('.').length >= 3) {
-      const sub = hostname.split('.')[0];
-      if (sub && !reservedSlugs.has(sub)) {
-        return sub;
+    } else if (cleanHost.split('.').length >= 3) {
+      const parts = cleanHost.split('.').filter(Boolean);
+      for (const part of parts) {
+        if (!reservedSlugs.has(part)) {
+          return part;
+        }
       }
+    } else if (cleanHost.includes('.') && cleanHost !== 'localhost' && !cleanHost.endsWith('.easypanel.host')) {
+      // Domínio customizado completo (ex: mundusolucoes.com.br)
+      return cleanHost;
     }
   }
 
-  // 2. Resolução via Query Parameter (?tenant=empresaa)
+  // 2. Resolução via Query Parameter (?tenant=empresaa ou ?empresa=empresaa)
   if (search) {
     try {
       const params = new URLSearchParams(search);
-      const qTenant = (params.get('tenant') || '').trim().toLowerCase();
+      const qTenant = (params.get('tenant') || params.get('empresa') || '').trim().toLowerCase();
       if (qTenant && !reservedSlugs.has(qTenant)) {
         return qTenant;
       }
     } catch {}
   }
 
-  // 3. Resolução por Subcaminho: /empresaa ou /empresab/negocios
-  if (pathname && pathname !== '/') {
-    const segments = pathname.split('/').filter(Boolean);
-    if (segments.length > 0) {
-      const firstSegment = segments[0].toLowerCase();
-      if (!reservedSlugs.has(firstSegment)) {
-        return firstSegment;
-      }
-    }
-  }
-
-  // 4. Resolução via HTML (<html data-tenant-slug="..."> ou <meta name="tenant-slug" content="...">)
+  // 3. Resolução via HTML estático (<html data-tenant-slug="..."> ou <meta name="tenant-slug" content="...">)
   if (typeof document !== 'undefined' && !locationObj) {
     const htmlAttr = (document.documentElement.getAttribute('data-tenant-slug') || '').trim().toLowerCase();
     if (htmlAttr && !reservedSlugs.has(htmlAttr)) {
@@ -169,8 +172,8 @@ export function extractTenantSlugFromLocation(locationObj?: { hostname?: string;
 }
 
 // Mantido para retrocompatibilidade de importações existentes
-export function extractSlugFromPath(pathname: string): string | null {
-  return extractTenantSlugFromLocation({ pathname });
+export function extractSlugFromPath(_pathname: string): string | null {
+  return null;
 }
 
 // Aplica personalização de cores via CSS custom properties e sincroniza atributos de separação no HTML
@@ -209,6 +212,7 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
   const [tenantSuspended, setTenantSuspended] = useState(false);
 
   const isMountedRef = useRef(true);
+  const loadSeqRef = useRef(0);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -218,7 +222,9 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const loadTenantData = useCallback(async () => {
+    const currentSeq = ++loadSeqRef.current;
     if (!isAuthenticated || !user) {
+      if (loadSeqRef.current !== currentSeq) return;
       setActiveTenant(null);
       setTenantsList([]);
       setIsSuperAdmin(false);
@@ -250,11 +256,111 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
       const defaultTenantId = userDoc?.default_tenant_id || null;
       const userIsSuper = !!userDoc?.is_superadmin;
 
-      // 2. Consultar Teams do usuário autenticado no Appwrite
+      // 2. Consultar Teams e Memberships do usuário autenticado no Appwrite (com paginação completa F17)
       let teamIds: string[] = [];
+      const PAGE_LIMIT = 100;
+      const MAX_PAGES = 50;
+
+      const listAllTeamsPaginated = async (): Promise<any[]> => {
+        const collected: any[] = [];
+        const seenIds = new Set<string>();
+        let offset = 0;
+
+        for (let page = 0; page < MAX_PAGES; page++) {
+          let res: any;
+          try {
+            res = await teams.list([Query.limit(PAGE_LIMIT), Query.offset(offset)]);
+          } catch {
+            if (page === 0) {
+              res = await teams.list();
+            } else {
+              break;
+            }
+          }
+          const batch: any[] = Array.isArray(res?.teams) ? res.teams : [];
+          if (batch.length === 0) break;
+
+          let added = 0;
+          for (const t of batch) {
+            const id = t?.$id || t?.id;
+            if (id && !seenIds.has(id)) {
+              seenIds.add(id);
+              collected.push(t);
+              added++;
+            }
+          }
+
+          offset += batch.length;
+          if (added === 0 || batch.length < PAGE_LIMIT) break;
+          if (typeof res?.total === 'number' && collected.length >= res.total) break;
+        }
+        return collected;
+      };
+
+      const listAllMembershipsPaginated = async (teamId: string): Promise<any[]> => {
+        const collected: any[] = [];
+        const seenIds = new Set<string>();
+        let offset = 0;
+
+        for (let page = 0; page < MAX_PAGES; page++) {
+          let res: any;
+          try {
+            res = await teams.listMemberships(teamId, [Query.limit(PAGE_LIMIT), Query.offset(offset)]);
+          } catch {
+            if (page === 0) {
+              res = await teams.listMemberships(teamId);
+            } else {
+              break;
+            }
+          }
+          const batch: any[] = Array.isArray(res?.memberships) ? res.memberships : [];
+          if (batch.length === 0) break;
+
+          let added = 0;
+          for (const m of batch) {
+            const id = m?.$id || m?.id || `${m?.userId}:${m?.teamId}`;
+            if (id && !seenIds.has(id)) {
+              seenIds.add(id);
+              collected.push(m);
+              added++;
+            }
+          }
+
+          offset += batch.length;
+          if (added === 0 || batch.length < PAGE_LIMIT) break;
+          if (typeof res?.total === 'number' && collected.length >= res.total) break;
+        }
+        return collected;
+      };
+
       try {
-        const teamsResponse = await teams.list();
-        teamIds = teamsResponse.teams.map((t) => t.$id);
+        const allUserTeams = await listAllTeamsPaginated();
+        const confirmedTeamIds = new Set<string>();
+
+        for (const t of allUserTeams) {
+          const tid = t?.$id || t?.id;
+          if (!tid) continue;
+          try {
+            const memberships = await listAllMembershipsPaginated(tid);
+            if (memberships.length === 0) {
+              confirmedTeamIds.add(tid);
+            } else {
+              const hasActiveMembership = memberships.some(
+                (m: any) =>
+                  (m.userId === user.id || m.userEmail === user.email || !m.userId) &&
+                  m.confirm !== false
+              );
+              if (hasActiveMembership) {
+                confirmedTeamIds.add(tid);
+              }
+            }
+          } catch {
+            // Se listMemberships não estiver habilitado para o papel do cliente, confia no retorno autenticado de teams.list
+            confirmedTeamIds.add(tid);
+          }
+        }
+
+        teamIds = Array.from(confirmedTeamIds);
       } catch (err: any) {
         console.warn('[Tenant] Consulta de teams via SDK:', err.message);
       }
@@ -268,11 +374,37 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
       setGlobalIsSuperAdmin(resolvedSuperAdmin);
       setUserTeamIds(teamIds);
 
-      // 3. Buscar todas as empresas cadastradas na coleção de tenants
+      // 3. Buscar todas as empresas cadastradas na coleção de tenants (com paginação completa F17)
       let allTenants: Tenant[] = [];
       try {
-        const tenantsRes = await databases.listDocuments(DATABASE_ID, TENANTS_COLLECTION);
-        allTenants = tenantsRes.documents.map((d: any) => ({
+        const tenantDocs: any[] = [];
+        const seenTenantDocIds = new Set<string>();
+        let tenantOffset = 0;
+
+        for (let page = 0; page < MAX_PAGES; page++) {
+          const tenantsRes = await databases.listDocuments(DATABASE_ID, TENANTS_COLLECTION, [
+            Query.limit(PAGE_LIMIT),
+            Query.offset(tenantOffset),
+          ]);
+          const batch = Array.isArray(tenantsRes?.documents) ? tenantsRes.documents : [];
+          if (batch.length === 0) break;
+
+          let added = 0;
+          for (const d of batch) {
+            const docId = d?.$id || d?.id;
+            if (docId && !seenTenantDocIds.has(docId)) {
+              seenTenantDocIds.add(docId);
+              tenantDocs.push(d);
+              added++;
+            }
+          }
+
+          tenantOffset += batch.length;
+          if (added === 0 || batch.length < PAGE_LIMIT) break;
+          if (typeof tenantsRes?.total === 'number' && tenantDocs.length >= tenantsRes.total) break;
+        }
+
+        allTenants = tenantDocs.map((d: any) => ({
           id: d.$id,
           name: d.name || 'Empresa sem nome',
           slug: d.slug || d.$id.replace(/_/g, '-'),
@@ -313,23 +445,79 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // 4. Filtrar empresas autorizadas para o usuário:
-      // - SuperAdmin: tem autorização para gerenciar todas as empresas
-      // - Usuário comum: apenas empresas às quais pertence via default_tenant_id ou Team Appwrite
-      let authorizedTenants: Tenant[] = [];
-      if (resolvedSuperAdmin) {
-        authorizedTenants = allTenants;
-      } else {
-        authorizedTenants = allTenants.filter((t) => {
-          return (defaultTenantId && t.id === defaultTenantId) || teamIds.includes(t.id);
+      // 5. Verificar se a URL atual especifica um slug (:slug ou subdomínio)
+      const urlSlug = typeof window !== 'undefined' ? extractTenantSlugFromLocation(window.location) : null;
+
+      // Se a listagem pelo SDK do cliente não retornou ou se faltam tenants (ex: portal ou unauthenticated):
+      // Consulta a rota pública de resolução de tenant pelo slug da URL ou 'matriz'
+      if (allTenants.length === 0) {
+        try {
+          const targetSlug = urlSlug || 'matriz';
+          const resolveRes = await fetch(`/api/admin/tenants/resolve/${targetSlug}`);
+          if (resolveRes.ok) {
+            const resolveJson = await resolveRes.json();
+            if (resolveJson.success && resolveJson.tenant) {
+              allTenants.push(resolveJson.tenant);
+            }
+          }
+        } catch (resolveErr: any) {
+          console.warn('[Tenant] Fallback resolve slug:', resolveErr.message);
+        }
+      }
+
+      // Garante tenant padrão matriz caso o banco ainda não possua nenhum tenant registrado
+      if (allTenants.length === 0) {
+        allTenants.push({
+          id: 'tenant_default',
+          name: 'Iris Horizon (Matriz)',
+          slug: 'matriz',
+          trade_name: 'Iris Horizon CRM',
+          document: '00.000.000/0001-00',
+          email: 'admin@irishorizon.com',
+          phone: '(11) 4000-0000',
+          status: 'active',
+          plan: 'enterprise',
+          primary_color: '#10b981',
+          created_at: new Date().toISOString(),
         });
       }
 
-      if (!isMountedRef.current) return;
-      setTenantsList(authorizedTenants);
+      // Detecta se é um cliente do portal (não funcionário de equipe interna)
+      const isClientRole =
+        user?.role === 'client' ||
+        (typeof window !== 'undefined' && (
+          !!localStorage.getItem('portal_client_id') ||
+          window.location.pathname.startsWith('/portal')
+        )) ||
+        Boolean((user as any)?.clientId);
 
-      // 5. Verificar se a URL atual especifica um slug (:slug ou subdomínio)
-      const urlSlug = typeof window !== 'undefined' ? extractTenantSlugFromLocation(window.location) : null;
+      // 4. Filtrar empresas autorizadas para o usuário:
+      // - SuperAdmin: tem autorização para gerenciar todas as empresas
+      // - Cliente do Portal: tem autorização para interagir com a organização que o atende
+      // - Usuário comum: apenas empresas às quais pertence via default_tenant_id, array tenants ou Team Appwrite
+      let authorizedTenants: Tenant[] = [];
+      const userTenantIds = Array.isArray(userDoc?.tenants) ? userDoc.tenants : [];
+      if (resolvedSuperAdmin || isClientRole) {
+        authorizedTenants = allTenants;
+      } else {
+        authorizedTenants = allTenants.filter((t) => {
+          const matchDefault = defaultTenantId && (
+            t.id === defaultTenantId ||
+            t.slug === defaultTenantId ||
+            t.id.replace(/^tenant_/, '') === defaultTenantId.replace(/^tenant_/, '')
+          );
+          const matchTenantsList = userTenantIds.some((ut: string) =>
+            ut === t.id || ut === t.slug || ut.replace(/^tenant_/, '') === t.slug
+          );
+          const matchTeams = teamIds.some((tid) =>
+            tid === t.id || tid === t.slug || tid.replace(/^tenant_/, '') === t.slug
+          );
+          return matchDefault || matchTenantsList || matchTeams;
+        });
+      }
+
+      if (!isMountedRef.current || loadSeqRef.current !== currentSeq) return;
+      setTenantsList(authorizedTenants);
 
       let selectedTenant: Tenant | null = null;
 
@@ -377,8 +565,19 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
         // Valida se o usuário tem autorização para este tenant
         const isUserAuthorizedForThisTenant =
           resolvedSuperAdmin ||
-          (defaultTenantId && matchedTenant.id === defaultTenantId) ||
-          teamIds.includes(matchedTenant.id);
+          isClientRole ||
+          (defaultTenantId && (
+            matchedTenant.id === defaultTenantId ||
+            matchedTenant.slug === defaultTenantId ||
+            matchedTenant.id.replace(/^tenant_/, '') === defaultTenantId.replace(/^tenant_/, '')
+          )) ||
+          userTenantIds.some((ut: string) =>
+            ut === matchedTenant!.id || ut === matchedTenant!.slug || ut.replace(/^tenant_/, '') === matchedTenant!.slug
+          ) ||
+          teamIds.some((tid) =>
+            tid === matchedTenant!.id || tid === matchedTenant!.slug || tid.replace(/^tenant_/, '') === matchedTenant!.slug
+          ) ||
+          authorizedTenants.some((at) => at.id === matchedTenant!.id || at.slug === matchedTenant!.slug);
 
         if (!isUserAuthorizedForThisTenant) {
           setActiveTenant(null);
@@ -386,6 +585,11 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
           setError(`Você não possui autorização para acessar os dados da empresa "${matchedTenant.name}".`);
           setLoading(false);
           return;
+        }
+
+        if (!authorizedTenants.some((at) => at.id === matchedTenant!.id)) {
+          authorizedTenants.push(matchedTenant);
+          setTenantsList([...authorizedTenants]);
         }
 
         selectedTenant = matchedTenant;
@@ -396,9 +600,25 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
 
         if (storedTenantId && authorizedTenants.some((t) => t.id === storedTenantId)) {
           selectedTenant = authorizedTenants.find((t) => t.id === storedTenantId) || null;
-        } else if (authorizedTenants.some((t) => t.id === defaultTenantId)) {
-          selectedTenant = authorizedTenants.find((t) => t.id === defaultTenantId) || null;
-        } else if (authorizedTenants.length > 0) {
+        } else if (defaultTenantId && authorizedTenants.some((t) => t.id === defaultTenantId || t.slug === defaultTenantId)) {
+          selectedTenant = authorizedTenants.find((t) => t.id === defaultTenantId || t.slug === defaultTenantId) || null;
+        } else if (defaultTenantId) {
+          try {
+            const resolveDefRes = await fetch(`/api/admin/tenants/resolve/${encodeURIComponent(defaultTenantId)}`);
+            if (resolveDefRes.ok) {
+              const defJson = await resolveDefRes.json();
+              if (defJson.success && defJson.tenant) {
+                selectedTenant = defJson.tenant;
+                if (!authorizedTenants.some((at) => at.id === defJson.tenant.id)) {
+                  authorizedTenants.push(defJson.tenant);
+                  setTenantsList([...authorizedTenants]);
+                }
+              }
+            }
+          } catch {}
+        }
+
+        if (!selectedTenant && authorizedTenants.length > 0) {
           selectedTenant = authorizedTenants[0];
         }
       }
@@ -426,11 +646,11 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err: any) {
       console.error('[Tenant] Erro ao carregar dados multi-tenant:', err);
-      if (isMountedRef.current) {
+      if (isMountedRef.current && loadSeqRef.current === currentSeq) {
         setError(err.message || 'Erro ao inicializar contexto de empresa.');
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isMountedRef.current && loadSeqRef.current === currentSeq) {
         setLoading(false);
       }
     }

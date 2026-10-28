@@ -25,9 +25,9 @@ import {
   Smartphone,
   Hash,
 } from 'lucide-react';
-import { databases } from '../lib/appwrite';
+import { databases, account, getAuthoritativeAuthHeaders } from '../lib/appwrite';
 import { backendApiBridge } from '../lib/backendApiBridge';
-import { parseContractClauses, ContractClause } from './Contratos';
+import { parseContractClauses, ContractClause, formatCivilDate } from './Contratos';
 import { parseLegalRepresentative } from './Contatos';
 import {
   buildCanonicalDocumentContent,
@@ -36,9 +36,11 @@ import {
   getClientConnectionPort,
   encodeAuditDossier,
   parseAuditDossier,
+  extractServerSignatureEvidence,
   SignerAuditMetadata,
   ContractAuditDossier,
 } from '../utils/auditTrail';
+import { notifyContractSigned } from '../services/notificationService';
 
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 const COLLECTION_CONTRACTS = 'crm_contracts';
@@ -89,6 +91,8 @@ export interface ContractData {
   signature_hash?: string;
   document_hash?: string;
   signature_method?: string;
+  legal_audit_trail?: string;
+  content?: string;
   created_at?: string;
 }
 
@@ -96,6 +100,7 @@ export default function ContractSignPreview() {
   const [contract, setContract] = useState<ContractData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [tokenDenied, setTokenDenied] = useState(false);
   
   // Verification Gate
   const [verified, setVerified] = useState(false);
@@ -195,10 +200,112 @@ export default function ContractSignPreview() {
       }
 
       try {
-        const doc = await databases.getDocument(DATABASE_ID, COLLECTION_CONTRACTS, contractId);
+        const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : new URLSearchParams();
+        const urlToken = (searchParams.get('token') || '').trim();
+
+        let loadedDoc: any = null;
+
+        // F02: Sempre priorizar validação de token público no backend (/api/contracts/public-view)
+        if (urlToken) {
+          try {
+            const publicRes = await fetch(
+              `/api/contracts/public-view?token=${encodeURIComponent(urlToken)}&contractId=${encodeURIComponent(contractId)}`,
+              {
+                method: 'GET',
+                headers: { Accept: 'application/json' },
+              }
+            );
+            const contentType = publicRes.headers.get('content-type') || '';
+            const isJson = contentType.includes('application/json');
+            const publicPayload = isJson ? await publicRes.json().catch(() => null) : null;
+
+            if (publicRes.status === 401 || publicRes.status === 403 || publicRes.status === 410) {
+              setTokenDenied(true);
+              setError(
+                publicPayload?.error ||
+                  publicPayload?.message ||
+                  'Link de assinatura inválido, revogado ou expirado. Solicite um novo link ao emissor.'
+              );
+              setLoading(false);
+              return;
+            }
+
+            if (publicRes.ok && isJson && publicPayload) {
+              const candidate = publicPayload.contract || publicPayload.data || publicPayload;
+              const returnedId = candidate?.id || candidate?.$id;
+              if (returnedId && returnedId !== contractId) {
+                setTokenDenied(true);
+                setError('O token de assinatura informado não pertence a este contrato.');
+                setLoading(false);
+                return;
+              }
+              if (candidate && (candidate.id || candidate.$id || candidate.contract_number)) {
+                loadedDoc = {
+                  ...candidate,
+                  id: candidate.id || candidate.$id || contractId,
+                  signature_token: urlToken,
+                };
+              }
+            }
+          } catch (pubErr) {
+            console.warn('Aviso ao consultar /api/contracts/public-view:', pubErr);
+          }
+        }
+
+        // Fallback seguro caso o endpoint /api/contracts/public-view não tenha retornado o documento diretamente
+        if (!loadedDoc) {
+          if (!urlToken) {
+            // Sem token na URL: permitir apenas visualização autenticada por operador logado
+            let hasOperatorSession = false;
+            try {
+              const currentUser = await account.get();
+              hasOperatorSession = Boolean(currentUser?.$id);
+            } catch {
+              hasOperatorSession = false;
+            }
+
+            if (!hasOperatorSession) {
+              setTokenDenied(true);
+              setError(
+                'Link de assinatura inválido ou sem token de segurança. Solicite o link oficial de assinatura ao emissor.'
+              );
+              setLoading(false);
+              return;
+            }
+          }
+
+          const doc = await databases.getDocument(DATABASE_ID, COLLECTION_CONTRACTS, contractId);
+          // Se o documento possui signature_token salvo e o link público informou um token divergente, negar acesso
+          if (urlToken && doc.signature_token && doc.signature_token !== urlToken) {
+            setTokenDenied(true);
+            setError('Token de assinatura inválido ou substituído por uma nova emissão.');
+            setLoading(false);
+            return;
+          }
+          if (doc.status === 'cancelled' || doc.status === 'rejected') {
+            setTokenDenied(true);
+            setError('Este contrato foi cancelado ou recusado e não está mais disponível para assinatura.');
+            setLoading(false);
+            return;
+          }
+          loadedDoc = {
+            ...doc,
+            id: doc.$id || contractId,
+          };
+        }
+
+        const parsedDossier = parseAuditDossier(loadedDoc.notes, loadedDoc.legal_audit_trail);
         const data: ContractData = {
-          ...doc,
-          id: doc.$id,
+          ...loadedDoc,
+          id: loadedDoc.id || loadedDoc.$id || contractId,
+          document_hash: loadedDoc.document_hash || parsedDossier?.documentHash,
+          signature_hash: loadedDoc.signature_hash || parsedDossier?.signatureHash,
+          signed_by_ip: loadedDoc.signed_by_ip || parsedDossier?.signer?.ip,
+          signed_by_port: loadedDoc.signed_by_port || parsedDossier?.signer?.port,
+          signed_by_user_agent: loadedDoc.signed_by_user_agent || parsedDossier?.signer?.userAgent,
+          signed_by_email: loadedDoc.signed_by_email || parsedDossier?.signer?.email,
+          signed_by_phone: loadedDoc.signed_by_phone || parsedDossier?.signer?.phone,
+          signed_at: loadedDoc.signed_at || parsedDossier?.signer?.timestampUtc,
         } as unknown as ContractData;
         setContract(data);
 
@@ -378,9 +485,13 @@ export default function ContractSignPreview() {
     setHasDrawn(false);
   }
 
-  // Submit Digital Signature
+  // Submit Digital Signature (F02, F03, F04)
   async function handleSubmitSignature() {
     if (!contract) return;
+    if (tokenDenied) {
+      alert('Este link de assinatura não é válido ou expirou.');
+      return;
+    }
     if (!signerName.trim()) {
       alert('Por favor, informe seu nome completo.');
       return;
@@ -397,7 +508,7 @@ export default function ContractSignPreview() {
     setSigningSubmitting(true);
 
     try {
-      // 1. Extrair Itens e Cláusulas para gerar o Hash Canônico do Documento
+      // 1. Extrair Itens e Cláusulas canônicas persistidas no servidor (F03)
       let currentItems: ContractItem[] = [];
       if (contract.items_json) {
         try {
@@ -407,62 +518,134 @@ export default function ContractSignPreview() {
         }
       }
 
-      const currentClauses = parseContractClauses(contract.clauses_json, contract.id);
+      const currentClauses = parseContractClauses(
+        contract.clauses_json,
+        contract.id,
+        contract.content
+      );
       const continuousClausesText = currentClauses
         .map((c, i) => `${c.title || `CLÁUSULA ${i + 1}ª`}\n${c.text}`)
         .join('\n\n');
 
-      // 2. Integridade do Documento: Gerar Hash SHA-256 do Conteúdo Exatamente como Exibido e Aceito
+      // 2. Hash SHA-256 canônico de referência do documento exibido
       const canonicalDocText = buildCanonicalDocumentContent(
         contract,
         currentItems,
         continuousClausesText
       );
-      const documentHash = await calculateSha256(canonicalDocText);
+      const clientDocumentHash = await calculateSha256(canonicalDocText);
 
-      // 3. Captura e Registro de Metadados de Conexão e Rede
-      let clientIp = '127.0.0.1';
-      try {
-        const ipRes = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(3000) });
-        if (ipRes.ok) {
-          const ipData = await ipRes.json();
-          clientIp = ipData.ip || clientIp;
-        }
-      } catch {
-        // F02: Se não for possível coletar o IP no client, registrar como 'Não disponível' (nunca forjar IP aleatório)
-        clientIp = 'Não disponível';
-      }
-
-      const timestampUtc = new Date().toISOString();
-      const signerPort = getClientConnectionPort();
+      const clientFallbackTimestampUtc = new Date().toISOString();
+      const clientFallbackPort = getClientConnectionPort();
       const signerEmailFinal = signerEmail.trim() || contract.client_email || 'Não informado';
       const signerPhoneFinal = signerPhone.trim() || contract.client_phone || 'Não informado';
+
+      const queryToken =
+        typeof window !== 'undefined'
+          ? new URLSearchParams(window.location.search).get('token') || contract.signature_token || ''
+          : contract.signature_token || '';
+
+      let authoritativeSignedAt = clientFallbackTimestampUtc;
+      let authoritativeIp = 'Auditado pelo servidor';
+      let authoritativePort = clientFallbackPort;
+      let authoritativeUserAgent =
+        typeof navigator !== 'undefined' ? navigator.userAgent : 'Auditado pelo servidor';
+      let authoritativeDocHash = clientDocumentHash;
+      let authoritativeSigHash = '';
+      let authoritativeLegalBasis =
+        'Art. 10, § 2º da MP nº 2.200-2/2001 e Art. 4º, Inciso II da Lei Federal nº 14.063/2020 (Assinatura Eletrônica Avançada)';
+      let authoritativeLegalAuditTrail: string | undefined = undefined;
+      let serverUpdatedDoc: Record<string, any> | undefined = undefined;
+
+      // 3. F04: Assinatura exclusivamente via endpoint autoritativo do servidor (sem fallback de escrita direta no Appwrite)
+      if (contract.id !== 'demo') {
+        const signBody = {
+          contractId: contract.id,
+          token: queryToken || undefined,
+          publicToken: queryToken || undefined,
+          signerName: signerName.trim(),
+          signerDocument: signerDoc.trim(),
+          signerEmail: signerEmailFinal,
+          signerPhone: signerPhoneFinal,
+          termsAccepted: true,
+          documentHash: clientDocumentHash,
+        };
+
+        let serverResponse: any = null;
+        const authHeaders = await getAuthoritativeAuthHeaders();
+        const directSignRes = await fetch('/api/contracts/sign', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify(signBody),
+        });
+
+        const directContentType = directSignRes.headers.get('content-type') || '';
+        const directIsJson = directContentType.includes('application/json');
+
+        if (directSignRes.ok && directIsJson) {
+          serverResponse = await directSignRes.json();
+        } else if (directSignRes.status === 404 || !directIsJson) {
+          // Rota alternativa canônica no Backend API Bridge (/api/crm/contracts/:id/sign)
+          serverResponse = await backendApiBridge.signContract(contract.id, {
+            signerName: signerName.trim(),
+            signerDocument: signerDoc.trim(),
+            signerEmail: signerEmailFinal,
+            signerPhone: signerPhoneFinal,
+            termsAccepted: true,
+            publicToken: queryToken || undefined,
+          });
+        } else {
+          const errPayload = directIsJson ? await directSignRes.json().catch(() => null) : null;
+          throw new Error(
+            errPayload?.error ||
+              errPayload?.message ||
+              `Não foi possível validar e registrar a assinatura no servidor (HTTP ${directSignRes.status}).`
+          );
+        }
+
+        const extracted = extractServerSignatureEvidence(serverResponse);
+        if (extracted.signedAt) authoritativeSignedAt = extracted.signedAt;
+        if (extracted.signerIp) authoritativeIp = extracted.signerIp;
+        if (extracted.signerPort) authoritativePort = extracted.signerPort;
+        if (extracted.userAgent) authoritativeUserAgent = extracted.userAgent;
+        if (extracted.documentHash) authoritativeDocHash = extracted.documentHash;
+        if (extracted.signatureHash) authoritativeSigHash = extracted.signatureHash;
+        if (extracted.legalBasis) authoritativeLegalBasis = extracted.legalBasis;
+        if (extracted.legalAuditTrail) authoritativeLegalAuditTrail = extracted.legalAuditTrail;
+        if (extracted.updatedContract) serverUpdatedDoc = extracted.updatedContract;
+      }
 
       const signerAudit: SignerAuditMetadata = {
         name: signerName.trim(),
         document: signerDoc.trim(),
         email: signerEmailFinal,
         phone: signerPhoneFinal,
-        ip: clientIp,
-        port: signerPort,
-        userAgent: navigator.userAgent,
-        timestampUtc,
-        timestampLocalFormatted: new Date(timestampUtc).toLocaleString('pt-BR', {
+        ip: authoritativeIp,
+        port: authoritativePort,
+        userAgent: authoritativeUserAgent,
+        timestampUtc: authoritativeSignedAt,
+        timestampLocalFormatted: new Date(authoritativeSignedAt).toLocaleString('pt-BR', {
           timeZone: 'America/Sao_Paulo',
         }),
-        authMethod: 'Aceite Eletrônico de Termos com Verificação Cadastral de Documento e Conexão Segura SSL/TLS',
-        legalBasis: 'Art. 10, § 2º da MP nº 2.200-2/2001 e Art. 4º, Inciso II da Lei Federal nº 14.063/2020 (Assinatura Eletrônica Avançada)',
+        authMethod:
+          'Aceite Eletrônico de Termos com Verificação Cadastral de Documento e Conexão Segura SSL/TLS',
+        legalBasis: authoritativeLegalBasis,
       };
 
-      // 4. Hash SHA-256 da Assinatura (Vinculação Criptográfica Unívoca: Documento + Signatário + IP + UTC)
-      const signatureHash = await calculateSignatureHash(documentHash, signerAudit, contract.id);
+      if (!authoritativeSigHash) {
+        authoritativeSigHash = await calculateSignatureHash(
+          authoritativeDocHash,
+          signerAudit,
+          contract.id
+        );
+      }
 
-      // 5. Compilar Dossiê Probatório Completo (Audit Trail)
+      // 4. Compilar Dossiê Probatório Completo com os dados autoritativos retornados pelo servidor (F04)
       const auditDossier: ContractAuditDossier = {
         contractId: contract.id,
         contractNumber: contract.contract_number,
-        documentHash,
-        signatureHash,
+        documentHash: authoritativeDocHash,
+        signatureHash: authoritativeSigHash,
         signer: signerAudit,
         provider: {
           name: contract.provider_name || 'Iris Horizon Soluções Tecnológicas Ltda',
@@ -479,81 +662,43 @@ export default function ContractSignPreview() {
           billingCycle: contract.billing_cycle || 'Mensal',
           itemCount: currentItems.length,
         },
-        auditGeneratedAtUtc: timestampUtc,
+        auditGeneratedAtUtc: authoritativeSignedAt,
       };
 
       const encodedDossierString = encodeAuditDossier(auditDossier);
-      const updatedNotes = (contract.notes ? contract.notes + '\n\n' : '') + encodedDossierString;
+      const updatedNotes =
+        serverUpdatedDoc?.notes ||
+        (contract.notes && contract.notes.includes('[LEGAL_AUDIT_TRAIL:')
+          ? contract.notes
+          : (contract.notes ? contract.notes + '\n\n' : '') + encodedDossierString);
 
-      // 6. Persistência em Cache Local
+      // 5. Persistência em Cache Local sincronizada 100% com a evidência do servidor (F04)
       try {
         localStorage.setItem(`contract_audit_${contract.id}`, JSON.stringify(auditDossier));
-        localStorage.setItem(`contract_doc_hash_${contract.id}`, documentHash);
-        localStorage.setItem(`contract_sig_hash_${contract.id}`, signatureHash);
+        localStorage.setItem(`contract_doc_hash_${contract.id}`, authoritativeDocHash);
+        localStorage.setItem(`contract_sig_hash_${contract.id}`, authoritativeSigHash);
       } catch {}
 
-      // 7. Persistência no Appwrite (com tolerância graciosa a esquemas estritos)
-      if (contract.id !== 'demo') {
-        const basePayload: Record<string, any> = {
-          status: 'signed',
-          signed_at: timestampUtc,
-          signed_by_name: signerName.trim(),
-          signed_by_document: signerDoc.trim(),
-          signed_by_ip: clientIp,
-          signed_by_user_agent: navigator.userAgent.slice(0, 450),
-          signature_hash: signatureHash,
-          notes: updatedNotes,
-        };
-
-        const queryToken = typeof window !== 'undefined'
-          ? (new URLSearchParams(window.location.search).get('token') || contract.signature_token || '')
-          : (contract.signature_token || '');
-
-        try {
-          // Salvar via Backend API Bridge autoritativo com captura de evidências no servidor
-          await backendApiBridge.signContract(contract.id, {
-            signerName: signerName.trim(),
-            signerDocument: signerDoc.trim(),
-            signerEmail: signerEmailFinal,
-            signerPhone: signerPhoneFinal,
-            termsAccepted: true,
-            publicToken: queryToken || undefined,
-          });
-        } catch (bridgeErr: any) {
-          console.warn('Backend API Bridge sign retornou aviso, tentando via updateDocument:', bridgeErr?.message);
-          try {
-            await databases.updateDocument(DATABASE_ID, COLLECTION_CONTRACTS, contract.id, {
-              ...basePayload,
-              document_hash: documentHash,
-              signed_by_email: signerEmailFinal,
-              signed_by_phone: signerPhoneFinal,
-              signed_by_port: signerPort,
-              signature_method: signerAudit.legalBasis,
-            });
-          } catch (schemaErr: any) {
-            console.warn('Appwrite update com campos estendidos retornou aviso, persistindo campos padrão + audit trail em notes:', schemaErr?.message);
-            await databases.updateDocument(DATABASE_ID, COLLECTION_CONTRACTS, contract.id, basePayload);
-          }
-        }
-      }
-
-      // 8. Atualizar Estado React
+      // 6. Atualizar Estado React com a resposta autoritativa do servidor
       setContract((prev) =>
         prev
           ? {
               ...prev,
+              ...(serverUpdatedDoc || {}),
+              id: prev.id,
               status: 'signed',
-              signed_at: timestampUtc,
+              signed_at: authoritativeSignedAt,
               signed_by_name: signerName.trim(),
               signed_by_document: signerDoc.trim(),
               signed_by_email: signerEmailFinal,
               signed_by_phone: signerPhoneFinal,
-              signed_by_ip: clientIp,
-              signed_by_port: signerPort,
-              signed_by_user_agent: navigator.userAgent,
-              document_hash: documentHash,
-              signature_hash: signatureHash,
-              signature_method: signerAudit.legalBasis,
+              signed_by_ip: authoritativeIp,
+              signed_by_port: authoritativePort,
+              signed_by_user_agent: authoritativeUserAgent,
+              document_hash: authoritativeDocHash,
+              signature_hash: authoritativeSigHash,
+              signature_method: authoritativeLegalBasis,
+              legal_audit_trail: authoritativeLegalAuditTrail || prev.legal_audit_trail,
               notes: updatedNotes,
             }
           : null
@@ -561,9 +706,21 @@ export default function ContractSignPreview() {
 
       setSignSuccess(true);
       window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      if (contract) {
+        const targetUserId = (contract as any).assigned_to || (contract as any).created_by;
+        if (targetUserId) {
+          notifyContractSigned(
+            targetUserId,
+            contract.title || `Contrato #${contract.contract_number}`,
+            contract.id,
+            signerName.trim()
+          ).catch(() => {});
+        }
+      }
     } catch (err: any) {
       console.error('Erro ao registrar assinatura:', err);
-      alert('Houve um erro ao registrar sua assinatura. Por favor, tente novamente.');
+      alert(err?.message || 'Houve um erro ao registrar sua assinatura. Por favor, tente novamente.');
     } finally {
       setSigningSubmitting(false);
     }
@@ -579,8 +736,12 @@ export default function ContractSignPreview() {
     }
   }
 
-  // Parse clauses contratadas
-  const parsedClauses: ContractClause[] = parseContractClauses(contract?.clauses_json, contract?.id);
+  // Parse clauses contratadas a partir da versão canônica persistida no servidor (F03)
+  const parsedClauses: ContractClause[] = parseContractClauses(
+    contract?.clauses_json,
+    contract?.id,
+    contract?.content
+  );
 
   // Format currencies
   const formatCurrency = (val?: number) =>
@@ -779,7 +940,7 @@ export default function ContractSignPreview() {
             <div>
               <p className="text-xs font-semibold text-slate-500 mb-2">
                 Contrato nº {contract.contract_number || 'CTR-2026-0001'} · Emitido em{' '}
-                {new Date(contract.created_at || Date.now()).toLocaleDateString('pt-BR')} · Cobrança{' '}
+                {formatCivilDate(contract.start_date || contract.created_at)} · Cobrança{' '}
                 {contract.billing_cycle?.toLowerCase() || 'mensal'}
               </p>
               <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">

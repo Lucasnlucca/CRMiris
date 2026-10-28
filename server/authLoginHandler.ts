@@ -1,0 +1,399 @@
+/**
+ * ============================================================================
+ * UNIFIED AUTH LOGIN PROXY HANDLER (TS / VITE DEV)
+ * ============================================================================
+ * Handles POST /api/auth/login on the server side to:
+ * 1. Perform Appwrite Email/Password session creation without browser CORS/429 issues
+ * 2. Issue a valid JWT for the authenticated CRM user
+ * 3. Securely fallback to Client Portal authentication ONLY when the user has a
+ *    dedicated, non-universal hashed portal credential (or valid 1-time invite token)
+ *    and active portal access (S03, S04, S07, S10).
+ * ============================================================================
+ */
+
+import { Client, Databases, Query } from 'node-appwrite';
+import type { IncomingMessage, ServerResponse } from 'http';
+import {
+    readJsonBody,
+    isUniversalPortalPassword,
+    hashPortalPassword,
+    verifyPortalPassword,
+    signPortalSessionToken,
+    sanitizePortalClient
+} from './requestUtils.ts';
+import {
+    validatePublicAccessToken,
+    consumePublicToken
+} from './publicTokenService.ts';
+
+export interface AuthEnvConfig {
+    endpoint: string;
+    projectId: string;
+    apiKey: string;
+    databaseId: string;
+}
+
+function sendJson(res: ServerResponse, status: number, data: unknown): void {
+    if (res.headersSent) return;
+    res.writeHead(status, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Appwrite-JWT, X-Appwrite-Session, X-Portal-Token'
+    });
+    res.end(JSON.stringify(data));
+}
+
+function extractClientPortalMetadata(clientDoc: Record<string, any>) {
+    let parsedNotes: Record<string, any> = {};
+    let parsedSettings: Record<string, any> = {};
+    if (clientDoc && typeof clientDoc.notes === 'string' && clientDoc.notes.trim().startsWith('{')) {
+        try { parsedNotes = JSON.parse(clientDoc.notes); } catch { /* ignore */ }
+    }
+    if (clientDoc && typeof clientDoc.settings_json === 'string' && clientDoc.settings_json.trim().startsWith('{')) {
+        try { parsedSettings = JSON.parse(clientDoc.settings_json); } catch { /* ignore */ }
+    }
+
+    const portalAccess = (parsedSettings && parsedSettings.portalAccess)
+        || (parsedNotes && parsedNotes.portalAccess)
+        || {};
+
+    const configuredPassword = String(
+        clientDoc.portal_password ||
+        clientDoc.password ||
+        portalAccess.passwordHash ||
+        portalAccess.password ||
+        ''
+    ).trim();
+
+    const portalEnabled = clientDoc.is_active !== false && portalAccess.enabled !== false && clientDoc.status !== 'inactive';
+
+    return {
+        parsedNotes,
+        parsedSettings,
+        portalAccess,
+        configuredPassword,
+        portalEnabled
+    };
+}
+
+async function persistHashedPortalCredential(
+    adminDb: Databases,
+    databaseId: string,
+    clientDoc: Record<string, any>,
+    passwordHash: string,
+    parsedNotes: Record<string, any>,
+    parsedSettings: Record<string, any>
+): Promise<void> {
+    const nextNotes: Record<string, any> = { ...(parsedNotes || {}) };
+    if (nextNotes.portalAccess && typeof nextNotes.portalAccess === 'object') {
+        nextNotes.portalAccess = {
+            ...nextNotes.portalAccess,
+            enabled: true,
+            passwordHash,
+            updatedAt: new Date().toISOString()
+        };
+        delete nextNotes.portalAccess.password;
+    } else {
+        nextNotes.portalAccess = {
+            enabled: true,
+            passwordHash,
+            updatedAt: new Date().toISOString()
+        };
+    }
+
+    const updatePayload: Record<string, any> = {
+        notes: JSON.stringify(nextNotes)
+    };
+
+    if (parsedSettings && Object.keys(parsedSettings).length > 0) {
+        const nextSettings: Record<string, any> = { ...parsedSettings };
+        if (nextSettings.portalAccess && typeof nextSettings.portalAccess === 'object') {
+            nextSettings.portalAccess = {
+                ...nextSettings.portalAccess,
+                enabled: true,
+                passwordHash,
+                updatedAt: new Date().toISOString()
+            };
+            delete nextSettings.portalAccess.password;
+            updatePayload.settings_json = JSON.stringify(nextSettings);
+        }
+    }
+
+    try {
+        await adminDb.updateDocument(databaseId, 'clients', clientDoc.$id, {
+            ...updatePayload,
+            portal_password: passwordHash
+        });
+    } catch {
+        try {
+            await adminDb.updateDocument(databaseId, 'clients', clientDoc.$id, updatePayload);
+        } catch {
+            // Ignore schema mismatch
+        }
+    }
+}
+
+export async function handleAuthLoginRoute(
+    req: IncomingMessage,
+    res: ServerResponse,
+    envConfig: AuthEnvConfig
+): Promise<boolean> {
+    if (req.method === 'OPTIONS') {
+        sendJson(res, 204, {});
+        return true;
+    }
+
+    if (req.method !== 'POST') {
+        sendJson(res, 405, { success: false, error: 'Method not allowed' });
+        return true;
+    }
+
+    let body: Record<string, any>;
+    try {
+        body = await readJsonBody(req);
+    } catch (e: any) {
+        sendJson(res, e.statusCode || 400, { success: false, error: e.message || 'Corpo JSON inválido.' });
+        return true;
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        sendJson(res, 400, { success: false, error: 'Corpo JSON deve ser um objeto válido.' });
+        return true;
+    }
+
+    const { email, password, inviteToken, tenantId: requestedTenantId } = body;
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+        sendJson(res, 400, { success: false, error: 'E-mail e senha são obrigatórios.' });
+        return true;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPass = password.trim();
+    const endpoint = (envConfig.endpoint || 'https://cloud.appwrite.io/v1').replace(/\/$/, '');
+    const projectId = envConfig.projectId;
+    const apiKey = envConfig.apiKey;
+    const databaseId = envConfig.databaseId || 'crm_db';
+
+    // =========================================================================
+    // 1. ATTEMPT APPWRITE AUTH (CRM USER / ADMIN / AGENT)
+    // =========================================================================
+    try {
+        const sessionRes = await fetch(`${endpoint}/account/sessions/email`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Appwrite-Project': projectId,
+                'X-Fallback-Cookies': 'true'
+            },
+            body: JSON.stringify({ email: cleanEmail, password: cleanPass })
+        });
+
+        const setCookieHeader = sessionRes.headers.get('set-cookie') || '';
+        const fallbackHeader = sessionRes.headers.get('x-fallback-cookies') || '';
+        const sessionData: any = await sessionRes.json().catch(() => ({}));
+
+        if (sessionRes.ok && sessionData && sessionData.$id) {
+            let sessionSecret = sessionData.secret || '';
+
+            if (!sessionSecret && fallbackHeader) {
+                try {
+                    const parsedCookies = JSON.parse(fallbackHeader);
+                    const cookieKey = `a_session_${projectId}`;
+                    sessionSecret = parsedCookies[cookieKey] || parsedCookies[`${cookieKey}_legacy`] || (Object.values(parsedCookies)[0] as string) || '';
+                } catch { /* ignore */ }
+            }
+
+            if (!sessionSecret && setCookieHeader) {
+                const match = setCookieHeader.match(new RegExp(`a_session_${projectId}(?:_legacy)?=([^;]+)`));
+                if (match && match[1]) {
+                    sessionSecret = match[1];
+                }
+            }
+
+            let jwtToken = '';
+            let userAccount: any = null;
+
+            const authHeaders: Record<string, string> = {
+                'Content-Type': 'application/json',
+                'X-Appwrite-Project': projectId
+            };
+            if (sessionSecret) {
+                authHeaders['Cookie'] = `a_session_${projectId}=${sessionSecret}; a_session_${projectId}_legacy=${sessionSecret}`;
+                authHeaders['X-Fallback-Cookies'] = JSON.stringify({ [`a_session_${projectId}`]: sessionSecret });
+            }
+
+            try {
+                const accRes = await fetch(`${endpoint}/account`, { headers: authHeaders });
+                if (accRes.ok) {
+                    userAccount = await accRes.json();
+                }
+
+                const jwtRes = await fetch(`${endpoint}/account/jwts`, {
+                    method: 'POST',
+                    headers: authHeaders
+                });
+                if (jwtRes.ok) {
+                    const jwtData: any = await jwtRes.json();
+                    jwtToken = jwtData.jwt || '';
+                }
+            } catch (e: any) {
+                console.warn('[AuthLoginHandler] Warning fetching account/JWT after session creation:', e.message);
+            }
+
+            if (userAccount && userAccount.status === false) {
+                sendJson(res, 403, {
+                    success: false,
+                    error: 'Sua conta encontra-se desativada. Entre em contato com o administrador.'
+                });
+                return true;
+            }
+
+            sendJson(res, 200, {
+                success: true,
+                type: 'crm',
+                sessionId: sessionData.$id,
+                sessionSecret,
+                jwt: jwtToken,
+                user: userAccount || {
+                    $id: sessionData.userId,
+                    email: cleanEmail
+                }
+            });
+            return true;
+        }
+
+        if (sessionRes.status === 429) {
+            sendJson(res, 429, {
+                success: false,
+                error: 'Muitas tentativas de login seguidas no servidor de autenticação. Aguarde 1 minuto e tente novamente.'
+            });
+            return true;
+        }
+    } catch (err: any) {
+        console.warn('[AuthLoginHandler] Appwrite session fetch error:', err.message);
+    }
+
+    // =========================================================================
+    // 2. SECURE FALLBACK TO CLIENT PORTAL AUTHENTICATION (S04, S07)
+    // =========================================================================
+    if (!apiKey) {
+        sendJson(res, 401, {
+            success: false,
+            error: 'Credenciais inválidas. Verifique seu e-mail e senha.'
+        });
+        return true;
+    }
+
+    if (isUniversalPortalPassword(cleanPass)) {
+        sendJson(res, 401, {
+            success: false,
+            error: 'Credenciais inválidas ou senha universal não permitida.'
+        });
+        return true;
+    }
+
+    try {
+        const adminClient = new Client()
+            .setEndpoint(endpoint)
+            .setProject(projectId)
+            .setKey(apiKey);
+        const adminDb = new Databases(adminClient);
+
+        const queries = [Query.equal('email', cleanEmail), Query.limit(25)];
+        if (requestedTenantId && typeof requestedTenantId === 'string' && requestedTenantId.trim()) {
+            queries.push(Query.equal('tenant_id', requestedTenantId.trim()));
+        }
+
+        const clientsRes = await adminDb.listDocuments(databaseId, 'clients', queries);
+
+        if (clientsRes.documents.length > 0) {
+            let matchedClient: any = null;
+
+            for (const candidateDoc of clientsRes.documents as any[]) {
+                const meta = extractClientPortalMetadata(candidateDoc);
+                if (!meta.portalEnabled) {
+                    continue;
+                }
+
+                if (!meta.configuredPassword) {
+                    if (inviteToken && typeof inviteToken === 'string') {
+                        const tokenCheck = validatePublicAccessToken({
+                            token: inviteToken,
+                            expectedScope: 'portal_invite',
+                            expectedTargetId: candidateDoc.$id,
+                            expectedTenantId: candidateDoc.tenant_id || 'default'
+                        });
+                        if (tokenCheck.valid) {
+                            const consumed = consumePublicToken(inviteToken, {
+                                clientId: candidateDoc.$id,
+                                activatedEmail: cleanEmail
+                            });
+                            if (consumed.consumed) {
+                                const newHash = hashPortalPassword(cleanPass);
+                                await persistHashedPortalCredential(
+                                    adminDb,
+                                    databaseId,
+                                    candidateDoc,
+                                    newHash,
+                                    meta.parsedNotes,
+                                    meta.parsedSettings
+                                );
+                                matchedClient = candidateDoc;
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                const verification = verifyPortalPassword(cleanPass, meta.configuredPassword);
+                if (verification.valid) {
+                    matchedClient = candidateDoc;
+                    if (verification.needsUpgrade) {
+                        const upgradedHash = hashPortalPassword(cleanPass);
+                        await persistHashedPortalCredential(
+                            adminDb,
+                            databaseId,
+                            candidateDoc,
+                            upgradedHash,
+                            meta.parsedNotes,
+                            meta.parsedSettings
+                        );
+                    }
+                    break;
+                }
+            }
+
+            if (matchedClient) {
+                const resolvedTenantId = matchedClient.tenant_id || 'default';
+                const portalToken = signPortalSessionToken(
+                    {
+                        clientId: matchedClient.$id,
+                        tenantId: resolvedTenantId,
+                        email: cleanEmail
+                    },
+                    apiKey
+                );
+
+                sendJson(res, 200, {
+                    success: true,
+                    type: 'portal',
+                    portalToken,
+                    token: portalToken,
+                    tenantId: resolvedTenantId,
+                    client: sanitizePortalClient(matchedClient)
+                });
+                return true;
+            }
+        }
+    } catch (portalErr: any) {
+        console.warn('[AuthLoginHandler] Client portal lookup error:', portalErr.message);
+    }
+
+    sendJson(res, 401, {
+        success: false,
+        error: 'Credenciais inválidas. Verifique seu e-mail e senha.'
+    });
+    return true;
+}

@@ -72,6 +72,17 @@ export interface PipelineDeal {
   due_date: string | null;
   priority: PipelinePriority;
   labels: string[];
+  client_id?: string | null;
+}
+
+export interface PipelineClient {
+  id: string;
+  $id?: string;
+  name: string;
+  fantasy_name?: string;
+  phone?: string;
+  email?: string;
+  document?: string;
 }
 
 export interface PipelineUser {

@@ -1,244 +1,346 @@
 /**
- * Adaptador de Persistência de Governança — TypeScript (Fase 5H.11)
- *
- * Fornece interface tipada para persistência durável no sandbox (crm_isolated_test):
- * 1. Persistência na coleção 'system_policy_governance'.
- * 2. Trava de segurança estrita contra 'crm_db'.
- * 3. Controle de concorrência atômica via updateDocuments com Query de versão (OCC).
- * 4. Inicialização Fail-Closed em caso de falha de conexão ou documento corrompido.
- * 5. Sanitização estrita: zero segredos ou JWTs persistidos no documento.
+ * ============================================================================
+ * FASE 6.4 — DURABLE GOVERNANCE PERSISTENCE ADAPTER (TS / VITE DEV)
+ * ============================================================================
+ * TypeScript ESM counterpart for Vite dev middleware integration (F36).
+ * Persists and restores WritePolicyEngine governance state across restarts
+ * using Appwrite `system_policy_governance` and HMAC-SHA256 signed local file.
+ * ============================================================================
  */
 
-import { Client, Databases, Query } from 'node-appwrite';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import type { Databases } from 'node-appwrite';
+import type { WritePolicyEngine, PolicyMode } from './writePolicyEngine.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const GOVERNANCE_COLLECTION_ID = 'system_policy_governance';
-export const ALLOWED_PROTOTYPE_DBS = new Set(['crm_isolated_test', 'crm_sandbox_test']);
+export const GOVERNANCE_DOC_ID = 'active_policy_state';
+export const ALLOWED_PERSISTENT_DATABASES = new Set(['crm_db', 'crm_db_sandbox', 'crm_isolated_test']);
+export const SUPPORTED_SCHEMA_VERSION = '1.0';
+const DATA_DIR = path.resolve(__dirname, '.data');
 
-export interface DurableGovernanceState {
-  databaseId: string;
-  stateVersion: number;
-  globalLockdown: boolean;
-  tripReason: string;
-  modulePauses: Record<string, { paused: boolean; reason: string }>;
-  activeRules: any[];
-  updatedBy: string;
-  updatedAt: string;
+function getSigningSecret(): Buffer {
+    const base = process.env.GOVERNANCE_STATE_SECRET
+        || process.env.APPWRITE_API_KEY
+        || 'crm-hydra-governance-state-secret-v1';
+    return crypto.createHash('sha256').update(`${base}:governance-state-v1`).digest();
 }
 
-export interface SaveAtomicParams {
-  databaseId: string;
-  expectedVersion: number;
-  stateUpdates: {
-    globalLockdown?: boolean;
-    tripReason?: string;
-    modulePauses?: Record<string, { paused: boolean; reason: string }>;
-    activeRules?: any[];
-  };
-  actorId?: string;
+function computeStateHmac(stateRecord: Record<string, any>): string {
+    const canonical = JSON.stringify({
+        schemaVersion: stateRecord.schemaVersion,
+        targetDatabase: stateRecord.targetDatabase,
+        mode: stateRecord.mode,
+        killSwitchActive: Boolean(stateRecord.killSwitchActive),
+        killSwitchActor: stateRecord.killSwitchActor || '',
+        killSwitchReason: stateRecord.killSwitchReason || '',
+        killSwitchActivatedAt: stateRecord.killSwitchActivatedAt || '',
+        flagsJson: stateRecord.flagsJson
+    });
+    return crypto.createHmac('sha256', getSigningSecret()).update(canonical, 'utf8').digest('hex');
+}
+
+function getLocalFilePath(databaseId: string): string {
+    const safeDb = String(databaseId || 'crm_db').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return path.join(DATA_DIR, `governance_state_${safeDb}.json`);
+}
+
+function ensureDataDir(): void {
+    try {
+        if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
+    } catch {
+        // Ignore directory creation errors
+    }
 }
 
 export class GovernancePersistenceAdapter {
-  private endpoint: string;
-  private projectId: string;
-  private apiKey: string;
-  private client: Client;
-  private databases: Databases;
+    private databases: Databases | null;
+    private databaseId: string;
+    private collectionId: string;
+    private documentId: string;
+    private localFilePath: string;
 
-  private targetDatabaseId: string | null;
+    constructor(databases: Databases | null, databaseId: string = 'crm_db') {
+        this.databases = databases || null;
+        this.databaseId = databaseId || 'crm_db';
+        this.collectionId = GOVERNANCE_COLLECTION_ID;
+        this.documentId = GOVERNANCE_DOC_ID;
+        this.localFilePath = getLocalFilePath(this.databaseId);
 
-  constructor(config: { endpoint?: string; projectId?: string; apiKey?: string; databaseId?: string } = {}) {
-    this.endpoint = config.endpoint || process.env.VITE_APPWRITE_URL || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-    this.projectId = config.projectId || process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
-    this.apiKey = config.apiKey || process.env.APPWRITE_API_KEY || '';
-
-    if (!this.apiKey) {
-      throw new Error('[PERSISTENCE_ERROR] APPWRITE_API_KEY ausente para operações de governança.');
+        this.assertDatabaseSafety();
     }
 
-    this.targetDatabaseId = config.databaseId || null;
-    if (this.targetDatabaseId) {
-      this.assertSandboxSafety(this.targetDatabaseId);
+    assertDatabaseSafety(): void {
+        if (!ALLOWED_PERSISTENT_DATABASES.has(this.databaseId)) {
+            throw new Error(
+                `[SECURITY VIOLATION] GovernancePersistenceAdapter só pode operar em bancos autorizados (${Array.from(ALLOWED_PERSISTENT_DATABASES).join(', ')}). Banco recebido: '${this.databaseId}'.`
+            );
+        }
     }
 
-    this.client = new Client()
-      .setEndpoint(this.endpoint)
-      .setProject(this.projectId)
-      .setKey(this.apiKey);
-
-    this.databases = new Databases(this.client);
-  }
-
-  getEffectiveDatabaseId(): string | null {
-    return this.targetDatabaseId;
-  }
-
-  assertSandboxSafety(databaseId: string): void {
-    if (!databaseId || !ALLOWED_PROTOTYPE_DBS.has(databaseId)) {
-      throw new Error(`[SAFETY_GATE_TRIGGERED] Acesso negado: o banco "${databaseId}" não é um sandbox autorizado para este protótipo.`);
-    }
-    if (databaseId === 'crm_db') {
-      throw new Error('[PROD_GUARD] Tentativa ilegal de acesso de escrita/persistência ao banco de produção crm_db.');
-    }
-  }
-
-  getDocumentId(databaseId: string): string {
-    this.assertSandboxSafety(databaseId);
-    return `policy_state_${databaseId}`;
-  }
-
-  async loadGovernanceState(databaseId: string): Promise<DurableGovernanceState> {
-    this.assertSandboxSafety(databaseId);
-    const docId = this.getDocumentId(databaseId);
-
-    try {
-      const doc: any = await this.databases.getDocument(databaseId, GOVERNANCE_COLLECTION_ID, docId);
-
-      let parsedPauses: Record<string, { paused: boolean; reason: string }> = {};
-      let parsedRules: any[] = [];
-
-      try {
-        parsedPauses = JSON.parse(doc.module_pauses || '{}');
-      } catch (e) {
-        console.warn('[PERSISTENCE_CORRUPT] Falha ao deserializar module_pauses. Adotando fallback seguro.');
-      }
-
-      try {
-        parsedRules = JSON.parse(doc.active_rules || '[]');
-      } catch (e) {
-        console.warn('[PERSISTENCE_CORRUPT] Falha ao deserializar active_rules. Adotando fallback seguro.');
-      }
-
-      return {
-        databaseId,
-        stateVersion: Number(doc.state_version) || 1,
-        globalLockdown: Boolean(doc.global_lockdown),
-        tripReason: doc.lockdown_reason || '',
-        modulePauses: parsedPauses,
-        activeRules: parsedRules,
-        updatedBy: doc.updated_by || 'unknown',
-        updatedAt: doc.updated_at || doc.$updatedAt,
-      };
-    } catch (err: any) {
-      console.error(`[PERSISTENCE_FAIL_CLOSED] Falha ao carregar estado de governança para "${databaseId}": ${err.message}`);
-      return {
-        databaseId,
-        stateVersion: 0,
-        globalLockdown: true,
-        tripReason: `Fail-Closed por erro de carregamento: ${err.message}`,
-        modulePauses: {},
-        activeRules: [],
-        updatedBy: 'system_fail_closed',
-        updatedAt: new Date().toISOString(),
-      };
-    }
-  }
-
-  async saveGovernanceStateAtomic(params: SaveAtomicParams): Promise<{
-    success: boolean;
-    stateVersion: number;
-    updatedAt: string;
-    updatedBy: string;
-    globalLockdown: boolean;
-  }> {
-    const { databaseId, expectedVersion, stateUpdates, actorId } = params;
-    this.assertSandboxSafety(databaseId);
-    const docId = this.getDocumentId(databaseId);
-
-    if (typeof expectedVersion !== 'number' || expectedVersion < 1) {
-      throw new Error('[CONCURRENCY_ERROR] expectedVersion numérico válido é obrigatório.');
+    assertSandboxSafety(): void {
+        this.assertDatabaseSafety();
     }
 
-    const payload: any = {
-      state_version: expectedVersion + 1,
-      updated_by: actorId || 'system_admin',
-      updated_at: new Date().toISOString(),
-    };
+    async ensureSchema(): Promise<boolean> {
+        this.assertDatabaseSafety();
+        if (!this.databases || typeof this.databases.getCollection !== 'function') {
+            return false;
+        }
 
-    if (typeof stateUpdates.globalLockdown === 'boolean') {
-      payload.global_lockdown = stateUpdates.globalLockdown;
-    }
-    if (typeof stateUpdates.tripReason === 'string') {
-      payload.lockdown_reason = stateUpdates.tripReason.slice(0, 500);
-    }
-    if (stateUpdates.modulePauses !== undefined) {
-      payload.module_pauses = JSON.stringify(stateUpdates.modulePauses);
-    }
-    if (stateUpdates.activeRules !== undefined) {
-      payload.active_rules = JSON.stringify(stateUpdates.activeRules);
-    }
+        try {
+            await this.databases.getCollection(this.databaseId, this.collectionId);
+            return true;
+        } catch (err: any) {
+            if (err.code !== 404) {
+                return false;
+            }
+        }
 
-    const result = await this.databases.updateDocuments(
-      databaseId,
-      GOVERNANCE_COLLECTION_ID,
-      payload,
-      [
-        Query.equal('$id', docId),
-        Query.equal('state_version', expectedVersion),
-      ]
-    );
+        try {
+            await this.databases.createCollection(
+                this.databaseId,
+                this.collectionId,
+                'System Policy Governance State',
+                [],
+                false,
+                true
+            );
 
-    if (!result || result.total === 0) {
-      const freshDoc: any = await this.databases.getDocument(databaseId, GOVERNANCE_COLLECTION_ID, docId);
-      const conflictError: any = new Error(
-        `[CONCURRENCY_CONFLICT] Falha de concorrência atômica. A versão esperada era ${expectedVersion}, mas o estado já foi alterado para ${freshDoc.state_version} por "${freshDoc.updated_by}".`
-      );
-      conflictError.statusCode = 409;
-      conflictError.currentVersion = freshDoc.state_version;
-      throw conflictError;
-    }
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'schemaVersion', 20, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'targetDatabase', 64, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'mode', 20, true);
+            await this.databases.createBooleanAttribute(this.databaseId, this.collectionId, 'killSwitchActive', true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'killSwitchActor', 128, false);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'killSwitchReason', 500, false);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'killSwitchActivatedAt', 64, false);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'flagsJson', 10000, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'circuitBreakerJson', 5000, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'auditLogJson', 65000, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'updatedAt', 64, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'updatedBy', 128, true);
+            await this.databases.createStringAttribute(this.databaseId, this.collectionId, 'lastReason', 500, true);
 
-    const updatedDoc: any = result.documents[0];
-    return {
-      success: true,
-      stateVersion: updatedDoc.state_version,
-      updatedAt: updatedDoc.updated_at,
-      updatedBy: updatedDoc.updated_by,
-      globalLockdown: updatedDoc.global_lockdown,
-    };
-  }
-
-  async syncPolicyEngineFromDurableState(policyEngine: any, databaseId: string) {
-    this.assertSandboxSafety(databaseId);
-    const durable = await this.loadGovernanceState(databaseId);
-
-    // 1. Sincroniza Disjuntor Global
-    policyEngine.circuitBreaker.globalLockdown = durable.globalLockdown;
-    if (durable.globalLockdown) {
-      policyEngine.circuitBreaker.state = 'OPEN';
-      policyEngine.circuitBreaker.tripReason = durable.tripReason || 'Lockdown persistido ativo';
-    } else {
-      policyEngine.circuitBreaker.state = 'CLOSED';
-      policyEngine.circuitBreaker.tripReason = null;
+            for (let i = 0; i < 15; i++) {
+                await new Promise(r => setTimeout(r, 400));
+                const col = await this.databases.getCollection(this.databaseId, this.collectionId);
+                const allAvailable = (col.attributes || []).every((a: any) => a.status === 'available');
+                if (allAvailable && (col.attributes || []).length >= 13) break;
+            }
+            return true;
+        } catch {
+            return false;
+        }
     }
 
-    // 2. Sincroniza Pausas de Módulos
-    policyEngine.circuitBreaker.moduleOverrides.clear();
-    for (const [col, info] of Object.entries(durable.modulePauses)) {
-      if (info && info.paused) {
-        policyEngine.circuitBreaker.moduleOverrides.set(col, {
-          paused: true,
-          reason: info.reason || 'Módulo pausado em governança durável',
-        });
-      }
+    private _writeLocalState(payload: Record<string, any>): void {
+        ensureDataDir();
+        const hmac = computeStateHmac(payload);
+        const envelope = {
+            ...payload,
+            signature: hmac
+        };
+        const tmpFile = `${this.localFilePath}.tmp.${process.pid}`;
+        fs.writeFileSync(tmpFile, JSON.stringify(envelope, null, 2), 'utf8');
+        fs.renameSync(tmpFile, this.localFilePath);
     }
 
-    // 3. Sincroniza Regras Ativas para este banco
-    policyEngine.rules = policyEngine.rules.filter((r: any) => r.databaseId !== databaseId);
-    if (Array.isArray(durable.activeRules)) {
-      for (const r of durable.activeRules) {
-        policyEngine.rules.push(r);
-      }
+    private _readLocalState(): Record<string, any> | null {
+        if (!fs.existsSync(this.localFilePath)) {
+            return null;
+        }
+        const raw = fs.readFileSync(this.localFilePath, 'utf8');
+        if (!raw || !raw.trim()) {
+            throw new Error('Arquivo local de governança está vazio ou corrompido.');
+        }
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') {
+            throw new Error('Estrutura JSON inválida no arquivo de governança.');
+        }
+        const expectedHmac = computeStateHmac(parsed);
+        if (!parsed.signature || parsed.signature !== expectedHmac) {
+            throw new Error('Assinatura HMAC de integridade do estado de governança inválida.');
+        }
+        return parsed;
     }
 
-    return {
-      synced: true,
-      databaseId,
-      stateVersion: durable.stateVersion,
-      globalLockdown: durable.globalLockdown,
-      rulesCount: durable.activeRules.length,
-      pausedModulesCount: policyEngine.circuitBreaker.moduleOverrides.size,
-      updatedAt: durable.updatedAt,
-      updatedBy: durable.updatedBy,
-    };
-  }
+    private _validateStateRecord(doc: Record<string, any>) {
+        if (!doc || typeof doc !== 'object') {
+            throw new Error('Documento de governança ausente ou inválido.');
+        }
+        if (doc.schemaVersion && doc.schemaVersion !== SUPPORTED_SCHEMA_VERSION) {
+            throw new Error(`Versão de schema de governança incompatível: '${doc.schemaVersion}' (esperado '${SUPPORTED_SCHEMA_VERSION}').`);
+        }
+        if (doc.targetDatabase && doc.targetDatabase !== this.databaseId) {
+            throw new Error(`Divergência de banco no estado persistido: '${doc.targetDatabase}' vs '${this.databaseId}'.`);
+        }
+        if (!['shadow', 'enforce', 'off'].includes(doc.mode)) {
+            throw new Error(`Modo de governança corrompido no estado persistido: '${doc.mode}'.`);
+        }
+        const parsedFlags = typeof doc.flagsJson === 'string' ? JSON.parse(doc.flagsJson) : doc.flags;
+        if (!parsedFlags || typeof parsedFlags !== 'object') {
+            throw new Error('Flags de governança ausentes ou malformadas no estado persistido.');
+        }
+        return {
+            parsedFlags,
+            parsedAudit: typeof doc.auditLogJson === 'string' && doc.auditLogJson ? JSON.parse(doc.auditLogJson) : [],
+            parsedCb: typeof doc.circuitBreakerJson === 'string' && doc.circuitBreakerJson ? JSON.parse(doc.circuitBreakerJson) : null
+        };
+    }
+
+    async persistEngineState(
+        engine: WritePolicyEngine,
+        actor: string = 'system',
+        reason: string = 'State sync',
+        targetDatabaseOverride?: string | null
+    ): Promise<any> {
+        this.assertDatabaseSafety();
+        const effectiveDb = targetDatabaseOverride || this.databaseId;
+        const exported = engine.exportGovernanceState(effectiveDb);
+
+        const payload = {
+            schemaVersion: SUPPORTED_SCHEMA_VERSION,
+            targetDatabase: effectiveDb,
+            mode: exported.mode,
+            killSwitchActive: Boolean(exported.killSwitch.active),
+            killSwitchActor: exported.killSwitch.actor || '',
+            killSwitchReason: exported.killSwitch.reason || '',
+            killSwitchActivatedAt: exported.killSwitch.activatedAt || '',
+            flagsJson: JSON.stringify(exported.flags),
+            circuitBreakerJson: JSON.stringify(exported.circuitBreaker),
+            auditLogJson: JSON.stringify(exported.governanceAuditLog.slice(0, 30)),
+            updatedAt: new Date().toISOString(),
+            updatedBy: actor,
+            lastReason: reason
+        };
+
+        let localSucceeded = false;
+        let remoteSucceeded = false;
+        let lastError: any = null;
+
+        try {
+            this._writeLocalState(payload);
+            localSucceeded = true;
+        } catch (localErr: any) {
+            lastError = localErr;
+            console.warn('[GovernancePersistence] Warning writing local governance state file:', localErr.message);
+        }
+
+        if (this.databases && typeof this.databases.updateDocument === 'function') {
+            try {
+                const res = await this.databases.updateDocument(this.databaseId, this.collectionId, this.documentId, payload);
+                remoteSucceeded = true;
+                return res;
+            } catch (err: any) {
+                lastError = err;
+                if (err.code === 404 && typeof this.databases.createDocument === 'function') {
+                    try {
+                        const res = await this.databases.createDocument(this.databaseId, this.collectionId, this.documentId, payload);
+                        remoteSucceeded = true;
+                        return res;
+                    } catch (createErr: any) {
+                        lastError = createErr;
+                    }
+                }
+            }
+        }
+
+        if (!localSucceeded && !remoteSucceeded) {
+            const fatalErr: any = new Error(`Falha na persistência da governança: Nem o arquivo local nem o banco Appwrite conseguiram gravar o estado. ${lastError ? lastError.message : ''}`);
+            fatalErr.code = 'GOVERNANCE_PERSISTENCE_FAILED';
+            throw fatalErr;
+        }
+
+        return payload;
+    }
+
+    async restoreIntoEngine(engine: WritePolicyEngine): Promise<{
+        restored: boolean;
+        reason?: string;
+        updatedAt?: string;
+        updatedBy?: string;
+        lastReason?: string;
+        source?: string;
+    }> {
+        this.assertDatabaseSafety();
+
+        let doc: any = null;
+        let source = 'NONE';
+
+        if (this.databases && typeof this.databases.getDocument === 'function') {
+            try {
+                doc = await this.databases.getDocument(this.databaseId, this.collectionId, this.documentId);
+                if (doc) source = 'APPWRITE';
+            } catch {
+                // Fallback to local file
+            }
+        }
+
+        if (!doc) {
+            const localDoc = this._readLocalState();
+            if (localDoc) {
+                doc = localDoc;
+                source = 'LOCAL_SIGNED_FILE';
+            }
+        } else {
+            try {
+                const localDoc = this._readLocalState();
+                if (localDoc && localDoc.updatedAt && doc.updatedAt) {
+                    if (new Date(localDoc.updatedAt) > new Date(doc.updatedAt)) {
+                        doc = localDoc;
+                        source = 'LOCAL_SIGNED_FILE';
+                    }
+                }
+            } catch {
+                // Keep Appwrite doc
+            }
+        }
+
+        if (!doc) {
+            await this.persistEngineState(engine, 'system:boot', 'Initial governance state created on first boot');
+            return { restored: false, reason: 'FIRST_BOOT_CREATED_DEFAULT', source: 'DEFAULT' };
+        }
+
+        const { parsedFlags, parsedAudit, parsedCb } = this._validateStateRecord(doc);
+
+        engine.mode = doc.mode as PolicyMode;
+        engine.killSwitchActive = Boolean(doc.killSwitchActive);
+        engine.killSwitchActor = doc.killSwitchActor || null;
+        engine.killSwitchReason = doc.killSwitchReason || null;
+        engine.killSwitchActivatedAt = doc.killSwitchActivatedAt || null;
+
+        engine.flags = {
+            global: parsedFlags.global !== undefined ? Boolean(parsedFlags.global) : true,
+            modules: { ...engine.flags.modules, ...(parsedFlags.modules || {}) },
+            tenants: { ...(parsedFlags.tenants || {}) }
+        };
+
+        if (parsedCb && typeof parsedCb === 'object' && engine.circuitBreaker) {
+            if (['CLOSED', 'OPEN', 'HALF_OPEN'].includes(parsedCb.state)) {
+                engine.circuitBreaker.state = parsedCb.state;
+                engine.circuitBreaker.consecutiveFailures = Number(parsedCb.consecutiveFailures || 0);
+                engine.circuitBreaker.trippedAt = parsedCb.trippedAt || null;
+                engine.circuitBreaker.tripReason = parsedCb.tripReason || null;
+            }
+        }
+
+        if (Array.isArray(parsedAudit)) {
+            engine.governanceAuditLog = parsedAudit;
+        }
+
+        return {
+            restored: true,
+            updatedAt: doc.updatedAt,
+            updatedBy: doc.updatedBy,
+            lastReason: doc.lastReason,
+            source
+        };
+    }
 }

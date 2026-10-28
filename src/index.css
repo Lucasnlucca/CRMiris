@@ -253,3 +253,49 @@
     overflow-wrap: anywhere !important;
   }
 }
+
+/* ============================================================================
+   LVPLATFORM LOGO SHIMMER & PRELOADER ANIMATIONS
+   ============================================================================ */
+@keyframes lightSweepOnce {
+  0% {
+    background-position: 130% 0;
+  }
+  100% {
+    background-position: -30% 0;
+  }
+}
+
+@keyframes shimmerSweep {
+  0% {
+    transform: translateX(-150%) skewX(-20deg);
+  }
+  50%, 100% {
+    transform: translateX(150%) skewX(-20deg);
+  }
+}
+
+@keyframes progressStream {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(150%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.animate-light-sweep {
+  animation: lightSweepOnce 2s cubic-bezier(0.25, 1, 0.5, 1) 0.1s 1 forwards;
+}
+
+.animate-shimmer-sweep {
+  animation: shimmerSweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-progress-stream {
+  animation: progressStream 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+

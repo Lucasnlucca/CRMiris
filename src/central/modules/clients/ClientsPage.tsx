@@ -1,29 +1,43 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowRight,
+  Barcode,
   Building2,
   CalendarPlus,
   Check,
+  CheckCircle2,
   ChevronRight,
   CircleDollarSign,
+  Copy,
+  Download,
   Edit3,
+  ExternalLink,
+  Eye,
+  EyeOff,
   FilePlus2,
   FileText,
+  KeyRound,
+  Lock,
   Mail,
   MapPin,
   MoreHorizontal,
   Phone,
   Plus,
+  QrCode,
+  RefreshCw,
   Server as ServerIcon,
   ShieldCheck,
+  Sparkles,
   Ticket as TicketIcon,
   Trash2,
   UserPlus,
   Users,
+  Wallet,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { useTenant } from '../../../context/TenantContext';
 import {
   Avatar,
   Badge,
@@ -40,10 +54,11 @@ import {
   StatCard,
   Tabs,
 } from '../../components/ui';
-import type { Client, Contact, Service, Ticket } from '../../types';
+import type { Client, ClientPortalAccess, Contact, Service, Ticket } from '../../types';
 import { date, dateTime, money, newId } from '../../utils/format';
 import { effectiveChargeStatus } from '../../utils/finance';
 import { maskCep, maskDocument, maskPhone, validateDocument } from '../../utils/validation';
+import { getAuthoritativeAuthHeaders } from '../../../lib/appwrite';
 import './clients.css';
 
 const states = [
@@ -1052,7 +1067,8 @@ function ServiceForm({
 
 export function ClientDetailPage() {
   const { id } = useParams();
-  const { data, session, patch, remove, notify } = useApp();
+  const { data, session, patch, remove, notify, login: appLogin } = useApp();
+  const { tenant } = useTenant();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const [editing, setEditing] = useState(false);
@@ -1066,7 +1082,277 @@ export function ClientDetailPage() {
   const [toggle, setToggle] = useState(false);
   const [deleteClientOpen, setDeleteClientOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Estados para Acesso ao Portal do Cliente
+  const [portalEmail, setPortalEmail] = useState('');
+  const [portalPassword, setPortalPassword] = useState('');
+  const [portalEnabled, setPortalEnabled] = useState(true);
+  const [showPortalPassword, setShowPortalPassword] = useState(false);
+  const [copiedNotice, setCopiedNotice] = useState(false);
+
+  // Estados para Integração com Asaas
+  const [asaasData, setAsaasData] = useState<{
+    configured: boolean;
+    environment: string;
+    customer: any | null;
+    payments: any[];
+    message: string;
+  } | null>(null);
+  const [asaasError, setAsaasError] = useState<string | null>(null);
+  const [asaasLoading, setAsaasLoading] = useState(false);
+  const asaasRequestRef = useRef<{ seq: number; key: string }>({ seq: 0, key: '' });
+  const [newPaymentModalOpen, setNewPaymentModalOpen] = useState(false);
+  const [newPaymentValue, setNewPaymentValue] = useState('');
+  const [newPaymentDueDate, setNewPaymentDueDate] = useState('');
+  const [newPaymentDescription, setNewPaymentDescription] = useState('');
+  const [newPaymentBillingType, setNewPaymentBillingType] = useState<'BOLETO' | 'PIX'>('BOLETO');
+  const [creatingPaymentBusy, setCreatingPaymentBusy] = useState(false);
+
   const client = data.clients.find((item) => item.id === id);
+  const effectiveTenantId = (client as any)?.tenant_id || tenant?.id || 'tenant_default';
+
+  const loadClientAsaasData = async (targetClient = client, targetTenantId = effectiveTenantId) => {
+    if (!targetClient) {
+      setAsaasData(null);
+      setAsaasError(null);
+      setAsaasLoading(false);
+      return;
+    }
+    const requestKey = `${targetTenantId}:${targetClient.id}`;
+    const nextSeq = asaasRequestRef.current.seq + 1;
+    asaasRequestRef.current = { seq: nextSeq, key: requestKey };
+    setAsaasLoading(true);
+    setAsaasError(null);
+    try {
+      const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
+      const res = await fetch(
+        `/api/asaas/client?clientId=${encodeURIComponent(targetClient.id)}&email=${encodeURIComponent(targetClient.email || '')}&document=${encodeURIComponent(targetClient.document || '')}&tenantId=${encodeURIComponent(targetTenantId)}`,
+        {
+          headers: {
+            ...authHeaders,
+            'x-tenant-id': targetTenantId,
+          },
+        }
+      );
+      if (
+        asaasRequestRef.current.seq !== nextSeq ||
+        asaasRequestRef.current.key !== requestKey
+      ) {
+        return;
+      }
+      if (res.ok) {
+        const json = await res.json();
+        // F38: Re-verify request sequence after await res.json() to prevent race conditions
+        if (
+          asaasRequestRef.current.seq !== nextSeq ||
+          asaasRequestRef.current.key !== requestKey
+        ) {
+          return;
+        }
+        if (json.success && json.asaas) {
+          setAsaasData(json.asaas);
+          setAsaasError(null);
+        } else {
+          setAsaasData(null);
+          setAsaasError(json.error || 'Dados do Asaas indisponíveis para este cliente.');
+        }
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        // F38: Re-verify request sequence after await res.json() to prevent race conditions
+        if (
+          asaasRequestRef.current.seq !== nextSeq ||
+          asaasRequestRef.current.key !== requestKey
+        ) {
+          return;
+        }
+        setAsaasData(null);
+        setAsaasError(errJson?.error || `Falha ao consultar Asaas (HTTP ${res.status}).`);
+      }
+    } catch (err: any) {
+      if (
+        asaasRequestRef.current.seq !== nextSeq ||
+        asaasRequestRef.current.key !== requestKey
+      ) {
+        return;
+      }
+      setAsaasData(null);
+      setAsaasError(err?.message || 'Erro de comunicação ao consultar Asaas.');
+    } finally {
+      if (
+        asaasRequestRef.current.seq === nextSeq &&
+        asaasRequestRef.current.key === requestKey
+      ) {
+        setAsaasLoading(false);
+      }
+    }
+  };
+
+  const handleSyncAsaas = async () => {
+    if (!client) return;
+    const requestKey = `${effectiveTenantId}:${client.id}`;
+    const nextSeq = asaasRequestRef.current.seq + 1;
+    asaasRequestRef.current = { seq: nextSeq, key: requestKey };
+    setAsaasLoading(true);
+    setAsaasError(null);
+    try {
+      const res = await fetch('/api/asaas/client/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: client.id, tenantId: effectiveTenantId }),
+      });
+      const json = await res.json();
+      if (
+        asaasRequestRef.current.seq !== nextSeq ||
+        asaasRequestRef.current.key !== requestKey
+      ) {
+        return;
+      }
+      if (res.ok && json.success) {
+        setAsaasData(json.asaas);
+        setAsaasError(null);
+        notify(json.message || 'Cliente sincronizado com o Asaas com sucesso!');
+      } else {
+        setAsaasData(null);
+        setAsaasError(json.error || 'Falha ao sincronizar com Asaas');
+        notify(json.error || 'Falha ao sincronizar com Asaas', 'error');
+      }
+    } catch (err: any) {
+      if (
+        asaasRequestRef.current.seq === nextSeq &&
+        asaasRequestRef.current.key === requestKey
+      ) {
+        setAsaasData(null);
+        setAsaasError('Erro ao sincronizar: ' + err.message);
+      }
+      notify('Erro ao sincronizar: ' + err.message, 'error');
+    } finally {
+      if (
+        asaasRequestRef.current.seq === nextSeq &&
+        asaasRequestRef.current.key === requestKey
+      ) {
+        setAsaasLoading(false);
+      }
+    }
+  };
+
+  const handleCreatePaymentSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!client || !newPaymentValue || !newPaymentDueDate) {
+      notify('Preencha o valor e a data de vencimento.', 'error');
+      return;
+    }
+    setCreatingPaymentBusy(true);
+    try {
+      const res = await fetch('/api/asaas/payments/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: client.id,
+          tenantId: effectiveTenantId,
+          value: Number(newPaymentValue),
+          dueDate: newPaymentDueDate,
+          description: newPaymentDescription || `Cobrança de Serviços - ${client.name}`,
+          billingType: newPaymentBillingType,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json.success) {
+        notify('Cobrança emitida no Asaas com sucesso!');
+        setNewPaymentModalOpen(false);
+        setNewPaymentValue('');
+        setNewPaymentDueDate('');
+        setNewPaymentDescription('');
+        await loadClientAsaasData();
+      } else {
+        notify(json.error || 'Erro ao emitir cobrança', 'error');
+      }
+    } catch (err: any) {
+      notify('Erro ao emitir cobrança: ' + err.message, 'error');
+    } finally {
+      setCreatingPaymentBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    setAsaasData(null);
+    setAsaasError(null);
+    if (client) {
+      setPortalEmail(client.portalAccess?.email || client.email || client.contacts[0]?.email || '');
+      setPortalPassword('');
+      setPortalEnabled(client.portalAccess?.enabled ?? true);
+      void loadClientAsaasData(client, effectiveTenantId);
+    } else {
+      asaasRequestRef.current = { seq: asaasRequestRef.current.seq + 1, key: '' };
+      setAsaasLoading(false);
+    }
+  }, [client?.id, effectiveTenantId]);
+
+  const generateRandomPassword = () => {
+    const prefixes = ['Telecom', 'Voip', 'Facil', 'Cliente', 'Acesso', 'Conecta'];
+    const randomPrefix = prefixes[Math.floor(Math.random() * prefixes.length)];
+    const randomNum = Math.floor(1000 + Math.random() * 9000);
+    const specials = ['@', '#', '$', '!'];
+    const randomSpecial = specials[Math.floor(Math.random() * specials.length)];
+    const newPass = `${randomPrefix}${randomSpecial}${randomNum}`;
+    setPortalPassword(newPass);
+    notify(`Nova senha gerada: ${newPass}`);
+  };
+
+  const handleSavePortalAccess = async () => {
+    if (!client) return;
+    setBusy(true);
+    try {
+      const normEmail = portalEmail.trim().toLowerCase();
+      const nextPortalAccess: ClientPortalAccess = {
+        enabled: portalEnabled,
+        email: normEmail,
+        lastAccess: client.portalAccess?.lastAccess,
+      };
+      await patch('clients', client.id, { portalAccess: nextPortalAccess });
+      if (portalPassword.trim()) {
+        await fetch('/api/portal/auth/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: client.id,
+            tenantId: effectiveTenantId,
+            email: normEmail,
+            password: portalPassword.trim(),
+            enabled: portalEnabled,
+          }),
+        }).catch(() => {});
+        setPortalPassword('');
+      }
+      notify('Credenciais de acesso ao Portal do Cliente salvas com sucesso!');
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao salvar credenciais do portal', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleCopyCredentials = () => {
+    if (!client) return;
+    const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const tenantSlug = tenant?.slug || 'matriz';
+    const loginUrl = isLocal ? `${window.location.origin}/portal-login?tenant=${tenantSlug}` : `${window.location.origin}/portal-login`;
+    const message = `🔐 *Acesso ao Portal do Cliente*\n\nOlá! Seguem seus dados de acesso ao seu portal de autoatendimento:\n\n🌐 *Link de Acesso:* ${loginUrl}\n👤 *Usuário / E-mail:* ${portalEmail}\n🔑 *Senha:* ${portalPassword}\n\nAtravés do portal você pode consultar boletos em aberto, assinar/visualizar contratos e solicitar suporte.`;
+    navigator.clipboard.writeText(message);
+    setCopiedNotice(true);
+    notify('Dados de acesso copiados para a área de transferência!');
+    setTimeout(() => setCopiedNotice(false), 3000);
+  };
+
+  const handleImpersonateClient = async () => {
+    if (!client) return;
+    try {
+      await appLogin('client', client.id);
+      navigate('/portal');
+    } catch (err: any) {
+      notify(err?.message || 'Erro ao entrar como cliente', 'error');
+    }
+  };
+
   useEffect(() => {
     setEditing(false);
     setContact(null);
@@ -1119,6 +1405,7 @@ export function ClientDetailPage() {
     { id: 'overview', label: 'Visão geral' },
     { id: 'registration', label: 'Dados cadastrais' },
     { id: 'contacts', label: 'Contatos', count: client.contacts.length },
+    { id: 'portal', label: 'Acesso Portal' },
     { id: 'services', label: 'Serviços', count: services.length },
     { id: 'servers', label: 'Servidores e domínios', count: servers.length },
     { id: 'tickets', label: 'Tickets', count: tickets.length },
@@ -1358,6 +1645,9 @@ export function ClientDetailPage() {
               <>
                 <Button variant="secondary" onClick={() => setEditing(true)}>
                   <Edit3 size={16} /> Editar cadastro
+                </Button>
+                <Button variant="secondary" onClick={() => setTab('portal')}>
+                  <KeyRound size={16} /> Acesso Portal
                 </Button>
                 <Button onClick={() => navigate(`/tickets?client=${client.id}&new=1`)}>
                   <Plus size={17} /> Abrir ticket
@@ -1651,6 +1941,123 @@ export function ClientDetailPage() {
               action={canManage && <Button onClick={() => openContact()}>Adicionar contato</Button>}
             />
           )}
+        </Card>
+      )}
+      {tab === 'portal' && (
+        <Card>
+          <div className="client-section-heading">
+            <div>
+              <h3>Acesso do Cliente ao Portal do Assinante</h3>
+              <p className="muted small">
+                Configure as credenciais para o cliente acessar faturas, contratos e suporte técnico.
+              </p>
+            </div>
+            <div className="inline">
+              <Button variant="secondary" onClick={handleImpersonateClient}>
+                <ExternalLink size={15} /> Acessar Portal como este Cliente
+              </Button>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginTop: '16px' }}>
+            {/* Status do Acesso */}
+            <div style={{ background: 'var(--card-subtle, rgba(255,255,255,0.03))', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-color, rgba(255,255,255,0.08))' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Status do Acesso
+                </span>
+                <Badge status={portalEnabled ? 'Ativo' : 'Inativo'} />
+              </div>
+              <p className="muted small" style={{ marginBottom: '16px', lineHeight: '1.5' }}>
+                {portalEnabled
+                  ? 'O cliente possui permissão ativa para efetuar login e consultar seus dados no Portal.'
+                  : 'O acesso ao portal está temporariamente bloqueado para este cliente.'}
+              </p>
+              <Button
+                variant={portalEnabled ? 'danger' : 'secondary'}
+                size="sm"
+                onClick={() => setPortalEnabled(!portalEnabled)}
+              >
+                {portalEnabled ? 'Bloquear Acesso ao Portal' : 'Habilitar Acesso ao Portal'}
+              </Button>
+            </div>
+
+            {/* Credenciais de Login */}
+            <div style={{ background: 'var(--card-subtle, rgba(255,255,255,0.03))', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-color, rgba(255,255,255,0.08))' }}>
+              <Field label="E-mail de Login do Cliente">
+                <input
+                  type="email"
+                  value={portalEmail}
+                  onChange={(e) => setPortalEmail(e.target.value)}
+                  placeholder="cliente@empresa.com"
+                  required
+                />
+              </Field>
+
+              <div style={{ marginTop: '12px' }}>
+                <Field label="Senha de Acesso ao Portal">
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <div style={{ position: 'relative', flex: 1 }}>
+                      <input
+                        type={showPortalPassword ? 'text' : 'password'}
+                        value={portalPassword}
+                        onChange={(e) => setPortalPassword(e.target.value)}
+                        placeholder="••••••••"
+                        required
+                        style={{ paddingRight: '36px' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPortalPassword(!showPortalPassword)}
+                        style={{
+                          position: 'absolute',
+                          right: '10px',
+                          top: '50%',
+                          transform: 'translateY(-50%)',
+                          background: 'transparent',
+                          border: 'none',
+                          cursor: 'pointer',
+                          color: '#94a3b8',
+                        }}
+                      >
+                        {showPortalPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={generateRandomPassword}
+                      title="Gerar uma nova senha forte automaticamente"
+                    >
+                      <Sparkles size={14} /> Gerar Senha
+                    </Button>
+                  </div>
+                </Field>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', marginTop: '16px', flexWrap: 'wrap' }}>
+                <Button onClick={handleSavePortalAccess} disabled={busy}>
+                  Salvar Acesso
+                </Button>
+                <Button variant="secondary" onClick={handleCopyCredentials}>
+                  <Copy size={14} /> {copiedNotice ? 'Copiado!' : 'Copiar Dados de Acesso'}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Dica para o operador */}
+          <div style={{ marginTop: '20px', padding: '16px', borderRadius: '12px', background: 'rgba(14, 165, 233, 0.08)', border: '1px solid rgba(14, 165, 233, 0.2)', fontSize: '13px', lineHeight: '1.6' }}>
+            <strong style={{ color: '#0284c7', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
+              <Sparkles size={16} /> Como funciona para o cliente final:
+            </strong>
+            <p className="muted small" style={{ margin: 0, lineHeight: '1.6' }}>
+              • O cliente acessa pelo link exclusivo do portal: <code>/portal-login</code>.<br />
+              • Ele digita o e-mail e a senha configurados acima.<br />
+              • Ele tem acesso imediato aos boletos em aberto (com Pix e código de barras), contratos com prévia interativa em PDF/imagem e abertura de chamados.
+            </p>
+          </div>
         </Card>
       )}
       {tab === 'services' && (
@@ -1989,6 +2396,221 @@ export function ClientDetailPage() {
               ]}
             />
           </Card>
+
+          {/* Card: Integração Asaas do Cliente */}
+          <Card>
+            <div className="client-section-heading">
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Wallet size={18} style={{ color: '#2563eb' }} />
+                  <h3>Boletos & Faturas Asaas (Gateway Oficial)</h3>
+                  {asaasData?.customer?.id && (
+                    <span
+                      style={{
+                        background: 'rgba(16, 185, 129, 0.12)',
+                        color: '#059669',
+                        padding: '2px 8px',
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                      }}
+                    >
+                      ID Asaas: {asaasData.customer.id}
+                    </span>
+                  )}
+                </div>
+                <p className="muted small">
+                  Consulta de faturas, boletos bancários e baixa automática via Asaas.
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={asaasLoading}
+                  onClick={handleSyncAsaas}
+                  title="Sincronizar cadastro e cobranças do cliente com o Asaas"
+                >
+                  <RefreshCw size={13} className={asaasLoading ? 'animate-spin' : ''} />
+                  Sincronizar Asaas
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => setNewPaymentModalOpen(true)}
+                  title="Emitir nova cobrança ou boleto bancário no Asaas"
+                >
+                  <Plus size={13} /> Emitir Boleto / Cobrança
+                </Button>
+              </div>
+            </div>
+
+            {asaasError && (
+              <div
+                role="alert"
+                style={{
+                  marginBottom: '12px',
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  backgroundColor: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  color: '#b91c1c',
+                  fontSize: '12px',
+                }}
+              >
+                {asaasError}
+              </div>
+            )}
+
+            {asaasData?.payments && asaasData.payments.length > 0 ? (
+              <DataTable
+                rows={asaasData.payments}
+                emptyTitle="Nenhuma cobrança localizada no Asaas"
+                columns={[
+                  {
+                    key: 'id',
+                    label: 'ID / Cobrança',
+                    render: (item: any) => (
+                      <div>
+                        <strong style={{ fontSize: '12px', color: '#1e293b' }}>
+                          {item.invoiceNumber || item.id}
+                        </strong>
+                        <span style={{ display: 'block', fontSize: '11px', color: '#64748b' }}>
+                          {item.description || 'Cobrança Asaas'}
+                        </span>
+                      </div>
+                    ),
+                  },
+                  {
+                    key: 'value',
+                    label: 'Valor',
+                    render: (item: any) => (
+                      <strong style={{ fontSize: '13px', color: '#0f172a' }}>
+                        {money(item.value || 0)}
+                      </strong>
+                    ),
+                  },
+                  {
+                    key: 'dueDate',
+                    label: 'Vencimento',
+                    render: (item: any) => date(item.dueDate),
+                  },
+                  {
+                    key: 'billingType',
+                    label: 'Forma',
+                    render: (item: any) => (
+                      <span style={{ fontSize: '12px' }}>
+                        {item.billingType === 'BOLETO'
+                          ? 'Boleto Bancário'
+                          : item.billingType === 'PIX'
+                          ? 'Pix Instantâneo'
+                          : 'Cartão de Crédito'}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'status',
+                    label: 'Status',
+                    render: (item: any) => {
+                      const st =
+                        item.status === 'RECEIVED' || item.status === 'CONFIRMED'
+                          ? 'Pago'
+                          : item.status === 'OVERDUE'
+                          ? 'Vencido'
+                          : 'Pendente';
+                      return <Badge status={st} />;
+                    },
+                  },
+                  {
+                    key: 'actions',
+                    label: 'Ações Oficiais Asaas',
+                    render: (item: any) => (
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {item.invoiceUrl && (
+                          <a
+                            href={item.invoiceUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-sm btn-secondary"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none', fontSize: '11px', padding: '3px 8px' }}
+                            title="Abrir fatura oficial hospedada no Asaas"
+                          >
+                            <ExternalLink size={11} /> Fatura
+                          </a>
+                        )}
+                        {item.bankSlipUrl && (
+                          <a
+                            href={item.bankSlipUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn btn-sm btn-secondary"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none', fontSize: '11px', padding: '3px 8px' }}
+                            title="Baixar PDF oficial do Boleto"
+                          >
+                            <Download size={11} /> PDF
+                          </a>
+                        )}
+                        {item.pixPayload && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            style={{ fontSize: '11px', padding: '3px 8px' }}
+                            onClick={() => {
+                              navigator.clipboard.writeText(item.pixPayload);
+                              notify('Código Pix copiado com sucesso!');
+                            }}
+                            title="Copiar código Pix Copia e Cola"
+                          >
+                            <QrCode size={11} /> Pix
+                          </Button>
+                        )}
+                        {item.barcode && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            style={{ fontSize: '11px', padding: '3px 8px' }}
+                            onClick={() => {
+                              navigator.clipboard.writeText(item.barcode);
+                              notify('Linha digitável copiada com sucesso!');
+                            }}
+                            title="Copiar linha digitável do boleto"
+                          >
+                            <Barcode size={11} /> Código
+                          </Button>
+                        )}
+                      </div>
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              <div
+                style={{
+                  padding: '24px',
+                  borderRadius: '10px',
+                  background: '#f8fafc',
+                  border: '1px dashed #cbd5e1',
+                  textAlign: 'center',
+                }}
+              >
+                <Wallet size={28} style={{ color: '#94a3b8', margin: '0 auto 8px auto' }} />
+                <h4 style={{ fontSize: '13px', fontWeight: 600, color: '#334155', margin: '0 0 4px 0' }}>
+                  Nenhum boleto encontrado no Asaas para este cliente
+                </h4>
+                <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 12px 0' }}>
+                  Clique em &quot;Sincronizar Asaas&quot; para vincular o cliente ou &quot;Emitir Boleto / Cobrança&quot; para criar o primeiro boleto.
+                </p>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '8px' }}>
+                  <Button size="sm" variant="secondary" onClick={handleSyncAsaas}>
+                    <RefreshCw size={13} /> Sincronizar Cadastro
+                  </Button>
+                  <Button size="sm" onClick={() => setNewPaymentModalOpen(true)}>
+                    <Plus size={13} /> Emitir Cobrança
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
         </>
       )}
       {tab === 'agenda' && (
@@ -2143,6 +2765,88 @@ export function ClientDetailPage() {
           }
         }}
       />
+
+      {/* Modal para Emissão de Boleto / Cobrança Asaas */}
+      {newPaymentModalOpen && (
+        <Modal
+          open={newPaymentModalOpen}
+          onClose={() => setNewPaymentModalOpen(false)}
+          title={`Emitir Cobrança Asaas para ${client.tradeName || client.name}`}
+        >
+          <form onSubmit={handleCreatePaymentSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
+                  Valor da Cobrança (R$) *
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="1"
+                  placeholder="Ex: 890.00"
+                  value={newPaymentValue}
+                  onChange={(e) => setNewPaymentValue(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
+                  Data de Vencimento *
+                </label>
+                <input
+                  type="date"
+                  value={newPaymentDueDate}
+                  onChange={(e) => setNewPaymentDueDate(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px' }}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
+                Forma de Cobrança *
+              </label>
+              <select
+                value={newPaymentBillingType}
+                onChange={(e) => setNewPaymentBillingType(e.target.value as any)}
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', background: '#fff' }}
+              >
+                <option value="BOLETO">Boleto Bancário (Com código de barras e baixa automática)</option>
+                <option value="PIX">Pix Instantâneo (QR Code e Copia e Cola)</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#334155', marginBottom: '6px' }}>
+                Descrição da Fatura / Serviço
+              </label>
+              <input
+                type="text"
+                placeholder="Ex: Mensalidade PABX em Nuvem - Mês Atual"
+                value={newPaymentDescription}
+                onChange={(e) => setNewPaymentDescription(e.target.value)}
+                style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px' }}
+              />
+            </div>
+
+            <div style={{ fontSize: '12px', color: '#64748b', background: '#f8fafc', padding: '10px 12px', borderRadius: '8px' }}>
+              💡 O cliente receberá a fatura automaticamente e ela ficará disponível para consulta e pagamento imediato na área do cliente.
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '6px' }}>
+              <Button variant="ghost" onClick={() => setNewPaymentModalOpen(false)}>
+                Cancelar
+              </Button>
+              <Button loading={creatingPaymentBusy} type="submit">
+                <CheckCircle2 size={14} /> Emitir no Asaas
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }

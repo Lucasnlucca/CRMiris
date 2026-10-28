@@ -17,27 +17,108 @@ import {
 } from 'docx';
 import { Proposal, ProposalLineItem, ProposalTermsData, getProposalNumber } from '../pages/Propostas';
 
-// Helper de conversão de Imagem (URL ou Data-URL base64) para Uint8Array
-async function getImageBuffer(urlOrBase64?: string): Promise<Uint8Array | null> {
+export type SupportedDocxImageType = 'png' | 'jpg' | 'gif' | 'bmp';
+
+export interface LoadedDocxImage {
+  data: Uint8Array;
+  type: SupportedDocxImageType;
+}
+
+/**
+ * F24: Detecta o formato real da imagem a partir dos magic bytes e/ou MIME type / URL.
+ */
+export function detectImageType(
+  bytes: Uint8Array,
+  mimeOrUrl?: string
+): SupportedDocxImageType | null {
+  if (bytes && bytes.length >= 4) {
+    // PNG: 89 50 4E 47
+    if (
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47
+    ) {
+      return 'png';
+    }
+    // JPG / JPEG: FF D8 FF
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return 'jpg';
+    }
+    // GIF: 47 49 46 ("GIF")
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+      return 'gif';
+    }
+    // BMP: 42 4D ("BM")
+    if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+      return 'bmp';
+    }
+  }
+
+  if (mimeOrUrl) {
+    const lower = mimeOrUrl.trim().toLowerCase();
+    if (lower.startsWith('data:image/')) {
+      const mimePart = lower.slice('data:image/'.length).split(/[;,]/)[0];
+      if (mimePart === 'png') return 'png';
+      if (mimePart === 'jpeg' || mimePart === 'jpg') return 'jpg';
+      if (mimePart === 'gif') return 'gif';
+      if (mimePart === 'bmp' || mimePart === 'x-ms-bmp') return 'bmp';
+    } else {
+      const cleanPath = lower.split('?')[0].split('#')[0];
+      if (cleanPath.endsWith('.png') || lower === 'image/png') return 'png';
+      if (
+        cleanPath.endsWith('.jpg') ||
+        cleanPath.endsWith('.jpeg') ||
+        lower === 'image/jpeg' ||
+        lower === 'image/jpg'
+      ) {
+        return 'jpg';
+      }
+      if (cleanPath.endsWith('.gif') || lower === 'image/gif') return 'gif';
+      if (cleanPath.endsWith('.bmp') || lower === 'image/bmp') return 'bmp';
+    }
+  }
+
+  return null;
+}
+
+// Helper de conversão de Imagem (URL ou Data-URL base64) para Uint8Array + tipo validado (F24)
+async function getImageBuffer(urlOrBase64?: string): Promise<LoadedDocxImage | null> {
   if (!urlOrBase64) return null;
   try {
+    let bytes: Uint8Array;
+    let contentTypeHint = urlOrBase64;
+
     if (urlOrBase64.startsWith('data:')) {
       const commaIndex = urlOrBase64.indexOf(',');
       if (commaIndex === -1) return null;
       const base64 = urlOrBase64.slice(commaIndex + 1);
       const binaryString = atob(base64);
       const len = binaryString.length;
-      const bytes = new Uint8Array(len);
+      bytes = new Uint8Array(len);
       for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      return bytes;
     } else {
       const resp = await fetch(urlOrBase64);
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        console.warn(`Falha ao baixar imagem para DOCX (HTTP ${resp.status}):`, urlOrBase64);
+        return null;
+      }
+      contentTypeHint = resp.headers.get('content-type') || urlOrBase64;
       const arrayBuffer = await resp.arrayBuffer();
-      return new Uint8Array(arrayBuffer);
+      bytes = new Uint8Array(arrayBuffer);
     }
+
+    if (!bytes || bytes.length === 0) return null;
+
+    const detectedType = detectImageType(bytes, contentTypeHint);
+    if (!detectedType) {
+      console.warn('Formato de imagem não suportado para pacote DOCX (ignorando mídia inválida):', contentTypeHint);
+      return null;
+    }
+
+    return { data: bytes, type: detectedType };
   } catch (e) {
     console.warn('Erro ao processar imagem para DOCX:', e);
     return null;
@@ -50,8 +131,13 @@ function formatBRL(val?: number): string {
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return '-';
+  const trimmed = dateStr.trim();
+  const civilMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (civilMatch) {
+    return `${civilMatch[3]}/${civilMatch[2]}/${civilMatch[1]}`;
+  }
   try {
-    const d = new Date(dateStr.includes('T') ? dateStr : dateStr + 'T00:00:00');
+    const d = new Date(trimmed);
     if (isNaN(d.getTime())) return dateStr;
     return d.toLocaleDateString('pt-BR');
   } catch {
@@ -83,7 +169,7 @@ export async function downloadProposalDocx(
   const footerImageBuffer = await getImageBuffer(termsData.footerImageUrl);
 
   // Carregar imagens anexas aos termos
-  const termImageBuffers: Record<string, Uint8Array | null> = {};
+  const termImageBuffers: Record<string, LoadedDocxImage | null> = {};
   for (const term of termsData.terms) {
     if (term.imageUrl) {
       termImageBuffers[term.id] = await getImageBuffer(term.imageUrl);
@@ -455,9 +541,10 @@ export async function downloadProposalDocx(
             spacing: { before: 100, after: 100 },
             children: [
               new ImageRun({
-                data: imgBuffer,
+                type: imgBuffer.type,
+                data: imgBuffer.data,
                 transformation: { width: 480, height: 200 },
-              } as any),
+              }),
             ],
           })
         );
@@ -507,9 +594,10 @@ export async function downloadProposalDocx(
             spacing: { before: 120, after: 140 },
             children: [
               new ImageRun({
-                data: imgBuffer,
+                type: imgBuffer.type,
+                data: imgBuffer.data,
                 transformation: { width: 480, height: 200 },
-              } as any),
+              }),
             ],
           })
         );
@@ -552,9 +640,10 @@ export async function downloadProposalDocx(
         spacing: { before: 300, after: 120 },
         children: [
           new ImageRun({
-            data: footerImageBuffer,
+            type: footerImageBuffer.type,
+            data: footerImageBuffer.data,
             transformation: { width: 520, height: 160 },
-          } as any),
+          }),
         ],
       })
     );

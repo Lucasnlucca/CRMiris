@@ -65,7 +65,24 @@ export async function fetchTenantMembers(tenantId: string, databaseId?: string):
     throw new Error(json.error || `Erro HTTP ${res.status} ao carregar membros do tenant.`);
   }
 
-  return json;
+  const rawList = json.members || json.users || [];
+  const members: TenantMember[] = rawList.map((u: any) => ({
+    membershipId: u.membershipId || u.$id || '',
+    userId: u.userId || u.id || '',
+    name: u.name || 'Usuário',
+    email: u.email || '',
+    role: u.role || (u.roles && u.roles[0]) || 'agent',
+    roles: u.roles || [u.role || 'agent'],
+    status: u.status || (u.isActive !== false ? 'active' : 'inactive'),
+    joined: u.joined || u.joinedAt || '',
+    tenantId: u.tenantId || tenantId,
+  }));
+
+  return {
+    ...json,
+    members,
+    total: json.total ?? members.length
+  };
 }
 
 export async function inviteTenantMember(payload: InviteMemberPayload): Promise<{
@@ -215,6 +232,54 @@ export async function saveUserMenuPermissions(payload: {
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.success) {
     throw new Error(json.error || `Erro HTTP ${res.status} ao salvar permissões de menu.`);
+  }
+
+  return json;
+}
+
+export async function updateUserPassword(payload: {
+  userId: string;
+  password: string;
+  tenantId?: string;
+  databaseId?: string;
+}): Promise<{
+  success: boolean;
+  message: string;
+}> {
+  const headers = await getAuthHeaders();
+  const res = await fetch('/api/admin/users/password', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || `Erro HTTP ${res.status} ao alterar senha.`);
+  }
+
+  return json;
+}
+
+export async function updateUserProfile(payload: {
+  userId?: string;
+  name?: string;
+  databaseId?: string;
+}): Promise<{
+  success: boolean;
+  message: string;
+  user?: { id: string; name?: string; email?: string };
+}> {
+  const headers = await getAuthHeaders();
+  const res = await fetch('/api/admin/users/profile', {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || `Erro HTTP ${res.status} ao atualizar perfil.`);
   }
 
   return json;

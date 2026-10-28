@@ -122,9 +122,9 @@ export function Badge({ children, status }: { children?: ReactNode; status?: str
   let tone = 'gray';
   if (['ativo', 'disponível', 'resolvido', 'pago', 'concluído', 'vigente', 'emitida'].includes(v))
     tone = 'green';
-  if (['novo', 'em andamento', 'agendado', 'média'].includes(v)) tone = 'blue';
+  if (['novo', 'em andamento', 'agendado', 'média', 'a vencer', 'a receber'].includes(v)) tone = 'blue';
   if (
-    ['pendente', 'em atenção', 'aguardando retorno', 'alta', 'em renovação', 'suspenso'].includes(v)
+    ['pendente', 'em atenção', 'aguardando retorno', 'alta', 'em renovação', 'suspenso', 'em aberto'].includes(v)
   )
     tone = 'amber';
   if (['vencido', 'crítica', 'indisponível', 'aberto'].includes(v)) tone = 'red';
@@ -279,6 +279,9 @@ export function ConfirmDialog({
   onConfirm,
   onClose,
   danger = true,
+  confirmTextMatch,
+  confirmInputPlaceholder,
+  confirmButtonLabel,
 }: {
   open: boolean;
   title: string;
@@ -286,8 +289,19 @@ export function ConfirmDialog({
   onConfirm: () => void | Promise<void>;
   onClose: () => void;
   danger?: boolean;
+  confirmTextMatch?: string;
+  confirmInputPlaceholder?: string;
+  confirmButtonLabel?: string;
 }) {
   const [busy, setBusy] = useState(false);
+  const [typedValue, setTypedValue] = useState('');
+
+  useEffect(() => {
+    if (open) setTypedValue('');
+  }, [open]);
+
+  const isUnlocked = !confirmTextMatch || typedValue.trim() === confirmTextMatch.trim();
+
   return (
     <Modal
       open={open}
@@ -296,28 +310,65 @@ export function ConfirmDialog({
         if (!busy) onClose();
       }}
     >
-      <p className="confirm-description">{description}</p>
-      <div className="form-actions">
-        <Button variant="secondary" disabled={busy} onClick={onClose}>
-          Voltar
-        </Button>
-        <Button
-          variant={danger ? 'danger' : 'primary'}
-          loading={busy}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await onConfirm();
-              onClose();
-            } catch {
-              /* service displays the actionable error */
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Confirmar
-        </Button>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <p className="confirm-description" style={{ margin: 0 }}>
+          {description}
+        </p>
+
+        {confirmTextMatch && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '4px' }}>
+            <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted, #64748b)' }}>
+              Para confirmar a exclusão, digite exatamente{' '}
+              <strong style={{ color: '#dc2626', userSelect: 'all', fontFamily: 'monospace' }}>
+                {confirmTextMatch}
+              </strong>{' '}
+              abaixo:
+            </label>
+            <input
+              type="text"
+              style={{
+                width: '100%',
+                padding: '9px 12px',
+                fontSize: '13px',
+                borderRadius: '8px',
+                border: '1px solid var(--border, #cbd5e1)',
+                background: 'var(--input-bg, #ffffff)',
+                color: 'var(--foreground, #0f172a)',
+                outline: 'none',
+              }}
+              placeholder={confirmInputPlaceholder || `Digite ${confirmTextMatch}...`}
+              value={typedValue}
+              onChange={(e) => setTypedValue(e.target.value)}
+              disabled={busy}
+              autoFocus
+            />
+          </div>
+        )}
+
+        <div className="form-actions" style={{ marginTop: '6px' }}>
+          <Button variant="secondary" disabled={busy} onClick={onClose}>
+            Voltar
+          </Button>
+          <Button
+            variant={danger ? 'danger' : 'primary'}
+            loading={busy}
+            disabled={!isUnlocked || busy}
+            onClick={async () => {
+              if (!isUnlocked) return;
+              setBusy(true);
+              try {
+                await onConfirm();
+                onClose();
+              } catch {
+                /* service displays the actionable error */
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            {confirmButtonLabel || (danger ? 'Excluir' : 'Confirmar')}
+          </Button>
+        </div>
       </div>
     </Modal>
   );

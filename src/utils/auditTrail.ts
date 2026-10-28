@@ -162,10 +162,36 @@ export function encodeAuditDossier(dossier: ContractAuditDossier): string {
 }
 
 /**
- * Decodifica o dossiê de auditoria gravado no contrato
+ * Decodifica o dossiê de auditoria gravado no contrato (suporta tanto o campo dedicado
+ * `legal_audit_trail` retornado pelo servidor quanto a tag `[LEGAL_AUDIT_TRAIL: {...}]` em `notes`).
  */
-export function parseAuditDossier(text?: string): ContractAuditDossier | null {
+export function parseAuditDossier(text?: string, legalAuditTrailJson?: string): ContractAuditDossier | null {
+  if (legalAuditTrailJson && typeof legalAuditTrailJson === 'string') {
+    const trimmed = legalAuditTrailJson.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        return JSON.parse(trimmed) as ContractAuditDossier;
+      } catch {}
+    }
+    const matchTrail = trimmed.match(/\[LEGAL_AUDIT_TRAIL:\s*({.+?})\]/s);
+    if (matchTrail && matchTrail[1]) {
+      try {
+        return JSON.parse(matchTrail[1]) as ContractAuditDossier;
+      } catch {}
+    }
+  }
+
   if (!text) return null;
+  const trimmedText = text.trim();
+  if (trimmedText.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmedText);
+      if (parsed && (parsed.documentHash || parsed.signatureHash || parsed.signer)) {
+        return parsed as ContractAuditDossier;
+      }
+    } catch {}
+  }
+
   const match = text.match(/\[LEGAL_AUDIT_TRAIL:\s*({.+?})\]/s);
   if (match && match[1]) {
     try {
@@ -173,4 +199,136 @@ export function parseAuditDossier(text?: string): ContractAuditDossier | null {
     } catch {}
   }
   return null;
+}
+
+export interface NormalizedServerSignatureResult {
+  signedAt: string;
+  signerIp: string;
+  signerPort: string;
+  userAgent: string;
+  documentHash: string;
+  contentHash: string;
+  signatureHash: string;
+  certificateHash: string;
+  legalBasis: string;
+  legalAuditTrail: string;
+  auditDossier: ContractAuditDossier | null;
+  updatedContract?: Record<string, any>;
+}
+
+/**
+ * F04: Extrai e normaliza exclusivamente as evidências retornadas pelo servidor em
+ * `POST /api/contracts/sign` (ou bridge autoritativo), sem descartar hashes/horário/IP do backend.
+ */
+export function extractServerSignatureEvidence(rawResponse: any): NormalizedServerSignatureResult {
+  const payload = rawResponse?.data && typeof rawResponse.data === 'object' && !Array.isArray(rawResponse.data)
+    ? { ...rawResponse, ...rawResponse.data }
+    : (rawResponse || {});
+
+  const hashes = payload.hashes && typeof payload.hashes === 'object' ? payload.hashes : {};
+  const contractDoc = payload.contract || (payload.data && payload.data.$id ? payload.data : undefined);
+
+  const signedAt = String(
+    payload.signedAt ||
+    payload.signedAtUtc ||
+    payload.signed_at ||
+    contractDoc?.signed_at ||
+    ''
+  );
+
+  const signerIp = String(
+    payload.signerIp ||
+    payload.clientIp ||
+    payload.signed_by_ip ||
+    contractDoc?.signed_by_ip ||
+    ''
+  );
+
+  const signerPort = String(
+    payload.signerPort ||
+    payload.clientPort ||
+    payload.signed_by_port ||
+    contractDoc?.signed_by_port ||
+    ''
+  );
+
+  const userAgent = String(
+    payload.userAgent ||
+    payload.signed_by_user_agent ||
+    contractDoc?.signed_by_user_agent ||
+    ''
+  );
+
+  const documentHash = String(
+    hashes.documentHash ||
+    hashes.contentHash ||
+    payload.documentHash ||
+    payload.contentHash ||
+    payload.document_hash ||
+    contractDoc?.document_hash ||
+    ''
+  );
+
+  const contentHash = String(
+    hashes.contentHash ||
+    hashes.documentHash ||
+    payload.contentHash ||
+    payload.documentHash ||
+    documentHash
+  );
+
+  const certificateHash = String(
+    hashes.certificateHash ||
+    hashes.signatureHash ||
+    payload.certificateHash ||
+    payload.signatureHash ||
+    payload.signature_hash ||
+    contractDoc?.signature_hash ||
+    ''
+  );
+
+  const signatureHash = String(
+    hashes.signatureHash ||
+    hashes.certificateHash ||
+    payload.signatureHash ||
+    payload.certificateHash ||
+    payload.signature_hash ||
+    certificateHash
+  );
+
+  const legalBasis = String(
+    payload.legalBasis ||
+    payload.signature_method ||
+    contractDoc?.signature_method ||
+    'Art. 10, § 2º da MP nº 2.200-2/2001 e Art. 4º, Inciso II da Lei Federal nº 14.063/2020'
+  );
+
+  let legalAuditTrail = '';
+  let auditDossier: ContractAuditDossier | null = null;
+
+  const rawTrail = payload.legalAuditTrail ?? payload.legal_audit_trail ?? contractDoc?.legal_audit_trail;
+  if (rawTrail) {
+    if (typeof rawTrail === 'string') {
+      legalAuditTrail = rawTrail;
+      auditDossier = parseAuditDossier(undefined, rawTrail);
+    } else if (typeof rawTrail === 'object') {
+      legalAuditTrail = JSON.stringify(rawTrail);
+      auditDossier = rawTrail as ContractAuditDossier;
+    }
+  }
+
+  return {
+    signedAt,
+    signerIp,
+    signerPort,
+    userAgent,
+    documentHash,
+    contentHash,
+    signatureHash,
+    certificateHash,
+    legalBasis,
+    legalAuditTrail,
+    auditDossier,
+    updatedContract: contractDoc,
+  };
 }

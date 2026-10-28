@@ -10,13 +10,22 @@
  * 6. Registro de auditoria administrativa.
  */
 
-import { Client, Databases, Teams, Storage, ID, Query, Permission, Role } from 'node-appwrite';
+import { Client, Account, Databases, Teams, Storage, ID, Query, Permission, Role } from 'node-appwrite';
 import fs from 'fs';
 import path from 'path';
 import url from 'url';
-import { authenticateAndAuthorizeSuperAdmin } from './adminPolicyHandler';
-import { resolveGovernanceConfig } from './governanceConfig';
-import { readJsonBody } from './requestUtils';
+import { authenticateAndAuthorizeSuperAdmin, type AdminEnvConfig } from './adminPolicyHandler.ts';
+import { resolveGovernanceConfig } from './governanceConfig.ts';
+import { readJsonBody, listAllMemberships } from './requestUtils.ts';
+
+function toAdminEnv(envConfig: any, targetDb: string): AdminEnvConfig {
+  return {
+    endpoint: envConfig.endpoint || envConfig.ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1',
+    projectId: envConfig.projectId || envConfig.PROJECT_ID || '6a6cac620021f4c64b3f',
+    apiKey: envConfig.apiKey || envConfig.API_KEY || process.env.APPWRITE_API_KEY || '',
+    databaseId: targetDb || envConfig.databaseId || 'crm_db',
+  };
+}
 
 export interface ProvisionTenantInput {
   name: string;
@@ -40,31 +49,32 @@ function resolveAuthoritativeTarget(
 ): string {
   const govConfig = envConfig && envConfig.governanceConfig
     ? envConfig.governanceConfig
-    : resolveGovernanceConfig(process.env, { runtime: 'standalone' });
+    : resolveGovernanceConfig(process.env);
 
-  let authoritativeDb = govConfig && govConfig.status === 'READY' ? govConfig.databaseId : null;
-
-  if (!authoritativeDb && clientSuppliedDb && typeof clientSuppliedDb === 'string') {
-    const trimmed = clientSuppliedDb.trim();
-    if (trimmed === 'crm_isolated_test' || trimmed === 'crm_sandbox_test' || trimmed === 'crm_db') {
-      authoritativeDb = trimmed;
-    }
+  if (govConfig && govConfig.status === 'INVALID') {
+    const err: any = new Error(`Governança inválida: ${govConfig.reason}`);
+    err.statusCode = 503;
+    err.code = 'GOVERNANCE_INVALID_BOOT';
+    throw err;
   }
+
+  let authoritativeDb = (govConfig && (govConfig.targetDb || (govConfig as any).databaseId))
+    || (envConfig && envConfig.databaseId)
+    || null;
 
   if (!authoritativeDb) {
-    if (process.env.NODE_ENV === 'test' || !process.env.NODE_ENV) {
+    if (process.env.NODE_ENV === 'test') {
       authoritativeDb = 'crm_isolated_test';
     } else {
-      const err: any = new Error('[GOVERNANCE_CONFIG_ERROR] Configuração de governança indisponível. Operações de tenant bloqueadas.');
-      err.statusCode = 503;
-      throw err;
+      authoritativeDb = process.env.VITE_APPWRITE_DATABASE_ID || process.env.DATABASE_ID || 'crm_db';
     }
   }
 
-  if (govConfig && govConfig.databaseId && clientSuppliedDb && typeof clientSuppliedDb === 'string' && clientSuppliedDb.trim() !== '') {
-    if (clientSuppliedDb.trim() !== govConfig.databaseId) {
-      const err: any = new Error(`[CLIENT_DATABASE_OVERRIDE_REJECTED] Seleção de banco pelo cliente ("${clientSuppliedDb}") rejeitada. O servidor opera exclusivamente no banco autoritativo configurado ("${govConfig.databaseId}").`);
+  if (clientSuppliedDb && typeof clientSuppliedDb === 'string' && clientSuppliedDb.trim() !== '') {
+    if (clientSuppliedDb.trim() !== authoritativeDb) {
+      const err: any = new Error(`[CLIENT_DATABASE_OVERRIDE_REJECTED] Seleção de banco pelo cliente ("${clientSuppliedDb}") rejeitada. O servidor opera exclusivamente no banco autoritativo configurado ("${authoritativeDb}").`);
       err.statusCode = 403;
+      err.code = 'TARGET_DATABASE_MISMATCH';
       throw err;
     }
   }
@@ -205,7 +215,18 @@ async function persistLogoImage(
 export async function handleTenantProvisioningRoutes(
   req: any,
   res: any,
-  envConfig: { ENDPOINT?: string; PROJECT_ID?: string; API_KEY?: string; governanceConfig?: any }
+  envConfig: {
+    ENDPOINT?: string;
+    PROJECT_ID?: string;
+    API_KEY?: string;
+    endpoint?: string;
+    projectId?: string;
+    apiKey?: string;
+    databaseId?: string;
+    DATABASE_ID?: string;
+    governanceConfig?: any;
+    [key: string]: any;
+  }
 ) {
   const parsedUrl = url.parse(req.url, true);
   const rawPath = parsedUrl.pathname || '';
@@ -229,12 +250,12 @@ export async function handleTenantProvisioningRoutes(
   };
 
   // Leitura segura do corpo JSON para métodos POST e PUT (S10) com suporte a logos de até 10MB
-  const readBody = (): Promise<any> => readJsonBody(req, { maxBytes: 10 * 1024 * 1024 });
+  const readBody = (): Promise<any> => readJsonBody(req, 10 * 1024 * 1024);
 
   try {
-    const endpoint = envConfig.ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-    const projectId = envConfig.PROJECT_ID || '6a6cac620021f4c64b3f';
-    const apiKey = envConfig.API_KEY || '';
+    const endpoint = envConfig.ENDPOINT || envConfig.endpoint || process.env.VITE_APPWRITE_URL || process.env.VITE_APPWRITE_ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
+    const projectId = envConfig.PROJECT_ID || envConfig.projectId || process.env.VITE_APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f';
+    const apiKey = envConfig.API_KEY || envConfig.apiKey || process.env.APPWRITE_API_KEY || '';
 
     if (!apiKey) {
       sendJson(500, { success: false, error: 'APPWRITE_API_KEY não configurada no servidor.', code: 500 });
@@ -249,7 +270,7 @@ export async function handleTenantProvisioningRoutes(
     // 1. GET /api/admin/tenants — Listar todas as empresas cadastradas
     if (normalizedPath === '/' && method === 'GET') {
       const targetDb = resolveAuthoritativeTarget(envConfig, parsedUrl.query.databaseId as string);
-      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
+      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req, toAdminEnv(envConfig, targetDb), targetDb);
 
       const collectionName = targetDb === 'crm_db' ? 'tenants' : 'test_tenants';
       const listRes = await adminDb.listDocuments(targetDb, collectionName, [Query.limit(100)]);
@@ -284,26 +305,61 @@ export async function handleTenantProvisioningRoutes(
       return;
     }
 
-    // 1.1 GET /api/admin/tenants/resolve/:slug — Resolução de empresa por slug (para navegação e rotas multi-tenant)
-    const resolveMatch = normalizedPath.match(/^\/resolve\/([a-zA-Z0-9_-]+)$/);
+    // 1.1 GET /api/admin/tenants/resolve/:slug — Resolução de empresa por slug ou ID (para navegação e rotas multi-tenant)
+    const resolveMatch = normalizedPath.match(/^\/resolve\/([a-zA-Z0-9_.-]+)$/);
     if (resolveMatch && method === 'GET') {
-      const targetSlug = resolveMatch[1].toLowerCase();
+      const rawTarget = resolveMatch[1].toLowerCase();
+      // Limpa possíveis prefixos como 'www.' ou sufixos de domínio
+      let targetQuery = rawTarget.replace(/^www\./, '');
+      if (targetQuery.endsWith('.lvplatform.com.br')) targetQuery = targetQuery.replace(/\.lvplatform\.com\.br$/, '');
+      if (targetQuery.endsWith('.lvplataform.com.br')) targetQuery = targetQuery.replace(/\.lvplataform\.com\.br$/, '');
+
       const targetDb = resolveAuthoritativeTarget(envConfig, parsedUrl.query.databaseId as string);
       const collectionName = targetDb === 'crm_db' ? 'tenants' : 'test_tenants';
 
-      const resList = await adminDb.listDocuments(targetDb, collectionName, [
-        Query.equal('slug', targetSlug),
-        Query.limit(1),
-      ]);
+      let d: any = null;
 
-      if (resList.total > 0) {
-        const d = resList.documents[0];
+      // 1. Tenta por slug exato
+      try {
+        const resList = await adminDb.listDocuments(targetDb, collectionName, [
+          Query.equal('slug', targetQuery),
+          Query.limit(1),
+        ]);
+        if (resList.total > 0) d = resList.documents[0];
+      } catch {}
+
+      // 2. Tenta por ID direto ($id)
+      if (!d) {
+        try {
+          d = await adminDb.getDocument(targetDb, collectionName, targetQuery);
+        } catch {}
+      }
+
+      // 3. Tenta com ou sem prefixo 'tenant_'
+      if (!d) {
+        const altQuery = targetQuery.startsWith('tenant_')
+          ? targetQuery.replace(/^tenant_/, '')
+          : `tenant_${targetQuery}`;
+        try {
+          const resList = await adminDb.listDocuments(targetDb, collectionName, [
+            Query.equal('slug', altQuery),
+            Query.limit(1),
+          ]);
+          if (resList.total > 0) {
+            d = resList.documents[0];
+          } else {
+            d = await adminDb.getDocument(targetDb, collectionName, altQuery).catch(() => null);
+          }
+        } catch {}
+      }
+
+      if (d) {
         sendJson(200, {
           success: true,
           tenant: {
             id: d.$id,
             name: d.name || 'Empresa sem nome',
-            slug: d.slug || targetSlug,
+            slug: d.slug || targetQuery,
             trade_name: d.trade_name || d.name,
             document: d.document || '',
             email: d.email || '',
@@ -318,7 +374,7 @@ export async function handleTenantProvisioningRoutes(
           },
         });
       } else {
-        sendJson(404, { success: false, error: `Empresa com slug "/${targetSlug}" não encontrada.`, code: 404 });
+        sendJson(404, { success: false, error: `Empresa com identificador "${targetQuery}" não encontrada.`, code: 404 });
       }
       return;
     }
@@ -327,7 +383,7 @@ export async function handleTenantProvisioningRoutes(
     if (normalizedPath === '/' && method === 'POST') {
       const body = await readBody();
       const targetDb = resolveAuthoritativeTarget(envConfig, body.databaseId);
-      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
+      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req, toAdminEnv(envConfig, targetDb), targetDb);
 
       if (!body.name || typeof body.name !== 'string' || body.name.trim().length === 0) {
         sendJson(400, { success: false, error: 'O nome da empresa é obrigatório.', code: 400 });
@@ -452,7 +508,31 @@ export async function handleTenantProvisioningRoutes(
       const targetTenantId = matchId[1];
       const body = await readBody();
       const targetDb = resolveAuthoritativeTarget(envConfig, body.databaseId);
-      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req.headers, targetDb, envConfig);
+      let actor: any = null;
+      try {
+        actor = await authenticateAndAuthorizeSuperAdmin(req, toAdminEnv(envConfig, targetDb), targetDb);
+      } catch (superErr) {
+        try {
+          const authHeader = (req.headers['authorization'] as string) || '';
+          const jwtHeader = (req.headers['x-appwrite-jwt'] as string) || '';
+          const sessionHeader = (req.headers['x-appwrite-session'] as string) || '';
+          const token = jwtHeader ? String(jwtHeader).trim() : (authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : (sessionHeader ? String(sessionHeader).trim() : ''));
+          if (!token) throw superErr;
+          const userClient = new Client().setEndpoint(endpoint).setProject(projectId);
+          if (jwtHeader || token.split('.').length === 3) userClient.setJWT(token);
+          else userClient.setSession(token);
+          const account = new Account(userClient);
+          const user = await account.get();
+          if (!user || user.status === false) throw superErr;
+          const memberships = await listAllMemberships(adminTeams, targetTenantId, Query);
+          const match = memberships.find((m: any) => m.userId === user.$id && m.confirm !== false);
+          const isTenantAdmin = match && (match.roles || []).some((r: string) => ['admin', 'owner', 'superadmin'].includes(String(r).toLowerCase()));
+          if (!isTenantAdmin) throw superErr;
+          actor = { userId: user.$id, email: user.email, name: user.name, isTenantAdmin: true };
+        } catch {
+          throw superErr;
+        }
+      }
 
       const collectionName = targetDb === 'crm_db' ? 'tenants' : 'test_tenants';
 
@@ -507,12 +587,68 @@ export async function handleTenantProvisioningRoutes(
       sendJson(200, {
         success: true,
         databaseId: targetDb,
-        updatedBy: superAdmin.userId,
+        updatedBy: actor?.userId || 'admin',
         tenant: {
           id: updated.$id,
           ...updated,
         },
         message: `Empresa "${updated.name || targetTenantId}" atualizada com sucesso.`,
+      });
+      return;
+    }
+
+    // 4. DELETE /api/admin/tenants/:id — Excluir empresa / servidor
+    if (matchId && method === 'DELETE') {
+      const targetTenantId = matchId[1];
+      const targetDb = resolveAuthoritativeTarget(
+        envConfig,
+        (parsedUrl.query?.databaseId as string) || (req.headers['x-database-id'] as string)
+      );
+      const superAdmin = await authenticateAndAuthorizeSuperAdmin(req, toAdminEnv(envConfig, targetDb), targetDb);
+
+      const collectionName = targetDb === 'crm_db' ? 'tenants' : 'test_tenants';
+
+      // Verificar se o documento existe
+      let existingDoc: any = null;
+      try {
+        existingDoc = await adminDb.getDocument(targetDb, collectionName, targetTenantId);
+      } catch {
+        sendJson(404, { success: false, error: `Empresa/Servidor com ID "${targetTenantId}" não encontrada.`, code: 404 });
+        return;
+      }
+
+      // Impede a exclusão da Matriz principal
+      if (existingDoc.slug === 'matriz' || targetTenantId === 'tenant_default') {
+        sendJson(403, {
+          success: false,
+          error: 'A empresa Matriz principal (matriz) não pode ser excluída.',
+          code: 403,
+        });
+        return;
+      }
+
+      // Remove documento do tenant no Appwrite
+      await adminDb.deleteDocument(targetDb, collectionName, targetTenantId);
+
+      // Limpar dependências associadas ao tenant (ex: colunas de pipeline)
+      try {
+        const { documents: cols } = await adminDb.listDocuments(targetDb, 'pipeline_columns', [
+          Query.equal('tenant_id', targetTenantId),
+          Query.limit(100),
+        ]);
+        for (const col of cols) {
+          try {
+            await adminDb.deleteDocument(targetDb, 'pipeline_columns', col.$id);
+          } catch {}
+        }
+      } catch {}
+
+      sendJson(200, {
+        success: true,
+        databaseId: targetDb,
+        deletedBy: superAdmin.userId,
+        tenantId: targetTenantId,
+        message: `Servidor/Empresa "${existingDoc.name || targetTenantId}" excluído com sucesso.`,
       });
       return;
     }

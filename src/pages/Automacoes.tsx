@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ExternalLink,
   Settings,
@@ -20,14 +20,15 @@ import {
   Power,
   ShieldCheck
 } from 'lucide-react';
-import { databases } from '../lib/appwrite';
+import { databases, getAuthoritativeAuthHeaders } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from '../context/AuthContext';
+import { useTenant } from '../context/TenantContext';
 
-type IntegrationStatus = 'connected' | 'disconnected' | 'soon';
+export type IntegrationStatus = 'connected' | 'configured_pending' | 'disconnected' | 'soon';
 
-type IntegrationKey =
+export type IntegrationKey =
   | 'google_calendar'
   | 'asaas'
   | 'webhooks'
@@ -53,11 +54,12 @@ type IntegrationDefinition = {
   fields: IntegrationField[];
 };
 
-type IntegrationConfigRow = {
+export type IntegrationConfigRow = {
   id: string;
   integration_key: IntegrationKey;
   config: Record<string, any>;
   status: IntegrationStatus;
+  connected: boolean;
   is_enabled: boolean;
   updated_at?: string;
 };
@@ -67,7 +69,7 @@ const integrationDefinitions: IntegrationDefinition[] = [
     key: 'google_calendar',
     name: 'Google Calendar',
     icon: CalendarDays,
-    description: 'Agenda e eventos sincronizados',
+    description: 'Credenciais OAuth para integração de agenda',
     defaultStatus: 'disconnected',
     configurable: true,
     fields: [
@@ -132,7 +134,7 @@ const integrationDefinitions: IntegrationDefinition[] = [
     key: 'webhooks',
     name: 'Webhooks',
     icon: Webhook,
-    description: 'Conexões externas em tempo real',
+    description: 'Configuração de endpoints HTTPS para eventos',
     defaultStatus: 'disconnected',
     configurable: true,
     fields: [
@@ -185,8 +187,16 @@ const integrationDefinitions: IntegrationDefinition[] = [
   }
 ];
 
+function stripInternalMeta(config: Record<string, any>): Record<string, any> {
+  const copy = { ...config };
+  delete copy.__server_verified;
+  return copy;
+}
+
 export default function Automacoes() {
   const { user } = useAuth();
+  const { tenant } = useTenant();
+  const currentTenantId = tenant?.id || 'tenant_default';
 
   const [n8nUrl, setN8nUrl] = useState('http://localhost:5678');
   const [isConfiguring, setIsConfiguring] = useState(false);
@@ -209,62 +219,146 @@ export default function Automacoes() {
   const [feedbackMessage, setFeedbackMessage] = useState<string>('');
   const [feedbackType, setFeedbackType] = useState<'success' | 'error' | 'info' | ''>('');
 
+  const loadGenRef = useRef(0);
+
   useEffect(() => {
-    loadConfig();
-    loadIntegrationStatuses();
-  }, [user?.id]);
+    loadGenRef.current += 1;
+    const currentGen = loadGenRef.current;
+    setIntegrationMap({});
+    setIsModalOpen(false);
+    setSelectedIntegrationKey(null);
+    loadConfig(currentGen, currentTenantId);
+    loadIntegrationStatuses(currentGen, currentTenantId);
+  }, [user?.id, currentTenantId]);
 
   const selectedIntegration = useMemo(() => {
     if (!selectedIntegrationKey) return null;
     return integrationDefinitions.find((item) => item.key === selectedIntegrationKey) || null;
   }, [selectedIntegrationKey]);
 
-  const loadConfig = async () => {
+  const loadConfig = async (gen = loadGenRef.current, targetTenantId = currentTenantId) => {
     try {
       const { documents } = await databases.listDocuments(
         DATABASE_ID,
         'automation_config',
-        [Query.equal('is_active', true), Query.limit(1)]
+        [Query.equal('tenant_id', targetTenantId), Query.limit(1)]
       );
+      if (gen !== loadGenRef.current) return;
       const data = documents.length > 0 ? documents[0] : null;
-      const error = null;
 
-    if (!error && data) {
-      setN8nUrl(data.n8n_url);
-      setTempUrl(data.n8n_url);
-      setConfigId(data.$id);
+      if (data) {
+        setN8nUrl(data.n8n_url);
+        setTempUrl(data.n8n_url);
+        setConfigId(data.$id);
+      }
+    } catch (err) {
+      console.error(err);
     }
-    } catch(err) { console.error(err); }
   };
 
-  const loadIntegrationStatuses = async () => {
-    if (!user?.id) return;
-
+  const loadIntegrationStatuses = async (gen = loadGenRef.current, targetTenantId = currentTenantId) => {
     try {
       setLoadingIntegrations(true);
+      const map: Record<string, IntegrationConfigRow> = {};
 
-      const { documents: data } = await databases.listDocuments(
-        DATABASE_ID,
-        'integration_configs',
-        [Query.equal('user_id', user.id), Query.limit(100)]
-      );
-      const error = null;
-
-      if (error) {
-        console.error('Erro ao carregar integrações:', error);
-        return;
+      // 1. Carrega status autoritativo do Asaas para o tenant ativo
+      try {
+        const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
+        const asaasRes = await fetch(`/api/asaas/config?tenantId=${encodeURIComponent(targetTenantId)}`, {
+          headers: {
+            ...authHeaders,
+            'x-tenant-id': targetTenantId,
+          },
+        });
+        if (asaasRes.ok) {
+          const asaasData = await asaasRes.json();
+          if (asaasData.success && asaasData.isConfigured) {
+            map['asaas'] = {
+              id: 'asaas_config',
+              integration_key: 'asaas',
+              config: {
+                api_key: asaasData.maskedKey || '',
+                environment: asaasData.environment || 'sandbox',
+                webhook_url: 'https://seudominio.com/api/asaas/webhook'
+              },
+              status: 'connected',
+              connected: true,
+              is_enabled: true,
+              updated_at: new Date().toISOString()
+            };
+          }
+        }
+      } catch (asaasErr) {
+        console.warn('Aviso ao consultar Asaas config:', asaasErr);
       }
 
-      const map: Record<string, IntegrationConfigRow> = {};
-      ((data || []) as any[]).forEach((item: IntegrationConfigRow) => {
-        map[item.integration_key] = item;
-      });
+      // 2. Carrega outras integrações salvas no Appwrite isoladas por tenant
+      try {
+        const { documents: data } = await databases.listDocuments(
+          DATABASE_ID,
+          'integration_configs',
+          [
+            Query.equal('tenant_id', targetTenantId),
+            Query.limit(100)
+          ]
+        );
 
-      setIntegrationMap(map);
+        ((data || []) as any[]).forEach((item: any) => {
+          if (item.tenant_id && item.tenant_id !== targetTenantId) return;
+          const key = (item.provider || item.integration_key) as IntegrationKey;
+          if (!key) return;
+
+          let parsedConfig: Record<string, any> = {};
+          if (typeof item.api_key === 'string' && item.api_key.startsWith('{')) {
+            try { parsedConfig = JSON.parse(item.api_key); } catch {}
+          } else if (item.config && typeof item.config === 'object') {
+            parsedConfig = item.config;
+          } else if (item.api_key) {
+            parsedConfig = { api_key: item.api_key };
+          }
+
+          const cleanConfig = stripInternalMeta(parsedConfig);
+          const hasSavedParams = Object.values(cleanConfig).some(
+            (v) => typeof v === 'string' && v.trim().length > 0
+          );
+
+          // Google Calendar e Webhooks só podem exibir status 'connected' se houver confirmação explícita do servidor
+          const isServerVerified =
+            key === 'asaas'
+              ? Boolean(item.is_active)
+              : Boolean(item.is_active && parsedConfig.__server_verified === true);
+
+          if (!map[key]) {
+            const resolvedStatus: IntegrationStatus = isServerVerified
+              ? 'connected'
+              : hasSavedParams
+              ? 'configured_pending'
+              : 'disconnected';
+
+            map[key] = {
+              id: item.$id,
+              integration_key: key,
+              config: cleanConfig,
+              status: resolvedStatus,
+              connected: isServerVerified,
+              is_enabled: isServerVerified,
+              updated_at: item.$updatedAt || new Date().toISOString()
+            };
+          }
+        });
+      } catch (dbErr) {
+        console.warn('Aviso ao consultar integration_configs:', dbErr);
+      }
+
+      if (gen === loadGenRef.current) {
+        setIntegrationMap(map);
+      }
     } catch (error) {
-      console.error('Erro inesperado ao carregar integrações:', error);
+      console.error('Erro ao carregar integrações:', error);
     } finally {
-      setLoadingIntegrations(false);
+      if (gen === loadGenRef.current) {
+        setLoadingIntegrations(false);
+      }
     }
   };
 
@@ -274,14 +368,23 @@ export default function Automacoes() {
         DATABASE_ID,
         'automation_config',
         configId,
-        { n8n_url: tempUrl, updated_at: new Date().toISOString() }
+        {
+          n8n_url: tempUrl,
+          tenant_id: currentTenantId,
+          updated_at: new Date().toISOString()
+        }
       );
     } else {
       const data = await databases.createDocument(
         DATABASE_ID,
         'automation_config',
         ID.unique(),
-        { n8n_url: tempUrl, user_id: user?.id || null, is_active: true }
+        {
+          n8n_url: tempUrl,
+          user_id: user?.id || null,
+          tenant_id: currentTenantId,
+          is_active: true
+        }
       );
 
       if (data) {
@@ -299,7 +402,8 @@ export default function Automacoes() {
   };
 
   const getStatusLabel = (status: IntegrationStatus) => {
-    if (status === 'connected') return 'Ativo';
+    if (status === 'connected') return 'Conectado';
+    if (status === 'configured_pending') return 'Configuração salva (pendente)';
     if (status === 'soon') return 'Em breve';
     return 'Desconectado';
   };
@@ -307,6 +411,9 @@ export default function Automacoes() {
   const getStatusIcon = (status: IntegrationStatus) => {
     if (status === 'connected') {
       return <CheckCircle2 className="h-5 w-5 text-emerald-400" />;
+    }
+    if (status === 'configured_pending') {
+      return <Clock3 className="h-5 w-5 text-amber-400" />;
     }
     if (status === 'soon') {
       return <Clock3 className="h-5 w-5 text-gray-500" />;
@@ -318,12 +425,18 @@ export default function Automacoes() {
     if (status === 'connected') {
       return 'border-emerald-400/70 bg-[linear-gradient(180deg,rgba(16,24,20,0.96),rgba(10,14,12,0.96))] shadow-[0_0_0_1px_rgba(52,211,153,0.10),0_0_24px_rgba(16,185,129,0.12)] hover:shadow-[0_0_0_1px_rgba(52,211,153,0.16),0_0_30px_rgba(16,185,129,0.18)]';
     }
+    if (status === 'configured_pending') {
+      return 'border-amber-400/50 bg-[linear-gradient(180deg,rgba(24,20,12,0.96),rgba(14,12,10,0.96))] hover:border-amber-400/70';
+    }
     return 'border-white/10 bg-white/[0.03] hover:border-white/20 hover:bg-white/[0.05]';
   };
 
   const getOverlayClass = (status: IntegrationStatus) => {
     if (status === 'connected') {
       return 'bg-[radial-gradient(circle_at_top,rgba(16,185,129,0.14),transparent_50%)]';
+    }
+    if (status === 'configured_pending') {
+      return 'bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.12),transparent_50%)]';
     }
     return 'bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_50%)]';
   };
@@ -332,6 +445,9 @@ export default function Automacoes() {
     if (status === 'connected') {
       return 'bg-emerald-400/15 text-emerald-300';
     }
+    if (status === 'configured_pending') {
+      return 'bg-amber-400/15 text-amber-300';
+    }
     return 'bg-white/5 text-gray-300';
   };
 
@@ -339,12 +455,18 @@ export default function Automacoes() {
     if (status === 'connected') {
       return 'text-emerald-300';
     }
+    if (status === 'configured_pending') {
+      return 'text-amber-200';
+    }
     return 'text-white';
   };
 
   const getBadgeClass = (status: IntegrationStatus) => {
     if (status === 'connected') {
       return 'bg-emerald-400/10 text-emerald-300';
+    }
+    if (status === 'configured_pending') {
+      return 'bg-amber-400/15 text-amber-300';
     }
     if (status === 'soon') {
       return 'bg-white/5 text-gray-400';
@@ -361,9 +483,39 @@ export default function Automacoes() {
     setFeedbackType('');
 
     const saved = integrationMap[integrationKey];
-    setFormData(saved?.config || {});
+    const initialConfig = saved?.config ? { ...saved.config } : {};
+
+    if (integrationKey === 'asaas') {
+      if (!initialConfig.environment) initialConfig.environment = 'sandbox';
+      if (!initialConfig.webhook_url) initialConfig.webhook_url = 'https://seudominio.com/api/asaas/webhook';
+
+      try {
+        const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
+        const res = await fetch(`/api/asaas/config?tenantId=${encodeURIComponent(currentTenantId || '')}`, {
+          headers: {
+            ...authHeaders,
+            'x-tenant-id': currentTenantId || '',
+          },
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.isConfigured) {
+            initialConfig.environment = json.environment || initialConfig.environment;
+            if (!initialConfig.api_key) {
+              initialConfig.api_key = json.maskedKey || '';
+            }
+            setCurrentStatus('connected');
+            setCurrentEnabled(true);
+          }
+        }
+      } catch (err) {
+        console.warn('Aviso ao consultar Asaas config:', err);
+      }
+    }
+
+    setFormData(initialConfig);
     setCurrentConfigId(saved?.id || null);
-    setCurrentEnabled(Boolean(saved?.is_enabled));
+    setCurrentEnabled(Boolean(saved?.connected));
     setCurrentStatus(saved?.status || definition.defaultStatus);
     setIsModalOpen(true);
   };
@@ -386,64 +538,6 @@ export default function Automacoes() {
     }));
   };
 
-  const saveIntegrationConfig = async () => {
-    if (!user?.id || !selectedIntegrationKey) return;
-
-    try {
-      setSavingIntegration(true);
-      setFeedbackMessage('');
-      setFeedbackType('');
-
-      const payload = {
-        user_id: user.id,
-        integration_key: selectedIntegrationKey,
-        config: formData,
-        status: currentStatus === 'soon' ? 'disconnected' : currentStatus,
-        is_enabled: currentEnabled,
-        updated_at: new Date().toISOString()
-      };
-
-            // Appwrite doesn't have upsert, so we query first
-      const { documents } = await databases.listDocuments(DATABASE_ID, 'integration_configs', [
-        Query.equal('user_id', user.id),
-        Query.equal('integration_key', selectedIntegrationKey),
-        Query.limit(1)
-      ]);
-      
-      let data = null;
-      if (documents.length > 0) {
-        data = await databases.updateDocument(DATABASE_ID, 'integration_configs', documents[0].$id, payload);
-      } else {
-        data = await databases.createDocument(DATABASE_ID, 'integration_configs', ID.unique(), payload);
-      }
-      const error = null;
-
-      if (error) {
-        setFeedbackMessage('Erro ao salvar configuração.');
-        setFeedbackType('error');
-        console.error(error);
-        return;
-      }
-
-      if (data) {
-        setCurrentConfigId(data.$id);
-        setIntegrationMap((prev) => ({
-          ...prev,
-          [selectedIntegrationKey]: data as unknown as IntegrationConfigRow
-        }));
-      }
-
-      setFeedbackMessage('Configuração salva com sucesso.');
-      setFeedbackType('success');
-    } catch (error) {
-      console.error(error);
-      setFeedbackMessage('Ocorreu um erro inesperado ao salvar.');
-      setFeedbackType('error');
-    } finally {
-      setSavingIntegration(false);
-    }
-  };
-
   const validateIntegration = (integrationKey: IntegrationKey, config: Record<string, any>): { valid: boolean; error?: string } => {
     if (integrationKey === 'asaas') {
       if (!config.api_key || !config.environment) {
@@ -453,15 +547,23 @@ export default function Automacoes() {
     }
 
     if (integrationKey === 'google_calendar') {
-      if (!config.client_id || !config.client_secret || !config.redirect_uri) {
+      if (!config.client_id?.trim() || !config.client_secret?.trim() || !config.redirect_uri?.trim()) {
         return { valid: false, error: 'Client ID, Client Secret e Redirect URI são obrigatórios.' };
+      }
+      try {
+        const parsedUri = new URL(String(config.redirect_uri).trim());
+        if (parsedUri.protocol !== 'https:' && parsedUri.hostname !== 'localhost') {
+          return { valid: false, error: 'Redirect URI deve utilizar HTTPS.' };
+        }
+      } catch {
+        return { valid: false, error: 'Redirect URI inválida.' };
       }
       return { valid: true };
     }
 
     if (integrationKey === 'webhooks') {
       const rawUrl = String(config.webhook_url || '').trim();
-      if (!rawUrl || !config.secret) {
+      if (!rawUrl || !String(config.secret || '').trim()) {
         return { valid: false, error: 'URL do Webhook e Segredo HMAC são obrigatórios.' };
       }
       try {
@@ -491,8 +593,171 @@ export default function Automacoes() {
     return { valid: false, error: 'Tipo de integração não suportado.' };
   };
 
+  const verifyExternalIntegrationOnServer = async (
+    integrationKey: IntegrationKey,
+    config: Record<string, any>
+  ): Promise<{ verified: boolean; message?: string }> => {
+    try {
+      const res = await fetch(`/api/integrations/${integrationKey}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config, tenantId: currentTenantId })
+      });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        return { verified: false };
+      }
+
+      const data = await res.json();
+      if (data && data.success === true && data.verified === true) {
+        return { verified: true, message: data.message };
+      }
+      return { verified: false, message: data?.message };
+    } catch {
+      return { verified: false };
+    }
+  };
+
+  const saveIntegrationConfig = async () => {
+    if (!selectedIntegrationKey) return;
+
+    try {
+      setSavingIntegration(true);
+      setFeedbackMessage('');
+      setFeedbackType('');
+
+      if (selectedIntegrationKey === 'asaas') {
+        const apiKey = (formData.api_key || '').trim();
+        const environment = formData.environment === 'production' ? 'production' : 'sandbox';
+
+        if (!apiKey) {
+          setFeedbackMessage('A Chave de API do Asaas é obrigatória.');
+          setFeedbackType('error');
+          setSavingIntegration(false);
+          return;
+        }
+
+        const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
+        const res = await fetch('/api/asaas/config', {
+          method: 'POST',
+          headers: {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+            'x-tenant-id': currentTenantId || '',
+          },
+          body: JSON.stringify({ apiKey, environment, tenantId: currentTenantId })
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || data.message || 'Falha ao salvar configuração do Asaas');
+        }
+
+        setCurrentStatus('connected');
+        setCurrentEnabled(true);
+        setIntegrationMap((prev) => ({
+          ...prev,
+          asaas: {
+            id: 'asaas_config',
+            integration_key: 'asaas',
+            config: { ...formData, api_key: apiKey, environment },
+            status: 'connected',
+            connected: true,
+            is_enabled: true,
+            updated_at: new Date().toISOString()
+          }
+        }));
+
+        setFeedbackMessage('Configuração do Asaas vinculada e salva com sucesso!');
+        setFeedbackType('success');
+        return;
+      }
+
+      // Valida campos obrigatórios antes de salvar Google Calendar ou Webhooks
+      const validation = validateIntegration(selectedIntegrationKey, formData);
+      if (!validation.valid) {
+        setCurrentStatus('disconnected');
+        setCurrentEnabled(false);
+        setFeedbackMessage(validation.error || 'Preencha os campos obrigatórios corretamente.');
+        setFeedbackType('error');
+        return;
+      }
+
+      // Verifica se há confirmação real do backend antes de marcar como conectado
+      const serverCheck = await verifyExternalIntegrationOnServer(selectedIntegrationKey, formData);
+      const isVerifiedConnected = serverCheck.verified;
+      const nextStatus: IntegrationStatus = isVerifiedConnected ? 'connected' : 'configured_pending';
+
+      const cleanForm = stripInternalMeta(formData);
+      const serializedConfig = JSON.stringify({
+        ...cleanForm,
+        __server_verified: isVerifiedConnected
+      });
+
+      const payload = {
+        provider: selectedIntegrationKey,
+        api_key: serializedConfig,
+        is_active: isVerifiedConnected,
+        tenant_id: currentTenantId
+      };
+
+      let existingDocId: string | null = null;
+      try {
+        const { documents } = await databases.listDocuments(DATABASE_ID, 'integration_configs', [
+          Query.equal('provider', selectedIntegrationKey),
+          Query.equal('tenant_id', currentTenantId),
+          Query.limit(1)
+        ]);
+        if (documents.length > 0) existingDocId = documents[0].$id;
+      } catch {}
+
+      let data: any = null;
+      if (existingDocId) {
+        data = await databases.updateDocument(DATABASE_ID, 'integration_configs', existingDocId, payload);
+      } else {
+        data = await databases.createDocument(DATABASE_ID, 'integration_configs', ID.unique(), payload);
+      }
+
+      setCurrentStatus(nextStatus);
+      setCurrentEnabled(isVerifiedConnected);
+
+      if (data) {
+        setCurrentConfigId(data.$id || data.id);
+        setIntegrationMap((prev) => ({
+          ...prev,
+          [selectedIntegrationKey]: {
+            id: data.$id || data.id,
+            integration_key: selectedIntegrationKey,
+            config: cleanForm,
+            status: nextStatus,
+            connected: isVerifiedConnected,
+            is_enabled: isVerifiedConnected,
+            updated_at: new Date().toISOString()
+          }
+        }));
+      }
+
+      if (isVerifiedConnected) {
+        setFeedbackMessage('Configuração salva e conexão verificada pelo servidor.');
+        setFeedbackType('success');
+      } else {
+        setFeedbackMessage(
+          'Configuração salva localmente (pendente de verificação e executor no servidor — sincronização externa ainda não está ativa).'
+        );
+        setFeedbackType('info');
+      }
+    } catch (error: any) {
+      console.error(error);
+      setFeedbackMessage(error?.message || 'Ocorreu um erro inesperado ao salvar.');
+      setFeedbackType('error');
+    } finally {
+      setSavingIntegration(false);
+    }
+  };
+
   const testIntegrationConnection = async () => {
-    if (!user?.id || !selectedIntegrationKey) return;
+    if (!selectedIntegrationKey) return;
 
     try {
       setTestingIntegration(true);
@@ -503,54 +768,123 @@ export default function Automacoes() {
 
       if (!check.valid) {
         setCurrentStatus('disconnected');
+        setCurrentEnabled(false);
         setFeedbackMessage(check.error || 'Preencha os campos obrigatórios antes de testar a conexão.');
         setFeedbackType('error');
         return;
       }
 
-      // F11: Distinguir configuração salva/validada de teste com telemetria ativa
-      const newStatus: IntegrationStatus = 'connected';
+      if (selectedIntegrationKey === 'asaas') {
+        const apiKey = (formData.api_key || '').trim();
+        const environment = formData.environment === 'production' ? 'production' : 'sandbox';
 
-      const payload = {
-        user_id: user.id,
-        integration_key: selectedIntegrationKey,
-        config: formData,
-        status: newStatus,
-        is_enabled: true,
-        updated_at: new Date().toISOString()
-      };
+        const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
+        const testRes = await fetch('/api/asaas/test', {
+          method: 'POST',
+          headers: {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+            'x-tenant-id': currentTenantId || '',
+          },
+          body: JSON.stringify({ apiKey, environment, tenantId: currentTenantId })
+        });
+        const testData = await testRes.json();
 
-      // Appwrite doesn't have upsert, so we query first
-      const { documents } = await databases.listDocuments(DATABASE_ID, 'integration_configs', [
-        Query.equal('user_id', user.id),
-        Query.equal('integration_key', selectedIntegrationKey),
-        Query.limit(1)
-      ]);
-      
-      let data = null;
-      if (documents.length > 0) {
-        data = await databases.updateDocument(DATABASE_ID, 'integration_configs', documents[0].$id, payload);
-      } else {
-        data = await databases.createDocument(DATABASE_ID, 'integration_configs', ID.unique(), payload);
+        if (!testRes.ok || !testData.success) {
+          setCurrentStatus('disconnected');
+          setCurrentEnabled(false);
+          setFeedbackMessage(testData.message || 'Falha ao conectar com o Asaas. Verifique a chave de API e o ambiente selecionado.');
+          setFeedbackType('error');
+          return;
+        }
+
+        await fetch('/api/asaas/config', {
+          method: 'POST',
+          headers: {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+            'x-tenant-id': currentTenantId || '',
+          },
+          body: JSON.stringify({ apiKey, environment, tenantId: currentTenantId })
+        });
+
+        setCurrentStatus('connected');
+        setCurrentEnabled(true);
+        setIntegrationMap((prev) => ({
+          ...prev,
+          asaas: {
+            id: 'asaas_config',
+            integration_key: 'asaas',
+            config: { ...formData, api_key: apiKey, environment },
+            status: 'connected',
+            connected: true,
+            is_enabled: true,
+            updated_at: new Date().toISOString()
+          }
+        }));
+
+        const accountName = testData.accountName ? ` (Conta: ${testData.accountName})` : '';
+        const balanceMsg = testData.balance !== undefined ? ` • Saldo em Conta: R$ ${Number(testData.balance).toFixed(2)}` : '';
+        setFeedbackMessage(`Conexão com Asaas validada e salva com sucesso!${accountName}${balanceMsg}`);
+        setFeedbackType('success');
+        return;
+      }
+
+      // Para Google Calendar e Webhooks: exige verificação real no backend antes de marcar como 'connected'
+      const serverCheck = await verifyExternalIntegrationOnServer(selectedIntegrationKey, formData);
+
+      if (!serverCheck.verified) {
+        const nextStatus: IntegrationStatus = currentConfigId ? 'configured_pending' : 'disconnected';
+        setCurrentStatus(nextStatus);
+        setCurrentEnabled(false);
+        setIntegrationMap((prev) => {
+          const existing = prev[selectedIntegrationKey];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [selectedIntegrationKey]: {
+              ...existing,
+              status: 'configured_pending',
+              connected: false,
+              is_enabled: false
+            }
+          };
+        });
+
+        if (selectedIntegrationKey === 'google_calendar') {
+          setFeedbackMessage(
+            'Formato das credenciais validado localmente, porém o fluxo OAuth e a sincronização com o Google Calendar ainda não estão ativos no servidor (conexão não verificada).'
+          );
+        } else {
+          setFeedbackMessage(
+            'Formato da URL HTTPS e segredo validados localmente, porém o disparador de Webhooks no servidor não confirmou conexão ativa (pendente de verificação no servidor).'
+          );
+        }
+        setFeedbackType('info');
+        return;
       }
 
       setCurrentStatus('connected');
       setCurrentEnabled(true);
-
-      if (data) {
-        setCurrentConfigId(data.$id);
-        setIntegrationMap((prev) => ({
-          ...prev,
-          [selectedIntegrationKey]: (data as unknown as IntegrationConfigRow)
-        }));
-      }
-
-      setFeedbackMessage('Configuração validada e salva com sucesso. O envio de eventos ocorrerá nas automações vinculadas.');
+      setIntegrationMap((prev) => ({
+        ...prev,
+        [selectedIntegrationKey]: {
+          id: currentConfigId || `${selectedIntegrationKey}_config`,
+          integration_key: selectedIntegrationKey,
+          config: stripInternalMeta(formData),
+          status: 'connected',
+          connected: true,
+          is_enabled: true,
+          updated_at: new Date().toISOString()
+        }
+      }));
+      setFeedbackMessage(serverCheck.message || 'Conexão verificada com sucesso pelo servidor.');
       setFeedbackType('success');
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
       setCurrentStatus('disconnected');
-      setFeedbackMessage('Erro inesperado ao salvar configuração de integração.');
+      setCurrentEnabled(false);
+      setFeedbackMessage(error?.message || 'Erro inesperado ao testar conexão.');
       setFeedbackType('error');
     } finally {
       setTestingIntegration(false);
@@ -558,52 +892,60 @@ export default function Automacoes() {
   };
 
   const disconnectIntegration = async () => {
-    if (!user?.id || !selectedIntegrationKey) return;
+    if (!selectedIntegrationKey) return;
 
     try {
       setFeedbackMessage('');
       setFeedbackType('');
 
-      const payload = {
-        user_id: user.id,
-        integration_key: selectedIntegrationKey,
-        config: formData,
-        status: 'disconnected' as IntegrationStatus,
-        is_enabled: false,
-        updated_at: new Date().toISOString()
-      };
+      if (selectedIntegrationKey === 'asaas') {
+        const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
+        await fetch('/api/asaas/config', {
+          method: 'POST',
+          headers: {
+            ...authHeaders,
+            'Content-Type': 'application/json',
+            'x-tenant-id': currentTenantId || '',
+          },
+          body: JSON.stringify({ action: 'disconnect', isActive: false, tenantId: currentTenantId })
+        });
 
-            // Appwrite doesn't have upsert, so we query first
-      const { documents } = await databases.listDocuments(DATABASE_ID, 'integration_configs', [
-        Query.equal('user_id', user.id),
-        Query.equal('integration_key', selectedIntegrationKey),
-        Query.limit(1)
-      ]);
-      
-      let data = null;
-      if (documents.length > 0) {
-        data = await databases.updateDocument(DATABASE_ID, 'integration_configs', documents[0].$id, payload);
-      } else {
-        data = await databases.createDocument(DATABASE_ID, 'integration_configs', ID.unique(), payload);
-      }
-      const error = null;
+        setCurrentStatus('disconnected');
+        setCurrentEnabled(false);
+        setFormData((prev) => ({ ...prev, api_key: '' }));
+        setIntegrationMap((prev) => {
+          const next = { ...prev };
+          delete next.asaas;
+          return next;
+        });
 
-      if (error) {
-        console.error(error);
-        setFeedbackMessage('Não foi possível desvincular a integração.');
-        setFeedbackType('error');
+        setFeedbackMessage('Integração com o Asaas desvinculada com sucesso.');
+        setFeedbackType('info');
         return;
       }
 
+      try {
+        const { documents } = await databases.listDocuments(DATABASE_ID, 'integration_configs', [
+          Query.equal('provider', selectedIntegrationKey),
+          Query.equal('tenant_id', currentTenantId),
+          Query.limit(1)
+        ]);
+        if (documents.length > 0) {
+          await databases.updateDocument(DATABASE_ID, 'integration_configs', documents[0].$id, {
+            is_active: false,
+            api_key: JSON.stringify({})
+          });
+        }
+      } catch {}
+
       setCurrentStatus('disconnected');
       setCurrentEnabled(false);
-
-      if (data) {
-        setIntegrationMap((prev) => ({
-          ...prev,
-          [selectedIntegrationKey]: (data as unknown as IntegrationConfigRow)
-        }));
-      }
+      setFormData({});
+      setIntegrationMap((prev) => {
+        const next = { ...prev };
+        delete next[selectedIntegrationKey];
+        return next;
+      });
 
       setFeedbackMessage('Integração desvinculada com sucesso.');
       setFeedbackType('success');
@@ -703,13 +1045,13 @@ export default function Automacoes() {
           <div>
             <h2 className="text-xl font-semibold text-white">Integrações</h2>
             <p className="mt-1 text-sm text-gray-400">
-              Módulos disponíveis e integrações planejadas
+              Módulos disponíveis, configurações salvas e conexões verificadas
             </p>
           </div>
 
           <div className="hidden md:flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-gray-400">
             <PlugZap className="h-3.5 w-3.5" />
-            Ambiente conectado
+            Status verificado por integração
           </div>
         </div>
 
@@ -827,15 +1169,16 @@ export default function Automacoes() {
           </div>
         </div>
       )}
-      
+
       <div className="rounded-3xl border border-emerald-400/10 bg-emerald-400/5 p-5">
         <h4 className="mb-2 text-sm font-semibold text-emerald-300">
           Sobre o módulo de automações
         </h4>
         <p className="text-sm leading-relaxed text-gray-300">
-          Este espaço centraliza suas integrações e fluxos automatizados. Você pode usar o
-          n8n para conectar CRM, WhatsApp, financeiro, APIs, envio de mensagens, eventos,
-          documentos e processos internos do seu sistema.
+          Este espaço centraliza suas integrações e fluxos automatizados. O status "Conectado"
+          é atribuído apenas às integrações cuja comunicação foi efetivamente verificada pelo
+          servidor. Parâmetros salvos sem executor ativo permanecem identificados como
+          "Configuração salva (pendente)".
         </p>
       </div>
 
@@ -853,7 +1196,7 @@ export default function Automacoes() {
                     Vincular {selectedIntegration.name}
                   </h3>
                   <p className="mt-1 text-sm text-gray-400">
-                    Preencha os dados da plataforma para salvar e testar a conexão.
+                    Preencha os dados da plataforma para salvar a configuração e verificar a disponibilidade no servidor.
                   </p>
                 </div>
               </div>
@@ -899,10 +1242,10 @@ export default function Automacoes() {
                 <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                   <div className="mb-2 flex items-center gap-2 text-sm text-gray-400">
                     <Power className="h-4 w-4" />
-                    Integração
+                    Sincronização Ativa
                   </div>
                   <div className="text-sm text-white">
-                    {currentEnabled ? 'Habilitada' : 'Desabilitada'}
+                    {currentStatus === 'connected' && currentEnabled ? 'Conectada e verificada' : 'Inativa (pendente de servidor)'}
                   </div>
                 </div>
 
@@ -922,7 +1265,7 @@ export default function Automacoes() {
                       ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300'
                       : feedbackType === 'error'
                       ? 'border-red-400/20 bg-red-500/10 text-red-300'
-                      : 'border-white/10 bg-white/5 text-gray-300'
+                      : 'border-amber-400/20 bg-amber-400/10 text-amber-200'
                   }`}
                 >
                   {feedbackMessage}
@@ -932,7 +1275,7 @@ export default function Automacoes() {
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 px-6 py-5">
               <div className="text-xs text-gray-500">
-                O card ficará verde somente quando a conexão for validada com sucesso.
+                O status "Conectado" exige verificação real pelo backend da integração.
               </div>
 
               <div className="flex flex-wrap gap-3">

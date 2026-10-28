@@ -264,7 +264,7 @@ export function ServerForm({ server, onClose }: { server?: Server; onClose: () =
 }
 
 export function ServersPage() {
-  const { data, patch, remove, notify } = useApp();
+  const { data, remove, notify, refresh: refreshData } = useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const [query, setQuery] = useState('');
@@ -292,11 +292,12 @@ export function ServersPage() {
   const refresh = async () => {
     setRefreshing(true);
     try {
-      for (const s of data.servers)
-        await patch('servers', s.id, { lastCheck: new Date().toISOString() });
-      notify('Status dos servidores sincronizado no Appwrite.');
+      await refreshData();
+      notify(
+        'Dados sincronizados do banco. Verificação ativa indisponível (sem agente de monitoramento ativo).',
+      );
     } catch {
-      notify('Não foi possível atualizar os status.', 'error');
+      notify('Não foi possível atualizar os dados.', 'error');
     } finally {
       setRefreshing(false);
     }
@@ -475,8 +476,12 @@ export function ServersPage() {
             {
               key: 'last',
               label: 'Última consulta',
-              sortValue: (s) => s.lastCheck,
-              render: (s) => <span className="small muted">{dateTime(s.lastCheck)}</span>,
+              sortValue: (s) => s.lastCheck || '',
+              render: (s) => (
+                <span className="small muted">
+                  {s.lastCheck ? dateTime(s.lastCheck) : 'Não verificado (sem agente ativo)'}
+                </span>
+              ),
             },
             {
               key: 'actions',
@@ -515,6 +520,9 @@ export function ServersPage() {
         open={!!deleteServer}
         title="Excluir servidor?"
         description={`O servidor "${deleteServer?.name || ''}" será removido definitivamente.`}
+        confirmTextMatch={deleteServer?.name}
+        confirmInputPlaceholder={`Digite ${deleteServer?.name || ''}...`}
+        confirmButtonLabel="Excluir Servidor"
         danger
         onConfirm={async () => {
           if (!deleteServer) return;

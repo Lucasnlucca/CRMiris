@@ -1,324 +1,355 @@
 /**
- * Serviço de Tokens de Acesso Público e Proteção de Endpoints Externos
- *
- * Garante segurança robusta para fluxos de visualização de propostas e assinatura de contratos:
- * 1. Tokens de alta entropia (256-bit crypto.randomBytes).
- * 2. Validação estrita de escopo (separação mandatória entre contrato e proposta).
- * 3. Expiração temporal e suporte a revogação instantânea.
- * 4. Proteção contra enumeração de IDs e força bruta (Rate limiting por IP/targetId).
- * 5. Comparação em tempo constante (crypto.timingSafeEqual) contra timing attacks.
- * 6. Sanitização de payload: nunca expõe dados internos do CRM (margens, tenant_id, notas internas).
- * 7. Suporte a links legados com desafio de dígitos e geração de token temporário de sessão.
+ * ============================================================================
+ * C1 — PUBLIC ACCESS TOKEN SERVICE (TS)
+ * ============================================================================
+ * Replaces direct anonymous Appwrite reading with controlled, single-record,
+ * time-bound, revocable, and scope-locked public access tokens.
+ * Persists token hashes to disk (`server/.data/public_tokens.json`) so tokens
+ * survive server restarts while keeping in-memory Map synchronized.
+ * ============================================================================
  */
 
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-export type PublicTargetType = 'contract' | 'proposal';
-export type PublicTokenScope = 'sign_contract' | 'view_proposal';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-export interface PublicAccessTokenRecord {
-  token: string;
-  targetType: PublicTargetType;
-  targetId: string;
-  tenantId: string;
-  scope: PublicTokenScope;
-  createdAt: string;
-  expiresAt: string;
-  revoked: boolean;
-  revokedAt?: string;
-  allowedSignerDocDigits?: string; // primeiros/últimos dígitos esperados
-  failedAttempts: number;
-  maxAttempts: number;
+const DATA_DIR = path.resolve(__dirname, '.data');
+const TOKEN_STORE_FILE = path.join(DATA_DIR, 'public_tokens.json');
+
+export type PublicTokenTargetType = 'contract' | 'proposal' | 'portal_invite' | 'user_recovery';
+export type PublicTokenScope = 'sign_contract' | 'view_proposal' | 'portal_invite' | 'reset_password';
+
+export interface PublicTokenRecord {
+    token?: string;
+    tokenHash: string;
+    targetType: PublicTokenTargetType;
+    targetId: string;
+    tenantId: string;
+    scope: PublicTokenScope;
+    expiresAt: string;
+    revoked: boolean;
+    createdAt: string;
+    usedAt: string | null;
+    metadata?: Record<string, any>;
+    consumptionMeta?: Record<string, any>;
 }
 
-export interface ValidateTokenOptions {
-  token: string;
-  targetType: PublicTargetType;
-  targetId: string;
-  expectedScope: PublicTokenScope;
-  clientIp?: string;
+const tokenStore = new Map<string, PublicTokenRecord>();
+const tokenHashStore = new Map<string, PublicTokenRecord>();
+
+export function hashTokenValue(rawToken: string): string {
+    return crypto.createHash('sha256').update(String(rawToken || '')).digest('hex');
 }
 
-export interface ValidateTokenResult {
-  valid: boolean;
-  errorCode?: 'TOKEN_NOT_FOUND' | 'TARGET_MISMATCH' | 'SCOPE_MISMATCH' | 'TOKEN_EXPIRED' | 'TOKEN_REVOKED' | 'RATE_LIMITED' | 'IP_BLOCKED';
-  errorMessage?: string;
-  tokenRecord?: PublicAccessTokenRecord;
+function ensureDataDir(): void {
+    try {
+        if (!fs.existsSync(DATA_DIR)) {
+            fs.mkdirSync(DATA_DIR, { recursive: true });
+        }
+    } catch {
+        // Ignore directory creation errors
+    }
 }
 
-export interface LegacyAccessOptions {
-  targetType: PublicTargetType;
-  targetId: string;
-  inputDigits: string;
-  expectedDigits: string;
-  tenantId: string;
-  clientIp: string;
+function loadTokensFromDisk(): void {
+    try {
+        if (!fs.existsSync(TOKEN_STORE_FILE)) return;
+        const raw = fs.readFileSync(TOKEN_STORE_FILE, 'utf8');
+        if (!raw || !raw.trim()) return;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.records)) return;
+        for (const rec of parsed.records as PublicTokenRecord[]) {
+            if (rec && rec.tokenHash) {
+                const existing = tokenHashStore.get(rec.tokenHash);
+                if (!existing || (rec.revoked && !existing.revoked) || (rec.usedAt && !existing.usedAt)) {
+                    tokenHashStore.set(rec.tokenHash, { ...rec });
+                    if (existing && existing.token) {
+                        tokenStore.set(existing.token, { ...rec, token: existing.token });
+                    }
+                }
+            }
+        }
+    } catch {
+        // Ignore read error
+    }
 }
 
-export interface LegacyAccessResult {
-  success: boolean;
-  temporaryToken?: string;
-  errorCode?: 'INVALID_DIGITS' | 'RATE_LIMITED' | 'TARGET_NOT_FOUND';
-  errorMessage?: string;
+function saveTokensToDisk(): void {
+    try {
+        ensureDataDir();
+        const records: PublicTokenRecord[] = [];
+        for (const [tokenHash, rec] of tokenHashStore.entries()) {
+            const copy: PublicTokenRecord = { ...rec, tokenHash };
+            delete copy.token;
+            records.push(copy);
+        }
+        const tempFile = `${TOKEN_STORE_FILE}.tmp.${process.pid}`;
+        fs.writeFileSync(tempFile, JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), records }, null, 2), 'utf8');
+        fs.renameSync(tempFile, TOKEN_STORE_FILE);
+    } catch {
+        // Ignore write error
+    }
 }
 
-// Armazenamento em memória para demonstração e testes (no backend real, persiste em Appwrite ou Redis)
-const tokenStore = new Map<string, PublicAccessTokenRecord>();
-const ipAttemptStore = new Map<string, { attempts: number; lastAttempt: number; blockedUntil?: number }>();
+loadTokensFromDisk();
 
-const MAX_IP_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutos
+const VALID_TARGET_TYPES = new Set<string>(['contract', 'proposal', 'portal_invite', 'user_recovery']);
+const VALID_SCOPES = new Set<string>(['sign_contract', 'view_proposal', 'portal_invite', 'reset_password']);
 
-/**
- * Gera um token de acesso público de 256 bits com escopo estrito
- */
-export function generatePublicAccessToken(params: {
-  targetType: PublicTargetType;
-  targetId: string;
-  tenantId: string;
-  scope: PublicTokenScope;
-  expiresInDays?: number;
-  allowedSignerDocDigits?: string;
-}): PublicAccessTokenRecord {
-  // Garantir conformidade de escopo
-  if (params.targetType === 'contract' && params.scope !== 'sign_contract') {
-    throw new Error('Incompatibilidade de escopo: Contratos exigem escopo sign_contract.');
-  }
-  if (params.targetType === 'proposal' && params.scope !== 'view_proposal') {
-    throw new Error('Incompatibilidade de escopo: Propostas exigem escopo view_proposal.');
-  }
-
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  const now = new Date();
-  const days = params.expiresInDays || 14;
-  const expiresAt = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-
-  const record: PublicAccessTokenRecord = {
-    token: rawToken,
-    targetType: params.targetType,
-    targetId: params.targetId,
-    tenantId: params.tenantId,
-    scope: params.scope,
-    createdAt: now.toISOString(),
-    expiresAt: expiresAt.toISOString(),
-    revoked: false,
-    allowedSignerDocDigits: params.allowedSignerDocDigits,
-    failedAttempts: 0,
-    maxAttempts: 10,
-  };
-
-  tokenStore.set(rawToken, record);
-  return record;
+export interface GeneratePublicTokenParams {
+    targetType: PublicTokenTargetType;
+    targetId: string;
+    tenantId: string;
+    scope: PublicTokenScope;
+    expiresInDays?: number;
+    ttlMs?: number;
+    metadata?: Record<string, any>;
 }
 
-/**
- * Revoga um token imediatamente
- */
+export function generatePublicAccessToken(params: GeneratePublicTokenParams): {
+    token: string;
+    tokenHash: string;
+    expiresAt: string;
+    record: PublicTokenRecord;
+} {
+    const {
+        targetType,
+        targetId,
+        tenantId,
+        scope,
+        expiresInDays = 7,
+        ttlMs,
+        metadata = {}
+    } = params || ({} as GeneratePublicTokenParams);
+
+    if (!targetType || !targetId || !tenantId || !scope) {
+        throw new Error('Missing mandatory parameters to generate public access token.');
+    }
+
+    if (!VALID_TARGET_TYPES.has(targetType)) {
+        throw new Error('Invalid targetType for public token.');
+    }
+
+    if (!VALID_SCOPES.has(scope)) {
+        throw new Error('Invalid scope for public token.');
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashTokenValue(token);
+
+    const now = Date.now();
+    const durationMs = typeof ttlMs === 'number' && ttlMs > 0
+        ? ttlMs
+        : (Number(expiresInDays) || 7) * 24 * 60 * 60 * 1000;
+    const expiresAt = new Date(now + durationMs).toISOString();
+
+    const record: PublicTokenRecord = {
+        token,
+        tokenHash,
+        targetType,
+        targetId: String(targetId),
+        tenantId: String(tenantId),
+        scope,
+        expiresAt,
+        revoked: false,
+        createdAt: new Date(now).toISOString(),
+        usedAt: null,
+        metadata: metadata && typeof metadata === 'object' ? { ...metadata } : {}
+    };
+
+    tokenStore.set(token, record);
+    tokenHashStore.set(tokenHash, { ...record });
+    saveTokensToDisk();
+
+    return { token, tokenHash, expiresAt, record };
+}
+
+export function issuePublicToken(params: GeneratePublicTokenParams) {
+    return generatePublicAccessToken(params);
+}
+
+function findTokenRecord(rawToken: string | undefined | null): PublicTokenRecord | null {
+    if (!rawToken || typeof rawToken !== 'string') return null;
+    loadTokensFromDisk();
+
+    const direct = tokenStore.get(rawToken);
+    const tokenHash = hashTokenValue(rawToken);
+    const byHash = tokenHashStore.get(tokenHash);
+
+    if (direct && byHash) {
+        if (byHash.revoked && !direct.revoked) {
+            direct.revoked = true;
+            direct.usedAt = byHash.usedAt || direct.usedAt;
+        }
+        return direct;
+    }
+    if (direct) return direct;
+    if (byHash) {
+        const hydrated: PublicTokenRecord = { ...byHash, token: rawToken };
+        tokenStore.set(rawToken, hydrated);
+        return hydrated;
+    }
+    return null;
+}
+
+export interface ValidatePublicTokenParams {
+    token: string;
+    expectedScope?: PublicTokenScope;
+    expectedTargetId?: string;
+    expectedTenantId?: string;
+    allowConsumedForSameTarget?: boolean;
+}
+
+export function validatePublicAccessToken(params: ValidatePublicTokenParams): {
+    valid: boolean;
+    status: number;
+    code?: string;
+    error?: string;
+    record?: PublicTokenRecord;
+} {
+    const {
+        token,
+        expectedScope,
+        expectedTargetId,
+        expectedTenantId,
+        allowConsumedForSameTarget = false
+    } = params || ({} as ValidatePublicTokenParams);
+
+    if (!token || typeof token !== 'string' || token.length < 32) {
+        return { valid: false, status: 401, code: 'TOKEN_INVALID', error: 'Token de acesso público ausente ou malformado.' };
+    }
+
+    const record = findTokenRecord(token);
+    if (!record) {
+        return { valid: false, status: 404, code: 'TOKEN_NOT_FOUND', error: 'Link público inválido ou não encontrado.' };
+    }
+
+    if (record.revoked) {
+        const canStillRead = Boolean(
+            allowConsumedForSameTarget &&
+            record.usedAt &&
+            (!expectedTargetId || record.targetId === String(expectedTargetId))
+        );
+        if (!canStillRead) {
+            return { valid: false, status: 410, code: 'TOKEN_REVOKED', error: 'Este link público foi revogado ou já foi utilizado.' };
+        }
+    }
+
+    const now = new Date();
+    const expires = new Date(record.expiresAt);
+    if (now > expires) {
+        return { valid: false, status: 410, code: 'TOKEN_EXPIRED', error: 'Este link público expirou.' };
+    }
+
+    if (expectedScope && record.scope !== expectedScope) {
+        return { valid: false, status: 403, code: 'TOKEN_SCOPE_MISMATCH', error: 'Escopo de permissão inválido para este link.' };
+    }
+
+    if (expectedTargetId && record.targetId !== String(expectedTargetId)) {
+        return { valid: false, status: 403, code: 'TOKEN_TARGET_MISMATCH', error: 'Token não pertence ao documento solicitado.' };
+    }
+
+    if (expectedTenantId && record.tenantId !== String(expectedTenantId)) {
+        return { valid: false, status: 403, code: 'TOKEN_TENANT_MISMATCH', error: 'Token não pertence à organização informada.' };
+    }
+
+    return { valid: true, status: 200, record };
+}
+
+export function consumePublicToken(
+    token: string,
+    consumptionMeta: Record<string, any> = {}
+): { consumed: boolean; reason?: string; record?: PublicTokenRecord } {
+    const record = findTokenRecord(token);
+    if (!record) return { consumed: false, reason: 'NOT_FOUND' };
+    if (record.revoked || record.usedAt) {
+        return { consumed: false, reason: 'ALREADY_CONSUMED', record };
+    }
+    const nowIso = new Date().toISOString();
+    record.revoked = true;
+    record.usedAt = nowIso;
+    if (consumptionMeta && typeof consumptionMeta === 'object') {
+        record.consumptionMeta = { ...consumptionMeta };
+    }
+    const tokenHash = record.tokenHash || hashTokenValue(token);
+    tokenStore.set(token, record);
+    tokenHashStore.set(tokenHash, { ...record, tokenHash });
+    saveTokensToDisk();
+    return { consumed: true, record };
+}
+
 export function revokePublicAccessToken(token: string): boolean {
-  const record = tokenStore.get(token);
-  if (!record) return false;
-  record.revoked = true;
-  record.revokedAt = new Date().toISOString();
-  return true;
+    const record = findTokenRecord(token);
+    if (!record) return false;
+    record.revoked = true;
+    record.usedAt = record.usedAt || new Date().toISOString();
+    const tokenHash = record.tokenHash || hashTokenValue(token);
+    tokenStore.set(token, record);
+    tokenHashStore.set(tokenHash, { ...record, tokenHash });
+    saveTokensToDisk();
+    return true;
 }
 
-/**
- * Validação segura de token contra ataques de timing, escopo, expiração e enumeração
- */
-export function validatePublicAccessToken(opts: ValidateTokenOptions): ValidateTokenResult {
-  const clientIpKey = opts.clientIp || 'default_ip';
-  const ipRate = ipAttemptStore.get(clientIpKey);
-  const now = Date.now();
+export function sanitizePublicDocument(rawDoc: any, targetType: 'contract' | 'proposal'): Record<string, any> | null {
+    if (!rawDoc) return null;
 
-  // 1. Checar bloqueio por IP (Anti-Força Bruta / Anti-Enumeração)
-  if (ipRate?.blockedUntil && now < ipRate.blockedUntil) {
-    return {
-      valid: false,
-      errorCode: 'IP_BLOCKED',
-      errorMessage: 'Muitas tentativas incorretas. Acesso bloqueado temporariamente.',
-    };
-  }
+    if (targetType === 'contract') {
+        return {
+            id: rawDoc.$id || rawDoc.id,
+            contract_number: rawDoc.contract_number || '',
+            title: rawDoc.title || 'Contrato de Prestação de Serviços',
+            client_name: rawDoc.client_name || '',
+            client_document: rawDoc.client_document || '',
+            client_email: rawDoc.client_email || '',
+            client_phone: rawDoc.client_phone || '',
+            provider_name: rawDoc.provider_name || '',
+            provider_document: rawDoc.provider_document || '',
+            content: rawDoc.content || '',
+            status: rawDoc.status || 'pending',
+            value: rawDoc.value || rawDoc.total_value || 0,
+            total_value: rawDoc.total_value || rawDoc.value || 0,
+            setup_fee: rawDoc.setup_fee || 0,
+            billing_cycle: rawDoc.billing_cycle || 'Mensal',
+            duration_months: rawDoc.duration_months || 12,
+            start_date: rawDoc.start_date || '',
+            end_date: rawDoc.end_date || '',
+            items_json: rawDoc.items_json || '[]',
+            created_at: rawDoc.$createdAt || rawDoc.created_at,
+            signed_at: rawDoc.signed_at || null,
+            signed_by_name: rawDoc.signed_by_name || null,
+            signed_by_document: rawDoc.signed_by_document || null,
+            signed_by_email: rawDoc.signed_by_email || null,
+            signed_by_role: rawDoc.signed_by_role || null,
+            signed_by_phone: rawDoc.signed_by_phone || null,
+            signed_by_ip: rawDoc.signed_by_ip || rawDoc.signed_ip || null,
+            signature_hash: rawDoc.signature_hash || null,
+            document_hash: rawDoc.document_hash || null,
+            content_hash: rawDoc.content_hash || rawDoc.document_hash || null,
+            certificate_hash: rawDoc.certificate_hash || rawDoc.signature_hash || null,
+            legal_audit_trail: rawDoc.legal_audit_trail || null
+        };
+    }
 
-  const record = tokenStore.get(opts.token);
+    if (targetType === 'proposal') {
+        return {
+            id: rawDoc.$id || rawDoc.id,
+            proposal_number: rawDoc.proposal_number || '',
+            client_name: rawDoc.client_name || '',
+            company_name: rawDoc.company_name || '',
+            valid_until: rawDoc.valid_until || null,
+            status: rawDoc.status || 'Sent',
+            items: rawDoc.items || [],
+            total_setup: rawDoc.total_setup || 0,
+            total_monthly: rawDoc.total_monthly || 0,
+            public_notes: rawDoc.public_notes || ''
+        };
+    }
 
-  if (!record) {
-    registerFailedAttempt(clientIpKey);
-    return {
-      valid: false,
-      errorCode: 'TOKEN_NOT_FOUND',
-      errorMessage: 'Token de acesso não encontrado ou inválido.',
-    };
-  }
-
-  // 2. Checar integridade em tempo constante para o token
-  const bufA = Buffer.from(record.token, 'utf8');
-  const bufB = Buffer.from(opts.token, 'utf8');
-  if (bufA.length !== bufB.length || !crypto.timingSafeEqual(bufA, bufB)) {
-    registerFailedAttempt(clientIpKey);
-    return {
-      valid: false,
-      errorCode: 'TOKEN_NOT_FOUND',
-      errorMessage: 'Token inválido.',
-    };
-  }
-
-  // 3. Checar Revogação
-  if (record.revoked) {
-    return {
-      valid: false,
-      errorCode: 'TOKEN_REVOKED',
-      errorMessage: 'Este link de acesso foi revogado pelo emissor.',
-    };
-  }
-
-  // 4. Checar Expiração
-  if (new Date(record.expiresAt).getTime() < now) {
-    return {
-      valid: false,
-      errorCode: 'TOKEN_EXPIRED',
-      errorMessage: 'Este link de acesso expirou. Solicite um novo link.',
-    };
-  }
-
-  // 5. Checar Escopo Estrito (Não permite que token de proposta abra contrato ou vice-versa)
-  if (record.scope !== opts.expectedScope) {
-    registerFailedAttempt(clientIpKey);
-    return {
-      valid: false,
-      errorCode: 'SCOPE_MISMATCH',
-      errorMessage: 'Escopo de autorização incompatível com a operação solicitada.',
-    };
-  }
-
-  // 6. Checar Alvo (ID e Tipo)
-  if (record.targetType !== opts.targetType || record.targetId !== opts.targetId) {
-    registerFailedAttempt(clientIpKey);
-    return {
-      valid: false,
-      errorCode: 'TARGET_MISMATCH',
-      errorMessage: 'Token não corresponde ao documento solicitado.',
-    };
-  }
-
-  // Sucesso: limpar contadores de falha do IP
-  ipAttemptStore.delete(clientIpKey);
-  return {
-    valid: true,
-    tokenRecord: record,
-  };
+    return null;
 }
 
-/**
- * Validação de acesso legado para links antigos sem token pré-gerado
- */
-export function validateLegacyAccess(opts: LegacyAccessOptions): LegacyAccessResult {
-  const ipKey = `${opts.clientIp}_legacy_${opts.targetId}`;
-  const now = Date.now();
-  const rate = ipAttemptStore.get(ipKey);
-
-  if (rate?.blockedUntil && now < rate.blockedUntil) {
-    return {
-      success: false,
-      errorCode: 'RATE_LIMITED',
-      errorMessage: 'Muitas tentativas com dígitos incorretos. Tente novamente em 15 minutos.',
-    };
-  }
-
-  // Sanitizar dígitos informados e esperados (apenas números)
-  const cleanInput = opts.inputDigits.replace(/\D/g, '');
-  const cleanExpected = opts.expectedDigits.replace(/\D/g, '');
-
-  if (!cleanInput || !cleanExpected || cleanInput !== cleanExpected) {
-    registerFailedAttempt(ipKey);
-    return {
-      success: false,
-      errorCode: 'INVALID_DIGITS',
-      errorMessage: 'Dígitos de confirmação incorretos.',
-    };
-  }
-
-  // Sucesso na verificação de dígitos legados: emite token temporário de sessão de 30 minutos
-  ipAttemptStore.delete(ipKey);
-  const scope: PublicTokenScope = opts.targetType === 'contract' ? 'sign_contract' : 'view_proposal';
-  const tempToken = generatePublicAccessToken({
-    targetType: opts.targetType,
-    targetId: opts.targetId,
-    tenantId: opts.tenantId,
-    scope,
-    expiresInDays: 0.021, // ~30 minutos
-  });
-
-  return {
-    success: true,
-    temporaryToken: tempToken.token,
-  };
-}
-
-function registerFailedAttempt(key: string) {
-  const now = Date.now();
-  const record = ipAttemptStore.get(key) || { attempts: 0, lastAttempt: now };
-  record.attempts++;
-  record.lastAttempt = now;
-
-  if (record.attempts >= MAX_IP_ATTEMPTS) {
-    record.blockedUntil = now + LOCKOUT_DURATION_MS;
-  }
-  ipAttemptStore.set(key, record);
-}
-
-/**
- * Sanitiza dados de documentos contratuais ou propostas para exibição pública
- * Remove absolutamente qualquer informação interna do CRM antes do retorno.
- */
-export function sanitizePublicDocument(rawDoc: Record<string, any>, targetType: PublicTargetType) {
-  if (targetType === 'contract') {
-    return {
-      id: rawDoc.$id || rawDoc.id,
-      title: rawDoc.title,
-      status: rawDoc.status,
-      content: rawDoc.content,
-      clauses_json: rawDoc.clauses_json,
-      monthly_cost: rawDoc.monthly_cost,
-      setup_cost: rawDoc.setup_cost,
-      total_amount: rawDoc.total_amount,
-      client_name: rawDoc.client_name,
-      signature_status: rawDoc.signature_status,
-      signed_at: rawDoc.signed_at,
-      document_hash: rawDoc.document_hash,
-      signature_hash: rawDoc.signature_hash,
-      created_at: rawDoc.$createdAt || rawDoc.created_at,
-      // Metadados sensíveis estritamente OMITIDOS:
-      // tenant_id: OMITIDO
-      // internal_notes: OMITIDO
-      // created_by_user_id: OMITIDO
-      // profit_margin: OMITIDO
-    };
-  }
-
-  if (targetType === 'proposal') {
-    return {
-      id: rawDoc.$id || rawDoc.id,
-      title: rawDoc.title,
-      status: rawDoc.status,
-      content: rawDoc.content,
-      notes: rawDoc.notes,
-      total_amount: rawDoc.total_amount,
-      client_name: rawDoc.client_name,
-      valid_until: rawDoc.valid_until,
-      created_at: rawDoc.$createdAt || rawDoc.created_at,
-      // Metadados sensíveis estritamente OMITIDOS
-    };
-  }
-
-  return {};
-}
-
-// Exportações para suítes de teste
-export const _testStore = {
-  tokenStore,
-  ipAttemptStore,
-  resetStore() {
-    tokenStore.clear();
-    ipAttemptStore.clear();
-  }
-};
+export const _tokenStore = tokenStore;

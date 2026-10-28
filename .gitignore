@@ -42,4 +42,6 @@ add_*.js
 .backups/
 scripts/
 fase*.md
+server/.data/
+*.tsbuildinfo
 

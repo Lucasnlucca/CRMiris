@@ -12,12 +12,16 @@ import {
   ShieldCheck,
   PanelLeftClose,
   PanelLeft,
+  User,
+  KeyRound,
+  Laptop,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import NotificationBell from './NotificationBell';
 import TenantSelector from './TenantSelector';
+import UserProfileModal from './UserProfileModal';
 
 interface HeaderProps {
   isSidebarCollapsed?: boolean;
@@ -50,6 +54,8 @@ function Header({
   const { user, logout } = useAuth();
   const { isDarkMode, toggleTheme } = useTheme();
   const [showDropdown, setShowDropdown] = useState(false);
+  const [userProfileModalOpen, setUserProfileModalOpen] = useState(false);
+  const [userProfileTab, setUserProfileTab] = useState<'profile' | 'security' | 'session'>('profile');
   const isCollapsed = sidebarCollapsed ?? isSidebarCollapsed ?? false;
 
   const currentMeta = PAGE_METADATA[currentPage] || {
@@ -183,6 +189,44 @@ function Header({
                 <div className="p-1.5 space-y-0.5">
                   <button
                     onClick={() => {
+                      setUserProfileTab('profile');
+                      setUserProfileModalOpen(true);
+                      setShowDropdown(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    <User className="w-4 h-4 text-indigo-500" />
+                    <span>Meu Perfil</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setUserProfileTab('security');
+                      setUserProfileModalOpen(true);
+                      setShowDropdown(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    <KeyRound className="w-4 h-4 text-amber-500" />
+                    <span>Trocar Senha</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setUserProfileTab('session');
+                      setUserProfileModalOpen(true);
+                      setShowDropdown(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] transition-colors"
+                  >
+                    <Laptop className="w-4 h-4 text-emerald-500" />
+                    <span>Sessão & Dispositivo</span>
+                  </button>
+
+                  <div className="h-px bg-slate-100 dark:bg-white/[0.06] my-1" />
+
+                  <button
+                    onClick={() => {
                       onPageChange?.('administracao');
                       setShowDropdown(false);
                     }}
@@ -208,6 +252,12 @@ function Header({
           )}
         </div>
       </div>
+
+      <UserProfileModal
+        open={userProfileModalOpen}
+        defaultTab={userProfileTab}
+        onClose={() => setUserProfileModalOpen(false)}
+      />
     </header>
   );
 }

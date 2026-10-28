@@ -522,3 +522,455 @@
     gap: 10px;
   }
 }
+
+/* ─── Navegação de Categorias de Documentos ─── */
+.ops-category-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 16px;
+}
+.ops-category-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.ops-category-tab:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+.ops-category-tab.active {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: white;
+  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.22);
+}
+.ops-category-tab .badge-count {
+  font-size: 10px;
+  padding: 1.5px 7px;
+  border-radius: 9999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 700;
+}
+.ops-category-tab.active .badge-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: white;
+}
+
+/* ─── Modo Dividido: Lista + Prévia do Documento ─── */
+.ops-docs-split {
+  display: grid;
+  grid-template-columns: 370px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .ops-docs-split {
+    grid-template-columns: 1fr;
+  }
+}
+.ops-docs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 780px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.ops-doc-card {
+  padding: 13px 15px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  width: 100%;
+}
+.ops-doc-card:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+.ops-doc-card.active {
+  border-color: #4f46e5;
+  background: #f5f3ff;
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.15);
+}
+
+/* ─── Folha de Prévia do Documento Oficial no Sistema (A4) ─── */
+.ops-doc-sheet {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.06);
+  padding: 28px 32px;
+  color: #1e293b;
+  position: relative;
+  font-family: inherit;
+  line-height: 1.6;
+}
+.ops-doc-sheet-watermark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-30deg);
+  font-size: 54px;
+  font-weight: 900;
+  color: rgba(79, 70, 229, 0.035);
+  pointer-events: none;
+  white-space: nowrap;
+  user-select: none;
+}
+.ops-doc-stamp {
+  border: 1.5px dashed #10b981;
+  background: #ecfdf5;
+  color: #065f46;
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .ops-doc-sheet,
+  .ops-doc-sheet * {
+    visibility: visible;
+  }
+  .ops-doc-sheet {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* ─── Controles Financeiros: Filtros de Mês, Clientes e Status ─── */
+.ops-client-active-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+:root.dark .ops-client-active-banner {
+  background: #1e293b;
+  border-color: #334155;
+}
+.ops-client-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #3b82f6;
+  color: white;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.ops-client-name {
+  font-size: 14px;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+:root.dark .ops-client-name {
+  color: #f8fafc;
+}
+.ops-client-status-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: #dcfce7;
+  color: #166534;
+}
+.ops-client-details {
+  font-size: 12px;
+  color: #64748b;
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.ops-client-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Barra de Período e Atalhos */
+.ops-date-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 0 6px;
+  border-top: 1px solid #f1f5f9;
+  margin-top: 8px;
+}
+:root.dark .ops-date-toolbar {
+  border-top-color: #1e293b;
+}
+.ops-period-shortcuts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ops-period-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+:root.dark .ops-period-btn {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+.ops-period-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+:root.dark .ops-period-btn:hover {
+  background: #243046;
+  color: #f8fafc;
+}
+.ops-period-btn.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: white;
+  font-weight: 600;
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.25);
+}
+
+.ops-date-inputs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ops-date-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ops-date-label {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+/* Pills de Status de Faturas */
+.ops-status-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 0 6px;
+  margin-bottom: 12px;
+}
+.ops-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+:root.dark .ops-status-pill {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+.ops-status-pill:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+:root.dark .ops-status-pill:hover {
+  background: #243046;
+  color: #f8fafc;
+}
+.ops-status-pill.active {
+  border-color: #3b82f6;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+:root.dark .ops-status-pill.active {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #bfdbfe;
+}
+.pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.pill-dot.all { background: #64748b; }
+.pill-dot.aberto { background: #f59e0b; }
+.pill-dot.a_vencer { background: #0284c7; }
+.pill-dot.vencido { background: #ef4444; }
+.pill-dot.pago { background: #10b981; }
+.pill-dot.pendente { background: #eab308; }
+
+.pill-count {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 700;
+}
+:root.dark .pill-count {
+  background: #334155;
+  color: #cbd5e1;
+}
+.ops-status-pill.active .pill-count {
+  background: #dbeafe;
+  color: #1e40af;
+}
+:root.dark .ops-status-pill.active .pill-count {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+/* Indicadores de Vencimento e Pagamento na Tabela */
+.ops-delay-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-top: 3px;
+  line-height: 1.2;
+}
+.ops-delay-tag.overdue {
+  background: #fee2e2;
+  color: #dc2626;
+}
+.ops-delay-tag.today {
+  background: #fef3c7;
+  color: #b45309;
+}
+.ops-delay-tag.upcoming {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.ops-delay-tag.paid {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.ops-paid-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #059669;
+}
+.ops-unpaid-date {
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* Célula de Cliente com Ação de Filtro Rápido */
+.ops-client-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ops-client-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ops-client-cell-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1e293b;
+}
+:root.dark .ops-client-cell-title {
+  color: #f1f5f9;
+}
+.ops-client-filter-link {
+  font-size: 10px;
+  color: #3b82f6;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+}
+.ops-client-filter-link:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+.ops-client-doc {
+  font-size: 11px;
+  color: #64748b;
+}

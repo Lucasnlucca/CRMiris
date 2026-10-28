@@ -137,12 +137,12 @@ export default function Sidebar({
       ],
     },
     {
-      title: 'VENDAS & PIPELINE',
+      title: 'COMERCIAL',
       items: [
         { id: 'crm-pipeline', label: 'Funil Kanban', icon: GitBranch, color: 'text-emerald-500' },
+        { id: 'crm-items', label: 'Catálogo de Produtos', icon: Package, color: 'text-cyan-500' },
         { id: 'crm-propostas', label: 'Propostas Comerciais', icon: FileText, color: 'text-amber-500' },
         { id: 'crm-contratos', label: 'Contratos & Assinaturas', icon: FileCheck2, color: 'text-violet-500' },
-        { id: 'crm-items', label: 'Itens & Serviços', icon: Package, color: 'text-cyan-500' },
       ],
     },
     {

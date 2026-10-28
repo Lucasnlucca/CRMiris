@@ -36,7 +36,7 @@ import './operations.css';
 export function ServerDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { data, session, patch, remove, notify } = useApp();
+  const { data, session, patch, remove, notify, refresh: refreshData } = useApp();
   const server = data.servers.find((s) => s.id === id);
   const [tab, setTab] = useState('overview');
   const [editing, setEditing] = useState(false);
@@ -59,8 +59,10 @@ export function ServerDetailPage() {
   const refresh = async () => {
     setRefreshing(true);
     try {
-      await patch('servers', server.id, { lastCheck: new Date().toISOString() });
-      notify('Consulta local atualizada.');
+      await refreshData();
+      notify(
+        'Dados sincronizados do banco. Verificação ativa indisponível (sem agente de monitoramento ativo).',
+      );
     } catch {
       notify('Não foi possível atualizar o servidor.', 'error');
     } finally {
@@ -70,13 +72,15 @@ export function ServerDetailPage() {
   const createIncident = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!incidentTitle.trim()) return;
+    const nowIso = new Date().toISOString();
+    const deterministicId = `inc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     try {
       await patch('servers', server.id, {
         incidents: [
           {
-            id: newId('inc'),
+            id: deterministicId,
             title: incidentTitle.trim(),
-            date: new Date().toISOString(),
+            date: nowIso,
             status: 'Aberto',
           },
           ...server.incidents,
@@ -226,7 +230,12 @@ export function ServerDetailPage() {
                 ['Domínio', server.domain],
                 ['Porta', String(server.port || '—')],
                 ['Ambiente', server.environment],
-                ['Última consulta', dateTime(server.lastCheck)],
+                [
+                  'Última consulta',
+                  server.lastCheck
+                    ? dateTime(server.lastCheck)
+                    : 'Não verificado (sem agente de monitoramento ativo)',
+                ],
               ].map(([label, value]) => (
                 <div className="ops-info" key={label}>
                   <span>{label}</span>
@@ -505,6 +514,9 @@ export function ServerDetailPage() {
         open={deleteServerOpen}
         title="Excluir servidor?"
         description={`O servidor "${server.name}" será excluído permanentemente.`}
+        confirmTextMatch={server.name}
+        confirmInputPlaceholder={`Digite ${server.name}...`}
+        confirmButtonLabel="Excluir Servidor"
         onConfirm={async () => {
           try {
             await remove('servers', server.id);

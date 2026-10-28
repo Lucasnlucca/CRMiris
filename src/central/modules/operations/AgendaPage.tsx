@@ -125,7 +125,6 @@ function EventForm({
             : 'Compromisso agendado.',
       );
       onClose();
-      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Não foi possível salvar o compromisso.');
     } finally {
@@ -516,7 +515,6 @@ export function AgendaPage() {
               notify('Compromisso excluído da agenda.');
               setDeleteEvent(null);
               setSelectedId(null);
-              window.location.reload();
             } catch (error) {
               notify(
                 error instanceof Error ? error.message : 'Não foi possível excluir o compromisso.',
@@ -818,7 +816,7 @@ export function AgendaPage() {
                 <i className="ops-event-dot manutencao" />
                 Manutenção
               </span>
-              <span className="muted">Horário de Brasília</span>
+              <span className="muted">Agenda interna do CRM · Horário de Brasília</span>
             </div>
           </>
         ) : (
@@ -915,7 +913,6 @@ export function AgendaPage() {
             await remove('events', deleteEvent.id);
             notify('Compromisso excluído da agenda.');
             setDeleteEvent(null);
-            window.location.reload();
           } catch (error) {
             notify(
               error instanceof Error ? error.message : 'Não foi possível excluir o compromisso.',

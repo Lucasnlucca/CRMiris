@@ -17,6 +17,7 @@ import {
   Clock,
   Sparkles,
   Lock,
+  KeyRound,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTenant } from '../context/TenantContext';
@@ -27,6 +28,7 @@ import {
   removeTenantMember,
   fetchUserMenuPermissions,
   saveUserMenuPermissions,
+  updateUserPassword,
   ALL_CRM_MENUS,
   TenantMember,
 } from '../lib/tenantUsersApi';
@@ -62,6 +64,38 @@ export default function Usuarios() {
   const [loadingPerms, setLoadingPerms] = useState(false);
   const [submittingPerms, setSubmittingPerms] = useState(false);
 
+  // Modal de Alteração de Senha do Membro
+  const [passwordMember, setPasswordMember] = useState<TenantMember | null>(null);
+  const [memberNewPassword, setMemberNewPassword] = useState('');
+  const [submittingMemberPassword, setSubmittingMemberPassword] = useState(false);
+  const [memberPasswordError, setMemberPasswordError] = useState<string | null>(null);
+
+  const handleUpdateMemberPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passwordMember || !activeTenantId) return;
+    if (memberNewPassword.length < 8) {
+      setMemberPasswordError('A nova senha deve ter pelo menos 8 caracteres.');
+      return;
+    }
+    setSubmittingMemberPassword(true);
+    setMemberPasswordError(null);
+
+    try {
+      const res = await updateUserPassword({
+        tenantId: activeTenantId,
+        userId: passwordMember.userId,
+        password: memberNewPassword,
+      });
+      setSuccessNotice(res.message || `Senha de ${passwordMember.name} atualizada com sucesso!`);
+      setPasswordMember(null);
+      setMemberNewPassword('');
+    } catch (err: any) {
+      setMemberPasswordError(err.message || 'Falha ao atualizar senha do membro.');
+    } finally {
+      setSubmittingMemberPassword(false);
+    }
+  };
+
   const activeTenantId = tenant?.id || '';
 
   const loadMembers = useCallback(async () => {
@@ -70,7 +104,7 @@ export default function Usuarios() {
     setError(null);
     try {
       const res = await fetchTenantMembers(activeTenantId);
-      setMembers(res.members || []);
+      setMembers(res.members || (res as any).users || []);
     } catch (err: any) {
       setError(err.message || 'Erro ao carregar membros da empresa.');
     } finally {
@@ -465,6 +499,18 @@ export default function Usuarios() {
                             Alterar Papel
                           </button>
                           <button
+                            onClick={() => {
+                              setPasswordMember(m);
+                              setMemberNewPassword('');
+                              setMemberPasswordError(null);
+                            }}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20 hover:bg-amber-100 dark:hover:bg-amber-500/20 text-xs font-semibold text-amber-700 dark:text-amber-300 transition"
+                            title="Definir nova senha para este usuário"
+                          >
+                            <KeyRound className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                            Alterar Senha
+                          </button>
+                          <button
                             onClick={() => handleToggleStatus(m)}
                             title={m.status === 'active' ? 'Desativar acesso' : 'Reativar acesso'}
                             className={`p-1.5 rounded-lg border text-xs transition ${
@@ -742,6 +788,97 @@ export default function Usuarios() {
                   className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition shadow-sm disabled:opacity-50"
                 >
                   {submittingPerms ? 'Salvando...' : 'Salvar Permissões'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Alterar Senha de Membro da Equipe */}
+      {passwordMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-[#121722] w-full max-w-md rounded-2xl border border-slate-200 dark:border-white/10 shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-white/10 flex items-center justify-between bg-slate-50 dark:bg-white/[0.02]">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                  <KeyRound className="w-5 h-5" />
+                </span>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Alterar Senha do Usuário
+                </h3>
+              </div>
+              <button
+                onClick={() => setPasswordMember(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateMemberPassword} className="p-6 space-y-4">
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs">
+                <div className="font-bold text-slate-900 dark:text-white">{passwordMember.name}</div>
+                <div className="text-slate-500 font-mono text-[11px]">{passwordMember.email}</div>
+              </div>
+
+              {memberPasswordError && (
+                <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{memberPasswordError}</span>
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                    Nova Senha *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*';
+                      let pass = '';
+                      for (let i = 0; i < 12; i++) {
+                        pass += chars.charAt(Math.floor(Math.random() * chars.length));
+                      }
+                      setMemberNewPassword(pass);
+                      navigator.clipboard.writeText(pass);
+                      setSuccessNotice('Senha segura gerada e copiada!');
+                      setTimeout(() => setSuccessNotice(null), 3000);
+                    }}
+                    className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
+                  >
+                    <Sparkles className="w-3 h-3" /> Gerar Senha Segura
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    required
+                    value={memberNewPassword}
+                    onChange={(e) => setMemberNewPassword(e.target.value)}
+                    placeholder="Mínimo 8 caracteres"
+                    className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-100 dark:border-white/10 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPasswordMember(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingMemberPassword || !memberNewPassword}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-sm disabled:opacity-50"
+                >
+                  {submittingMemberPassword ? 'Salvando...' : 'Salvar Nova Senha'}
                 </button>
               </div>
             </form>

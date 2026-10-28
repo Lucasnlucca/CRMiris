@@ -23,6 +23,7 @@ interface Toast {
 export interface AppContextValue {
   data: Database;
   session: Session | null;
+  notice?: string;
   save<K extends CollectionKey>(key: K, item: Collections[K]): Promise<Collections[K]>;
   patch<K extends CollectionKey>(
     key: K,
@@ -47,10 +48,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState(() => ({
     data: appwriteRepository.getSnapshot(),
     session: appwriteRepository.getSession(),
+    notice: appwriteRepository.getNotice(),
   }));
   const [ready, setReady] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const contextGenRef = useRef(0);
+  const prevContextKeyRef = useRef<string>('');
 
   const dismiss = useCallback((id: string) => {
     const timer = timers.current.get(id);
@@ -79,11 +83,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let alive = true;
+    const nextContextKey = `${authUser?.id || 'anon'}:${tenant?.id || 'default'}`;
+    const isContextSwitch =
+      prevContextKeyRef.current !== '' && prevContextKeyRef.current !== nextContextKey;
+    prevContextKeyRef.current = nextContextKey;
+    contextGenRef.current += 1;
+    const currentGen = contextGenRef.current;
+
+    if (isContextSwitch) {
+      setReady(false);
+    }
+
     const unsubscribe = appwriteRepository.subscribe(() => {
-      if (alive) {
+      if (alive && currentGen === contextGenRef.current) {
         setSnapshot({
           data: appwriteRepository.getSnapshot(),
           session: appwriteRepository.getSession(),
+          notice: appwriteRepository.getNotice(),
         });
       }
     });
@@ -91,15 +107,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void appwriteRepository
       .syncWithContext(tenant, authUser)
       .then(() => {
-        if (!alive) return;
+        if (!alive || currentGen !== contextGenRef.current) return;
         setSnapshot({
           data: appwriteRepository.getSnapshot(),
           session: appwriteRepository.getSession(),
+          notice: appwriteRepository.getNotice(),
         });
         setReady(true);
       })
       .catch((error: unknown) => {
-        if (!alive) return;
+        if (!alive || currentGen !== contextGenRef.current) return;
         setReady(true);
         notify(
           error instanceof Error

@@ -16,10 +16,13 @@ import {
   FolderOpen,
   GitBranch,
   Globe2,
+  KeyRound,
+  Laptop,
   Layers3,
   LayoutDashboard,
   LogOut,
   Menu,
+  Moon,
   Network,
   Package,
   Palette,
@@ -32,8 +35,10 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Sun,
   Ticket,
   TrendingUp,
+  User,
   UserCog,
   Wallet,
 } from 'lucide-react';
@@ -46,6 +51,9 @@ import { useAuth } from '../../context/AuthContext';
 import { useTenant } from '../../context/TenantContext';
 import { databases, DATABASE_ID } from '../../lib/appwrite';
 import TenantSelector from '../../components/TenantSelector';
+import NotificationBell from '../../components/NotificationBell';
+import { useTheme } from '../../context/ThemeContext';
+import UserProfileModal from '../../components/UserProfileModal';
 
 export const roleNames: Record<Role, string> = {
   admin: 'Administrador',
@@ -390,7 +398,7 @@ export function AppLayout() {
   const { data, session, logout, notify } = useApp();
   const { user: authUser, logout: authLogout } = useAuth();
   const { tenant, isSuperAdmin } = useTenant();
-  const role = session?.role ?? 'admin';
+  const role = session?.role ?? (authUser?.role === 'client' ? 'client' : 'admin');
   const navigate = useNavigate();
   // Menu recolhido por padrão com auto-expansão ao passar o mouse por cima
   const [pinned, setPinned] = useState(() => {
@@ -435,6 +443,9 @@ export function AppLayout() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [deniedUserMenus, setDeniedUserMenus] = useState<Set<string> | null>(null);
+  const { isDarkMode, toggleTheme } = useTheme();
+  const [userProfileModalOpen, setUserProfileModalOpen] = useState(false);
+  const [userProfileTab, setUserProfileTab] = useState<'profile' | 'security' | 'session'>('profile');
 
   // Estado das pastas / categorias abertas
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>(() => {
@@ -546,6 +557,7 @@ export function AppLayout() {
   }
 
   const isMenuPermitted = (item: NavItemDef): boolean => {
+    if (role === 'client') return item.roles.includes('client');
     if (item.superAdminOnly) return isSuperAdmin;
     if (isSuperAdmin) return true;
     if (!item.roles.includes(role)) return false;
@@ -568,9 +580,11 @@ export function AppLayout() {
 
   const user = data.users.find((u) => u.id === session?.userId);
   const client = data.clients.find((c) => c.id === session?.clientId);
+  const storedPortalName =
+    typeof window !== 'undefined' ? localStorage.getItem('portal_client_name') : null;
   const userName =
     role === 'client'
-      ? client?.tradeName || client?.name || 'Cliente'
+      ? client?.tradeName || client?.name || storedPortalName || authUser?.name || 'Cliente'
       : authUser?.name || user?.name || 'Administrador';
 
   const topItem = role === 'client' ? portalTopItemDef : topItemDef;
@@ -957,39 +971,24 @@ export function AppLayout() {
         </div>
         <div className="header-tools">
           <TenantSelector />
-          <div className="notification-wrap" ref={bellRef}>
-            <button
-              className="bell-button"
-              aria-label="Notificações"
-              aria-expanded={notificationsOpen}
-              onClick={() => {
-                setNotificationsOpen((v) => !v);
-                setProfileOpen(false);
+          <div className="flex items-center">
+            <NotificationBell
+              onNavigate={(page, refId) => {
+                if (page === 'crm-pipeline' || page === 'pipeline') {
+                  navigate(`/pipeline${refId ? `?deal=${refId}&tab=comments` : ''}`);
+                } else if (page === 'crm-contatos' || page === 'clientes') {
+                  navigate(`/clientes${refId ? `?id=${refId}` : ''}`);
+                } else if (page === 'tickets' || page === 'ticket') {
+                  navigate(refId ? `/tickets/${refId}` : '/tickets');
+                } else if (page === 'propostas' || page === 'proposal') {
+                  navigate(refId ? `/propostas?id=${refId}` : '/propostas');
+                } else if (page === 'contratos-crm' || page === 'contract') {
+                  navigate(refId ? `/contratos-crm?id=${refId}` : '/contratos-crm');
+                } else {
+                  navigate(refId ? `/${page}/${refId}` : `/${page}`);
+                }
               }}
-            >
-              <Bell size={17} />
-            </button>
-            {notificationsOpen && (
-              <div className="popover">
-                <h3>Central de notificações</h3>
-                {notifications.length ? (
-                  notifications.map((n, i) => (
-                    <Link
-                      className="notification-item"
-                      key={i}
-                      to={n.path}
-                      onClick={() => setNotificationsOpen(false)}
-                    >
-                      {n.title}
-                      <small>{n.subtitle}</small>
-                    </Link>
-                  ))
-                ) : (
-                  <p className="muted small">Nenhuma notificação pendente.</p>
-                )}
-                <div className="search-hint">Alertas operacionais em tempo real.</div>
-              </div>
-            )}
+            />
           </div>
           <div className="header-divider" />
           <div className="profile-wrap" ref={profileRef}>
@@ -1010,38 +1009,194 @@ export function AppLayout() {
               <ChevronDown size={12} className="profile-chevron" />
             </button>
             {profileOpen && (
-              <div className="popover">
-                <h3>{userName}</h3>
-                <p className="muted small" style={{ padding: '0 4px 10px' }}>
-                  {authUser?.email || ''} · {isSuperAdmin ? 'SuperAdmin' : roleNames[role]}
-                </p>
-                <button className="popover-option" onClick={() => navigate('/acesso')}>
-                  <ShieldCheck size={16} />
-                  Alternar visão de perfil / Portal
-                </button>
-                {role === 'admin' && (
-                  <>
-                    <button className="popover-option" onClick={() => navigate('/usuarios')}>
-                      <UserCog size={16} />
-                      Usuários & Permissões
-                    </button>
-                    <button className="popover-option" onClick={() => navigate('/configuracoes')}>
-                      <Settings2 size={16} />
-                      Configurações da Empresa
-                    </button>
-                  </>
-                )}
-                <div className="popover-divider" />
-                <button
-                  className="popover-option"
-                  onClick={() => {
-                    logout();
-                    void authLogout();
-                  }}
-                >
-                  <LogOut size={16} />
-                  Sair da conta
-                </button>
+              <div className="crm-user-menu-popover">
+                {/* Header Profile Card */}
+                <div className="user-menu-header">
+                  <div className="user-menu-header-bg" />
+                  <div className="user-menu-header-content">
+                    <div className="user-menu-avatar-wrap">
+                      <div className="user-menu-avatar">
+                        {(userName || 'U')[0].toUpperCase()}
+                      </div>
+                      <span className="user-menu-status-dot" title="Sessão ativa e sincronizada" />
+                    </div>
+                    <div className="user-menu-details">
+                      <h4 className="user-menu-name" title={userName}>{userName}</h4>
+                      <p className="user-menu-email" title={authUser?.email || ''}>{authUser?.email || 'Sem e-mail cadastrado'}</p>
+                    </div>
+                  </div>
+                  <div className="user-menu-badges">
+                    <span className="user-menu-badge-role">
+                      <ShieldCheck size={12} />
+                      {isSuperAdmin ? 'SuperAdmin' : roleNames[role]}
+                    </span>
+                    {tenant && (
+                      <span className="user-menu-badge-tenant" title={tenant.trade_name || tenant.name}>
+                        <Building2 size={12} />
+                        {tenant.trade_name || tenant.name || 'Organização'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Section: Minha Conta */}
+                <div className="user-menu-section">
+                  <div className="user-menu-section-title">Minha Conta</div>
+
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    onClick={() => {
+                      setUserProfileTab('profile');
+                      setUserProfileModalOpen(true);
+                      setProfileOpen(false);
+                    }}
+                  >
+                    <div className="user-menu-item-icon" style={{ background: 'rgba(79, 70, 229, 0.1)', color: '#4f46e5' }}>
+                      <User size={16} />
+                    </div>
+                    <div className="user-menu-item-text">
+                      <span className="item-label">Meu Perfil</span>
+                      <span className="item-desc">Dados cadastrais, cargo e telefone</span>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    onClick={() => {
+                      setUserProfileTab('security');
+                      setUserProfileModalOpen(true);
+                      setProfileOpen(false);
+                    }}
+                  >
+                    <div className="user-menu-item-icon" style={{ background: 'rgba(245, 158, 11, 0.12)', color: '#d97706' }}>
+                      <KeyRound size={16} />
+                    </div>
+                    <div className="user-menu-item-text">
+                      <span className="item-label">Trocar Senha</span>
+                      <span className="item-desc">Redefinir credenciais de acesso</span>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    onClick={() => {
+                      setUserProfileTab('session');
+                      setUserProfileModalOpen(true);
+                      setProfileOpen(false);
+                    }}
+                  >
+                    <div className="user-menu-item-icon" style={{ background: 'rgba(16, 185, 129, 0.12)', color: '#059669' }}>
+                      <Laptop size={16} />
+                    </div>
+                    <div className="user-menu-item-text">
+                      <span className="item-label">Sessão & Dispositivo</span>
+                      <span className="item-desc">Status da conexão ativa</span>
+                    </div>
+                    <span className="user-menu-badge-pill">Ativo</span>
+                  </button>
+                </div>
+
+                {/* Section: Gestão */}
+                <div className="user-menu-section">
+                  <div className="user-menu-section-title">Acesso & Gestão</div>
+
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    onClick={() => {
+                      navigate('/acesso');
+                      setProfileOpen(false);
+                    }}
+                  >
+                    <div className="user-menu-item-icon" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#2563eb' }}>
+                      <ShieldCheck size={16} />
+                    </div>
+                    <div className="user-menu-item-text">
+                      <span className="item-label">Alternar Visão</span>
+                      <span className="item-desc">Portal do cliente / painel</span>
+                    </div>
+                  </button>
+
+                  {role === 'admin' && (
+                    <>
+                      <button
+                        type="button"
+                        className="user-menu-item"
+                        onClick={() => {
+                          navigate('/usuarios');
+                          setProfileOpen(false);
+                        }}
+                      >
+                        <div className="user-menu-item-icon" style={{ background: 'rgba(6, 182, 212, 0.12)', color: '#0891b2' }}>
+                          <UserCog size={16} />
+                        </div>
+                        <div className="user-menu-item-text">
+                          <span className="item-label">Equipe & Permissões</span>
+                          <span className="item-desc">Gerenciar membros e senhas</span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        className="user-menu-item"
+                        onClick={() => {
+                          navigate('/configuracoes');
+                          setProfileOpen(false);
+                        }}
+                      >
+                        <div className="user-menu-item-icon" style={{ background: 'rgba(139, 92, 246, 0.12)', color: '#7c3aed' }}>
+                          <Settings2 size={16} />
+                        </div>
+                        <div className="user-menu-item-text">
+                          <span className="item-label">Configurações da Empresa</span>
+                          <span className="item-desc">Parâmetros do CRM</span>
+                        </div>
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {/* Section: Aparência */}
+                <div className="user-menu-section">
+                  <div className="user-menu-section-title">Aparência</div>
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    onClick={() => {
+                      toggleTheme();
+                    }}
+                  >
+                    <div className="user-menu-item-icon" style={{ background: isDarkMode ? 'rgba(245, 158, 11, 0.15)' : 'rgba(100, 116, 139, 0.1)', color: isDarkMode ? '#f59e0b' : '#475569' }}>
+                      {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
+                    </div>
+                    <div className="user-menu-item-text">
+                      <span className="item-label">{isDarkMode ? 'Tema Claro' : 'Tema Escuro'}</span>
+                      <span className="item-desc">{isDarkMode ? 'Mudar para modo claro' : 'Mudar para modo escuro'}</span>
+                    </div>
+                    <span className="user-menu-badge-pill" style={{ textTransform: 'capitalize' }}>
+                      {isDarkMode ? 'Escuro' : 'Claro'}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Footer: Logout */}
+                <div className="user-menu-footer">
+                  <button
+                    type="button"
+                    className="user-menu-logout-btn"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      logout();
+                      void authLogout();
+                    }}
+                  >
+                    <LogOut size={16} />
+                    <span>Sair da conta</span>
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1120,6 +1275,12 @@ export function AppLayout() {
           <p className="search-hint">Ctrl K para abrir ou fechar · Esc para sair</p>
         </div>
       </Modal>
+
+      <UserProfileModal
+        open={userProfileModalOpen}
+        defaultTab={userProfileTab}
+        onClose={() => setUserProfileModalOpen(false)}
+      />
     </div>
   );
 }

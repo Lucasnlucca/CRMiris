@@ -1,674 +1,628 @@
 /**
- * Backend API Bridge do Iris Horizon CRM (Server Authoritative)
- *
- * Centraliza e autoriza todas as operações de escrita da aplicação:
- * 1. Autenticação estrita do usuário via JWT do Appwrite (ou sessão autorizada).
- * 2. Determinação confiável do tenant_id a partir dos Teams reais do Appwrite Auth (via Server API Key).
- * 3. Validação de papéis (owner, admin, agent) e bloqueio de adulterações.
- * 4. Sanitização mandatória do payload (rejeição de tenant_id injetado pelo cliente).
- * 5. Imposição das permissões físicas finais por documento:
- *    [read("team:<tenantId>"), read("team:superadmins")]
- * 6. Gravação com credenciais exclusivas de servidor (APPWRITE_API_KEY).
- * 7. Suporte a fluxos públicos (assinatura de contratos via signContractHandler).
- *
- * REGRA DE SEGURANÇA: NUNCA expor este código ou APPWRITE_API_KEY no bundle cliente.
+ * ============================================================================
+ * BACKEND API BRIDGE HANDLER (Fase 6.1, 6.2 & 6.4 - Server-Side Data Proxy)
+ * ============================================================================
+ * Centralizes all business collection CRUD operations on the server side:
+ * - Enforces S08 contract signature immutability and field protection
+ * - Enforces S11 global account/profile active checks and tenant suspension checks
+ * - Enforces F08 operational collection coverage and notification ownership
+ * - Enforces F17 full pagination of Appwrite Teams & Memberships
+ * - Enforces F22 atomic JSON merge for concurrent ticket/server updates
+ * - Enforces F37 circuit breaker write latency/failure instrumentation
+ * ============================================================================
  */
 
-import { Client, Databases, Users, Teams, Account, Permission, Role, ID } from 'node-appwrite';
-import { assertNotUnderMaintenance, enterPrivilegedOperation } from './maintenanceGuard';
-import { handleSignContractServer } from './signContractHandler';
+import { Client, Account, Databases, Teams, ID, Query } from 'node-appwrite';
+import type { IncomingMessage, ServerResponse } from 'http';
+import { WritePolicyEngine, CONTRACT_SIGNATURE_FORBIDDEN_FIELDS } from './writePolicyEngine.ts';
 import {
-  WritePolicyEngine,
-  SANDBOX_PILOT_CLIENTS_RULES,
-  PROD_PILOT_CLIENTS_RULES,
-  PROD_CLIENTS_RULES,
-} from './writePolicyEngine';
+    readJsonBody,
+    listAllTeams,
+    listAllMemberships,
+    mergeJsonArrayById
+} from './requestUtils.ts';
 
-const prodClientsRules = PROD_CLIENTS_RULES || PROD_PILOT_CLIENTS_RULES;
+export const writePolicyEngine = new WritePolicyEngine({
+    mode: (process.env.WRITE_POLICY_MODE as any) || 'shadow'
+});
 
-// Controle de ativação dos Módulos Operacionais em Produção (habilitado por padrão)
-const ENABLE_PROD_CLIENTS_MODULE = process.env.ENABLE_PROD_CLIENTS_MODULE !== 'false';
-
-const initialRules = [
-  ...SANDBOX_PILOT_CLIENTS_RULES,
-  ...(ENABLE_PROD_CLIENTS_MODULE ? prodClientsRules : []),
-];
-
-export const writePolicyEngine = new WritePolicyEngine(initialRules, { enabled: true, autoSeedProdTenants: true });
-
-import fs from 'fs';
-import path from 'path';
-
-function getLocalEnvFallback(key: string): string {
-  if (process.env[key]) return process.env[key]!;
-  for (const fileName of ['.env.local', '.env']) {
-    try {
-      const envFile = path.resolve(process.cwd(), fileName);
-      if (fs.existsSync(envFile)) {
-        const lines = fs.readFileSync(envFile, 'utf8').split('\n');
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
-            const idx = trimmed.indexOf('=');
-            const k = trimmed.slice(0, idx).trim();
-            const v = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
-            if (k === key) return v;
-          }
-        }
-      }
-    } catch {}
-  }
-  return '';
+export interface BridgeRequestPayload {
+    operation: 'list' | 'get' | 'create' | 'update' | 'delete';
+    collectionId: string;
+    documentId?: string;
+    data?: Record<string, any>;
+    queries?: string[];
+    targetTenantId?: string;
+    targetDatabaseId?: string;
 }
 
-// Configurações do Ambiente do Servidor
-const ENDPOINT = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || getLocalEnvFallback('VITE_APPWRITE_URL') || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-const PROJECT_ID = process.env.VITE_APPWRITE_PROJECT_ID || getLocalEnvFallback('VITE_APPWRITE_PROJECT_ID') || '6a6cac620021f4c64b3f';
-const API_KEY = process.env.APPWRITE_API_KEY || getLocalEnvFallback('APPWRITE_API_KEY') || '';
-const DEFAULT_DATABASE_ID = process.env.VITE_APPWRITE_DATABASE_ID || getLocalEnvFallback('VITE_APPWRITE_DATABASE_ID') || 'crm_db';
+export interface BridgeEnvConfig {
+    endpoint: string;
+    projectId: string;
+    apiKey: string;
+    databaseId: string;
+}
 
-// Coleções oficiais gerenciadas pelo CRM
-export const TENANT_AWARE_COLLECTIONS = new Set([
-  'clients',
-  'pipeline_deals',
-  'pipeline_columns',
-  'pipeline_activities',
-  'pipeline_history',
-  'pipeline_comments',
-  'pipeline_checklist',
-  'pipeline_attachments',
-  'crm_proposals',
-  'crm_proposal_items',
-  'crm_items',
-  'crm_contracts',
-  'support_tickets',
-  'servers',
-  'services',
-  'documents',
-  'charges',
-  'invoices',
-  'events',
-  'activities',
-  'phonebook',
-  'call_history',
-  'whatsapp_contacts',
-  'whatsapp_messages',
-  'whatsapp_config',
-  'sip_config',
-  'integration_configs',
-  'message_templates',
-  'automation_config',
-  'messages',
-  'user_menu_permissions',
-  'notifications',
-  // Coleções de teste equivalentes no sandbox
-  'test_deals',
-  'test_pipeline_history',
-  'test_clients',
-  'test_crm_proposals',
-  'test_crm_contracts',
-  'test_crm_items',
-  'test_support_tickets',
-  'test_notifications',
-  'test_contacts',
-  'test_integration_configs',
-  'test_users_hydra',
+const ALLOWED_BUSINESS_COLLECTIONS = new Set([
+    'leads', 'clients', 'opportunities',
+    'proposals', 'crm_proposals', 'proposal_items', 'crm_proposal_items', 'crm_items', 'items',
+    'contracts', 'crm_contracts', 'charges', 'invoices', 'transactions', 'financial_transactions',
+    'support_tickets', 'tickets', 'projects', 'tasks', 'pbx_lines', 'cloud_instances',
+    'servers', 'services', 'kb_articles', 'documents', 'crm_documents', 'client_documents', 'files',
+    'service_Catalog', 'audit_logs',
+    'pipeline_deals', 'pipeline_columns', 'pipeline_history', 'pipeline_attachments',
+    'pipeline_activities', 'pipeline_comments', 'pipeline_checklist',
+    'events', 'activities', 'phonebook', 'call_history',
+    'whatsapp_contacts', 'whatsapp_messages', 'whatsapp_config', 'sip_config',
+    'integration_configs', 'message_templates', 'automation_config', 'messages',
+    'user_menu_permissions', 'notifications',
+    'tenants', 'users_hydra',
+    'test_tenants', 'test_users_hydra', 'test_leads', 'test_clients',
+    'test_opportunities', 'test_proposals', 'test_crm_proposals', 'test_contracts', 'test_crm_contracts',
+    'test_charges', 'test_invoices', 'test_support_tickets', 'test_projects', 'test_tasks', 'test_audit_logs'
 ]);
 
-// Inicialização dos clientes administrativos de servidor
-function getAdminClients() {
-  if (!API_KEY) {
-    throw new Error('[Backend API Bridge] APPWRITE_API_KEY não configurada no servidor.');
-  }
-  const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID).setKey(API_KEY);
-  return {
-    adminDb: new Databases(client),
-    adminUsers: new Users(client),
-    adminTeams: new Teams(client),
-  };
+const TENANT_AWARE_COLLECTIONS = new Set([
+    'leads', 'clients', 'opportunities',
+    'proposals', 'crm_proposals', 'proposal_items', 'crm_proposal_items', 'crm_items', 'items',
+    'contracts', 'crm_contracts', 'charges', 'invoices', 'transactions', 'financial_transactions',
+    'support_tickets', 'tickets', 'projects', 'tasks', 'pbx_lines', 'cloud_instances',
+    'servers', 'services', 'kb_articles', 'documents', 'crm_documents', 'client_documents', 'files',
+    'service_Catalog', 'audit_logs',
+    'pipeline_deals', 'pipeline_columns', 'pipeline_history', 'pipeline_attachments',
+    'pipeline_activities', 'pipeline_comments', 'pipeline_checklist',
+    'events', 'activities', 'phonebook', 'call_history',
+    'whatsapp_contacts', 'whatsapp_messages', 'whatsapp_config', 'sip_config',
+    'integration_configs', 'message_templates', 'automation_config', 'messages',
+    'user_menu_permissions', 'notifications',
+    'users_hydra',
+    'test_users_hydra', 'test_leads', 'test_clients', 'test_opportunities',
+    'test_proposals', 'test_crm_proposals', 'test_contracts', 'test_crm_contracts',
+    'test_charges', 'test_invoices', 'test_support_tickets', 'test_projects', 'test_tasks', 'test_audit_logs'
+]);
+
+function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
+    if (res.headersSent) return;
+    res.writeHead(statusCode, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Appwrite-JWT, X-Appwrite-Session, X-Target-Database, X-Tenant-Id'
+    });
+    res.end(JSON.stringify(payload));
 }
 
-export interface CrmWriteRequestPayload {
-  action: 'create' | 'update' | 'delete' | 'signContract';
-  databaseId?: string;
-  collectionId: string;
-  documentId?: string;
-  data?: Record<string, any>;
-  permissions?: string[];
-  targetTenantId?: string;
+function getAdminClient(env: BridgeEnvConfig): Client {
+    return new Client()
+        .setEndpoint(env.endpoint)
+        .setProject(env.projectId)
+        .setKey(env.apiKey);
 }
 
-export interface CrmWriteResult {
-  success: boolean;
-  action: string;
-  collectionId: string;
-  documentId: string;
-  data?: any;
-  tenantId?: string;
-  error?: string;
-  code?: number;
-}
-
-/**
- * Autentica a sessão do cliente e retorna o ID do usuário verificado
- */
-async function authenticateUser(headers: Record<string, string | string[] | undefined>): Promise<string> {
-  const authHeader = headers['authorization'] || headers['Authorization'];
-  let jwt = '';
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    jwt = authHeader.slice(7).trim();
-  }
-
-  const sessionHeader = headers['x-appwrite-session'] || headers['X-Appwrite-Session'];
-  let sessionSecret = typeof sessionHeader === 'string' ? sessionHeader.trim() : '';
-
-  if (sessionSecret.startsWith('{')) {
-    try {
-      const parsed = JSON.parse(sessionSecret);
-      sessionSecret = parsed[`a_session_${PROJECT_ID}`] || parsed[`a_session_${PROJECT_ID}_legacy`] || (Object.values(parsed)[0] as string) || '';
-    } catch {}
-  }
-
-  if (!jwt && !sessionSecret && headers['cookie']) {
-    const rawCookie = Array.isArray(headers['cookie']) ? headers['cookie'].join('; ') : String(headers['cookie']);
-    const match = rawCookie.match(new RegExp(`(?:^|;\\s*)a_session_${PROJECT_ID}(?:_legacy)?=([^;]+)`)) ||
-                  rawCookie.match(/(?:^|;\s*)a_session=([^;]+)/);
-    if (match && match[1]) {
-      sessionSecret = decodeURIComponent(match[1]).trim();
-    }
-  }
-
-  if (!jwt && !sessionSecret) {
-    throw { statusCode: 401, message: 'Autenticação necessária: credencial (JWT ou Sessão) ausente.' };
-  }
-
-  const userClient = new Client().setEndpoint(ENDPOINT).setProject(PROJECT_ID);
-  if (jwt) {
-    userClient.setJWT(jwt);
-  } else {
-    userClient.setSession(sessionSecret);
-  }
-
-  try {
-    const userAccount = new Account(userClient);
-    const user = await userAccount.get();
-    return user.$id;
-  } catch (err: any) {
-    throw { statusCode: 401, message: `Sessão inválida ou expirada: ${err.message || 'Erro de autenticação'}` };
-  }
-}
-
-/**
- * Resolve e valida os Teams reais aos quais o usuário pertence
- */
-async function resolveUserTenantAndRole(
-  adminTeams: Teams,
-  userId: string,
-  requestedTenantId?: string,
-  targetDatabaseId: string = 'crm_db'
-): Promise<{ authoritativeTenantId: string; isSuperAdmin: boolean; userTeams: string[]; userRoles: string[] }> {
-  const knownTeamsSet = new Set<string>([
-    'tenant_default',
-    'superadmins',
-    'test_team_alpha',
-    'test_team_beta',
-    'test_team_superadmins',
-  ]);
-
-  if (requestedTenantId) {
-    knownTeamsSet.add(requestedTenantId);
-  }
-
-  try {
-    const allTeamsRes = await adminTeams.list();
-    if (allTeamsRes && Array.isArray(allTeamsRes.teams)) {
-      for (const t of allTeamsRes.teams) {
-        if (t && t.$id) knownTeamsSet.add(t.$id);
-      }
-    }
-  } catch {}
-
-  const userTeams: string[] = [];
-  const teamRolesMap = new Map<string, string[]>();
-
-  for (const teamId of knownTeamsSet) {
-    try {
-      const list = await adminTeams.listMemberships(teamId);
-      const mem = list.memberships.find((m) => m.userId === userId);
-      if (mem) {
-        userTeams.push(teamId);
-        const rolesForThisTeam: string[] = [];
-        if (Array.isArray(mem.roles)) {
-          mem.roles.forEach((r) => { if (r && !rolesForThisTeam.includes(r)) rolesForThisTeam.push(r); });
+async function isTenantSuspended(
+    adminDatabases: Databases,
+    databaseId: string,
+    tenantId: string | null
+): Promise<boolean> {
+    if (!tenantId || !adminDatabases || typeof adminDatabases.getDocument !== 'function') return false;
+    const cols = databaseId === 'crm_isolated_test' ? ['test_tenants', 'tenants'] : ['tenants', 'test_tenants'];
+    for (const col of cols) {
+        try {
+            const doc: any = await adminDatabases.getDocument(databaseId, col, tenantId);
+            if (doc) {
+                const status = String(doc.status || 'active').toLowerCase();
+                return status === 'suspended' || status === 'cancelled' || doc.is_active === false;
+            }
+        } catch {
+            // Ignore missing tenant doc
         }
-        teamRolesMap.set(teamId, rolesForThisTeam);
-      }
-    } catch (e) {
-      // Time inexistente ou erro transitório
     }
-  }
-
-  // SuperAdmin por correspondência EXATA de Team ID.
-  // Em produção (crm_db): estritamente 'superadmins'.
-  // No sandbox isolado (crm_isolated_test): 'superadmins' ou 'test_team_superadmins'.
-  const isSuperAdminTeam = (t: string) =>
-    targetDatabaseId === 'crm_db'
-      ? t === 'superadmins'
-      : (t === 'superadmins' || t === 'test_team_superadmins');
-
-  const isSuperAdmin = userTeams.some(isSuperAdminTeam);
-
-  let authoritativeTenantId = '';
-
-  if (requestedTenantId) {
-    if (userTeams.includes(requestedTenantId) || isSuperAdmin) {
-      authoritativeTenantId = requestedTenantId;
-    } else {
-      throw {
-        statusCode: 403,
-        message: `Acesso negado: Usuário "${userId}" não possui membresia na organização "${requestedTenantId}".`,
-      };
-    }
-  } else {
-    // Escolhe o tenant operacional primário (excluindo explicitamente os times SuperAdmin)
-    const operationalTenant = userTeams.find((t) => !isSuperAdminTeam(t));
-    if (operationalTenant) {
-      authoritativeTenantId = operationalTenant;
-    } else if (isSuperAdmin) {
-      authoritativeTenantId =
-        targetDatabaseId === 'crm_db'
-          ? 'tenant_default'
-          : (userTeams.includes('test_team_superadmins') ? 'test_team_alpha' : 'tenant_default');
-    } else {
-      throw {
-        statusCode: 403,
-        message: `Usuário "${userId}" não está vinculado a nenhuma organização ativa.`,
-      };
-    }
-  }
-
-  // S08: Papéis estritamente vinculados ao tenant autorizado (sem vazamento cruzado)
-  const tenantSpecificRoles = teamRolesMap.get(authoritativeTenantId) || [];
-  const userRoles: string[] = [...tenantSpecificRoles];
-
-  if (isSuperAdmin && !userRoles.includes('superadmin')) {
-    userRoles.push('superadmin');
-  }
-  if (userRoles.length === 0 && userTeams.includes(authoritativeTenantId)) {
-    userRoles.push('agent');
-  }
-
-  return { authoritativeTenantId, isSuperAdmin, userTeams, userRoles };
+    return false;
 }
 
-/**
- * Validação Estrita de Liberação Canário para Produção (crm_db)
- */
-export function validateProductionCanaryGuard({
-  databaseId,
-  action,
-  collectionId,
-  documentId,
-  data,
-  userId,
-  tenantId,
-}: {
-  databaseId?: string;
-  action: string;
-  collectionId: string;
-  documentId?: string;
-  data?: Record<string, any>;
-  userId: string;
-  tenantId: string;
-}): { allowed: boolean; code?: number; reason?: string } {
-  if (databaseId !== 'crm_db') {
-    return { allowed: true };
-  }
+async function authenticateAndResolveTenant(
+    req: IncomingMessage,
+    env: BridgeEnvConfig,
+    requestedTenantId?: string,
+    effectiveDatabaseId?: string
+): Promise<{
+    userId: string;
+    email: string;
+    authoritativeTenantId: string | null;
+    isSuperAdmin: boolean;
+    roles: string[];
+}> {
+    const authHeader = (req.headers['authorization'] as string) || '';
+    const jwtHeader = (req.headers['x-appwrite-jwt'] as string) || '';
+    const sessionHeader = (req.headers['x-appwrite-session'] as string) || '';
 
-  // 1. Verificação da Chave Mestra Canário
-  const canaryEnabled = process.env.CANARY_PROD_WRITE_ENABLED === 'true';
-  if (!canaryEnabled) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: '[CANARY FAIL-CLOSED GUARD] Escritas em crm_db bloqueadas: liberação canário está desativada.',
-    };
-  }
+    let token = '';
+    let isJwt = false;
 
-  // 2. Janela Temporal Estrita (Expiração Automática)
-  const windowExpiresAt = process.env.CANARY_WINDOW_EXPIRES_AT;
-  if (!windowExpiresAt || isNaN(Date.parse(windowExpiresAt)) || new Date(windowExpiresAt).getTime() <= Date.now()) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Janela temporal canário expirada ou inválida (${windowExpiresAt || 'NÃO CONFIGURADA'}).`,
-    };
-  }
-
-  // 3. Restrição de Operação Autorizada
-  const allowedAction = process.env.CANARY_ALLOWED_ACTION;
-  if (!allowedAction || action !== allowedAction) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Operação "${action}" não autorizada no perfil canário (Permitido: "${allowedAction || 'NENHUMA'}").`,
-    };
-  }
-
-  // 4. Restrição de Coleção Autorizada
-  const allowedCollection = process.env.CANARY_ALLOWED_COLLECTION;
-  if (!allowedCollection || collectionId !== allowedCollection) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Coleção "${collectionId}" não autorizada no perfil canário (Permitido: "${allowedCollection || 'NENHUMA'}").`,
-    };
-  }
-
-  // 5. Restrição de Tenant Autorizado
-  const allowedTenant = process.env.CANARY_ALLOWED_TENANT;
-  if (!allowedTenant || tenantId !== allowedTenant) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Tenant "${tenantId}" não autorizado no perfil canário (Permitido: "${allowedTenant || 'NENHUM'}").`,
-    };
-  }
-
-  // 6. Restrição de Usuário Autorizado
-  const allowedUser = process.env.CANARY_ALLOWED_USER;
-  if (!allowedUser || userId !== allowedUser) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: `[CANARY FAIL-CLOSED GUARD] Usuário "${userId}" não autorizado no perfil canário (Permitido: "${allowedUser || 'NENHUM'}").`,
-    };
-  }
-
-  // 7. Restrição de Marcador de Registro de Teste
-  const isMarked = data && data._is_canary_test === true;
-  const hasCanaryDocId = !documentId || documentId.startsWith('canary_');
-  if (!isMarked || !hasCanaryDocId) {
-    return {
-      allowed: false,
-      code: 403,
-      reason: '[CANARY FAIL-CLOSED GUARD] Registro rejeitado: requer marcador "_is_canary_test: true" e prefixo "canary_".',
-    };
-  }
-
-  return { allowed: true };
-}
-
-/**
- * Processador central das operações de escrita autorizadas
- */
-export async function executeAuthoritativeWrite(
-  req: {
-    headers: Record<string, string | string[] | undefined>;
-    socket?: { remoteAddress?: string };
-    body: CrmWriteRequestPayload;
-  }
-): Promise<CrmWriteResult> {
-  assertNotUnderMaintenance('executeAuthoritativeWrite');
-  const exitOp = enterPrivilegedOperation();
-
-  try {
-    const { action, collectionId, data, targetTenantId } = req.body;
-    let { databaseId, documentId } = req.body;
-    if (!databaseId) {
-      databaseId = DEFAULT_DATABASE_ID;
+    if (jwtHeader) {
+        token = jwtHeader.trim();
+        isJwt = true;
+    } else if (authHeader.startsWith('Bearer ')) {
+        token = authHeader.slice(7).trim();
+        isJwt = token.split('.').length === 3;
+    } else if (sessionHeader) {
+        token = sessionHeader.trim();
+        isJwt = false;
     }
 
-    const { adminDb, adminTeams } = getAdminClients();
-
-    // 1. FLUXO ESPECIAL: ASSINATURA PÚBLICA DE CONTRATOS (S02 / F03)
-    if (action === 'signContract') {
-      const contractId = documentId || (data && data.contractId);
-      if (!contractId) {
-        throw { statusCode: 400, message: 'ID do contrato é obrigatório para assinatura.' };
-      }
-
-      const publicContractCollection = 'crm_contracts';
-
-      const mockDb = {
-        async getContractById(id: string) {
-          return await adminDb.getDocument(databaseId!, publicContractCollection, id);
-        },
-        async updateContract(id: string, updatePayload: Record<string, any>) {
-          return await adminDb.updateDocument(databaseId!, publicContractCollection, id, updatePayload);
-        },
-      };
-
-      const auditResult = await handleSignContractServer(
-        {
-          headers: req.headers,
-          socket: req.socket,
-          body: {
-            contractId,
-            signerName: data?.signerName || data?.signed_by_name || '',
-            signerDocument: data?.signerDocument || data?.signed_by_document || '',
-            signerEmail: data?.signerEmail || data?.signed_by_email,
-            signerPhone: data?.signerPhone || data?.signed_by_phone,
-            termsAccepted: Boolean(data?.termsAccepted),
-            publicToken: data?.publicToken || (req.headers['x-public-token'] as string) || undefined,
-          },
-        },
-        mockDb
-      );
-
-      return {
-        success: true,
-        action: 'signContract',
-        collectionId: publicContractCollection,
-        documentId: contractId,
-        data: auditResult,
-      };
+    if (!token) {
+        throw { status: 401, message: 'Não autenticado. Token de sessão ou JWT ausente.' };
     }
 
-    // 2. AUTENTICAÇÃO MANDATÓRIA DO OPERADOR (HTTP 401 se ausente ou inválido)
-    const userId = await authenticateUser(req.headers);
+    const userClient = new Client()
+        .setEndpoint(env.endpoint)
+        .setProject(env.projectId);
 
-    // 2.5 CONTROLE DE AUTORIZAÇÃO DE PRODUÇÃO (FASE 5H)
-    // Governança estrita delegada ao Write Policy Engine (menor privilégio, tuplas determinísticas e deny-by-default).
+    if (isJwt) {
+        userClient.setJWT(token);
+    } else {
+        userClient.setSession(token);
+    }
 
-    // 3. RESOLUÇÃO AUTORITATIVA DE TENANT E PAPÉIS
-    const { authoritativeTenantId, isSuperAdmin, userRoles } = await resolveUserTenantAndRole(
-      adminTeams,
-      userId,
-      targetTenantId,
-      databaseId
+    const account = new Account(userClient);
+    let user: any;
+    try {
+        user = await account.get();
+    } catch (err: any) {
+        throw { status: 401, message: `Sessão inválida ou expirada: ${err?.message || 'Unauthorized'}` };
+    }
+
+    if (user.status === false) {
+        throw { status: 403, message: 'Acesso negado: Conta de usuário desativada globalmente.' };
+    }
+
+    const userId = user.$id;
+    const adminClient = getAdminClient(env);
+    const adminTeams = new Teams(adminClient);
+    const adminDatabases = new Databases(adminClient);
+    const dbId = effectiveDatabaseId || env.databaseId || 'crm_db';
+
+    for (const colName of ['users_hydra', 'test_users_hydra']) {
+        try {
+            const userDoc: any = await adminDatabases.getDocument(dbId, colName, userId);
+            if (userDoc && userDoc.is_active === false) {
+                throw { status: 403, message: 'Acesso negado: Perfil de usuário desativado.' };
+            }
+        } catch (err: any) {
+            if (err && err.status === 403) throw err;
+        }
+    }
+
+    const allTeams = await listAllTeams(adminTeams, Query);
+    const userTeams: Array<{ teamId: string; teamName: string; roles: string[] }> = [];
+    let isSuperAdmin = false;
+    const superAdminTeams = [process.env.SUPERADMIN_TEAM_ID || 'superadmins'];
+    if (process.env.NODE_ENV === 'test' || dbId.includes('test')) {
+        superAdminTeams.push('test_team_superadmins');
+    }
+
+    for (const team of allTeams) {
+        try {
+            const memberships = await listAllMemberships(adminTeams, team.$id, Query);
+            const match = memberships.find((m: any) => m.userId === userId && m.confirm !== false);
+            if (match) {
+                userTeams.push({
+                    teamId: team.$id,
+                    teamName: team.name,
+                    roles: match.roles || []
+                });
+                // S01: Authoritative team ID verification ONLY, never trust team.name
+                if (superAdminTeams.includes(team.$id)) {
+                    isSuperAdmin = true;
+                }
+            }
+        } catch {
+            // Ignore individual team check errors
+        }
+    }
+
+    const operationalTeams = userTeams.filter(
+        t => !superAdminTeams.includes(t.teamId)
     );
 
-    // 3.5. AUTORIZAÇÃO DE PRODUÇÃO EXCLUSIVA VIA WRITE POLICY ENGINE (Fases 5H.3 / 5H.4)
-    // O mecanismo canário da Fase 5G foi aposentado em favor do motor de políticas declarativo.
-
-    // 3.8. AVALIAÇÃO CENTRAL DE POLÍTICA DE MENOR PRIVILÉGIO (WRITE POLICY ENGINE)
-    const policyCheck = writePolicyEngine.evaluate({
-      databaseId: databaseId!,
-      collectionId,
-      action,
-      tenantId: authoritativeTenantId,
-      userId,
-      userRoles,
-      data,
-      documentId,
-      clientIp: req.socket?.remoteAddress || '127.0.0.1',
-    });
-
-    if (!policyCheck.allowed) {
-      throw {
-        statusCode: policyCheck.code || 403,
-        message: policyCheck.reason,
-      };
+    if (operationalTeams.length === 0 && !isSuperAdmin) {
+        throw { status: 403, message: 'Acesso negado: Usuário não possui vínculo ativo com nenhuma empresa (Team).' };
     }
 
-    // 4. SANITIZAÇÃO DO PAYLOAD
-    const sanitizedData: Record<string, any> = { ...(data || {}) };
+    let authoritativeTenantId: string | null = null;
+    let activeRoles: string[] = [];
 
-    // Remove campos de controle e metadados internos
-    delete sanitizedData.$id;
-    delete sanitizedData.$createdAt;
-    delete sanitizedData.$updatedAt;
-    delete sanitizedData.$permissions;
-    delete sanitizedData.$databaseId;
-    delete sanitizedData.$collectionId;
-    delete sanitizedData._is_canary_test;
-
-    // Se o cliente tentou injetar outro tenant_id, rejeita ou anula
-    if (sanitizedData.tenant_id && sanitizedData.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
-      throw {
-        statusCode: 400,
-        message: `Tentativa ilegal de adulteração: não é permitido ditar tenant_id ("${sanitizedData.tenant_id}") diferente da sua organização autorizada ("${authoritativeTenantId}").`,
-      };
-    }
-
-    // S03: Bloquear coleções globais ou não-autorizadas do CRUD genérico
-    if (!TENANT_AWARE_COLLECTIONS.has(collectionId)) {
-      throw {
-        statusCode: 403,
-        message: `Acesso negado: a coleção "${collectionId}" não é permitida para operações genéricas de escrita. Coleções administrativas requerem rotas dedicadas.`,
-      };
-    }
-
-    // Validação de Integridade Relacional Multi-Tenant:
-    // Impede referências cruzadas a registros pertencentes a outros tenants (Etapas 2, 3 e 4)
-    const refChecks = [
-      { field: 'client_id', collection: (collectionId === 'test_contacts' || collectionId === 'test_deals' || collectionId === 'test_crm_contracts') ? 'test_clients' : 'clients' },
-      { field: 'contact_id', collection: (collectionId === 'test_deals') ? 'test_contacts' : 'phonebook' },
-      { field: 'deal_id', collection: (collectionId === 'test_crm_contracts') ? 'test_deals' : 'pipeline_deals' },
-    ];
-
-    for (const ref of refChecks) {
-      const refVal = sanitizedData[ref.field];
-      if (refVal && typeof refVal === 'string' && refVal.trim()) {
-        try {
-          const targetRefDoc = await adminDb.getDocument(databaseId, ref.collection, refVal.trim());
-          if (targetRefDoc.tenant_id && targetRefDoc.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+    if (requestedTenantId) {
+        const matched = operationalTeams.find(t => t.teamId === requestedTenantId);
+        if (matched) {
+            authoritativeTenantId = matched.teamId;
+            activeRoles = matched.roles;
+        } else if (isSuperAdmin) {
+            authoritativeTenantId = requestedTenantId;
+            activeRoles = ['superadmin', 'owner', 'admin'];
+        } else {
             throw {
-              statusCode: 403,
-              message: `[CROSS_TENANT_VIOLATION] Referência cruzada proibida: "${ref.field}" (${refVal}) pertence a outro tenant.`,
+                status: 403,
+                message: `Violação de Isolamento Multi-Tenant: Usuário não pertence ao tenant solicitado (${requestedTenantId}).`
             };
-          }
-        } catch (e: any) {
-          if (e.code === 404) {
+        }
+
+        if (!isSuperAdmin && await isTenantSuspended(adminDatabases, dbId, authoritativeTenantId)) {
             throw {
-              statusCode: 404,
-              message: `[REFERENCE_NOT_FOUND] Registro referenciado em "${ref.field}" não encontrado.`,
+                status: 403,
+                message: `Acesso negado: A empresa '${authoritativeTenantId}' encontra-se suspensa ou inativa.`
             };
-          }
-          throw e;
         }
-      }
-    }
-
-    // 5. EXECUÇÃO DA OPERAÇÃO
-
-    // --- CREATE ---
-    if (action === 'create') {
-      const docIdToUse = documentId && documentId.trim() ? documentId.trim() : ID.unique();
-
-      sanitizedData.tenant_id = authoritativeTenantId;
-
-      // Permissões Finais da Diretriz A: APENAS LEITURA PARA O TIME DO TENANT E SUPERADMINS!
-      // (Nenhuma permissão de escrita concedida diretamente a clientes)
-      const permissions: string[] = [];
-
-      const superAdminTeamForPerms =
-        databaseId === 'crm_db'
-          ? 'superadmins'
-          : ((authoritativeTenantId === 'test_team_alpha' || authoritativeTenantId === 'test_team_beta')
-              ? 'test_team_superadmins'
-              : 'superadmins');
-
-      permissions.push(
-        Permission.read(Role.team(authoritativeTenantId)),
-        Permission.read(Role.team(superAdminTeamForPerms))
-      );
-
-      const created = await adminDb.createDocument(
-        databaseId,
-        collectionId,
-        docIdToUse,
-        sanitizedData,
-        permissions
-      );
-
-      return {
-        success: true,
-        action: 'create',
-        collectionId,
-        documentId: created.$id,
-        data: created,
-        tenantId: authoritativeTenantId,
-      };
-    }
-
-    // --- UPDATE ---
-    if (action === 'update') {
-      if (!documentId) {
-        throw { statusCode: 400, message: 'documentId é obrigatório para atualização.' };
-      }
-
-      // Validação rigorosa de posse multi-tenant (S03)
-      const existing = await adminDb.getDocument(databaseId, collectionId, documentId);
-      if (!isSuperAdmin) {
-        if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
-          throw {
-            statusCode: 403,
-            message: `Acesso negado: o documento "${documentId}" não pertence à sua organização.`,
-          };
+    } else if (operationalTeams.length > 0) {
+        if (isSuperAdmin) {
+            authoritativeTenantId = operationalTeams[0].teamId;
+            activeRoles = operationalTeams[0].roles;
+        } else {
+            for (const candidate of operationalTeams) {
+                const suspended = await isTenantSuspended(adminDatabases, dbId, candidate.teamId);
+                if (!suspended) {
+                    authoritativeTenantId = candidate.teamId;
+                    activeRoles = candidate.roles;
+                    break;
+                }
+            }
+            if (!authoritativeTenantId) {
+                throw {
+                    status: 403,
+                    message: 'Acesso negado: Todas as empresas vinculadas à sua conta encontram-se suspensas.'
+                };
+            }
         }
-      }
-      // Assegura que tenant_id nunca é alterado via update
-      delete sanitizedData.tenant_id;
-
-      const updated = await adminDb.updateDocument(
-        databaseId,
-        collectionId,
-        documentId,
-        sanitizedData
-      );
-
-      return {
-        success: true,
-        action: 'update',
-        collectionId,
-        documentId: updated.$id,
-        data: updated,
-        tenantId: authoritativeTenantId,
-      };
+    } else if (isSuperAdmin) {
+        authoritativeTenantId = null;
+        activeRoles = ['superadmin', 'owner', 'admin'];
     }
 
-    // --- DELETE ---
-    if (action === 'delete') {
-      if (!documentId) {
-        throw { statusCode: 400, message: 'documentId é obrigatório para exclusão.' };
-      }
+    return {
+        userId,
+        email: user.email,
+        authoritativeTenantId,
+        isSuperAdmin,
+        roles: activeRoles
+    };
+}
 
-      // Validação rigorosa de posse multi-tenant (S03)
-      const existing = await adminDb.getDocument(databaseId, collectionId, documentId);
-      if (!isSuperAdmin) {
-        if (!existing.tenant_id || existing.tenant_id !== authoritativeTenantId) {
-          throw {
-            statusCode: 403,
-            message: `Acesso negado: o documento "${documentId}" não pertence à sua organização.`,
-          };
+export async function handleApiDataRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    env: BridgeEnvConfig
+): Promise<void> {
+    if (req.method === 'OPTIONS') {
+        sendJson(res, 204, {});
+        return;
+    }
+
+    if (req.method !== 'POST') {
+        sendJson(res, 405, { error: 'Method Not Allowed. Use POST.' });
+        return;
+    }
+
+    try {
+        const body = (await readJsonBody(req)) as unknown as BridgeRequestPayload;
+        const operation = (body as any).operation || (body as any).action;
+        const targetDatabaseId = (body as any).targetDatabaseId || (body as any).databaseId;
+        const {
+            collectionId,
+            documentId,
+            data,
+            queries = [],
+            targetTenantId
+        } = body;
+
+        if (!operation || !collectionId) {
+            sendJson(res, 400, { success: false, error: 'Parâmetros obrigatórios ausentes: operation/action, collectionId.' });
+            return;
         }
-      }
 
-      await adminDb.deleteDocument(databaseId, collectionId, documentId);
+        if (!ALLOWED_BUSINESS_COLLECTIONS.has(collectionId)) {
+            sendJson(res, 403, { success: false, error: `Coleção não autorizada na ponte de API: ${collectionId}` });
+            return;
+        }
 
-      return {
-        success: true,
-        action: 'delete',
-        collectionId,
-        documentId,
-        tenantId: authoritativeTenantId,
-      };
+        const effectiveDatabaseId = (targetDatabaseId === 'crm_isolated_test' || targetDatabaseId === 'crm_db_sandbox')
+            ? targetDatabaseId
+            : env.databaseId;
+
+        const authContext = await authenticateAndResolveTenant(req, env, targetTenantId, effectiveDatabaseId);
+        const { authoritativeTenantId, isSuperAdmin, userId, roles } = authContext;
+        const isTenantAdmin = isSuperAdmin || (roles || []).some(r => ['owner', 'admin', 'superadmin'].includes(String(r).toLowerCase()));
+
+        // R04: Strict authorization - users with only "viewer" role must never be permitted to execute writes
+        if (['create', 'update', 'delete'].includes(operation) && !isSuperAdmin) {
+            const userRolesLower = (roles || []).map(r => String(r).toLowerCase());
+            const hasWriteRole = userRolesLower.some(r => ['owner', 'admin', 'agent', 'member', 'superadmin', 'manager'].includes(r));
+            if (!hasWriteRole || (userRolesLower.length === 1 && userRolesLower[0] === 'viewer')) {
+                sendJson(res, 403, {
+                    success: false,
+                    error: 'Acesso negado: Usuário com permissão apenas de visualização (viewer) não possui autorização de escrita.',
+                    code: 'ROLE_NOT_AUTHORIZED_FOR_WRITE'
+                });
+                return;
+            }
+        }
+
+        const adminClient = getAdminClient(env);
+        const adminDatabases = new Databases(adminClient);
+        const isTenantAware = TENANT_AWARE_COLLECTIONS.has(collectionId);
+        const isContractCol = collectionId === 'contracts' || collectionId === 'test_contracts' || collectionId === 'crm_contracts' || collectionId === 'test_crm_contracts';
+        const isNotificationCol = collectionId === 'notifications';
+        const isTicketCol = collectionId === 'support_tickets' || collectionId === 'test_support_tickets' || collectionId === 'tickets';
+        const isServerCol = collectionId === 'servers';
+
+        let existingDocForWrite: any = null;
+        if (['update', 'delete'].includes(operation)) {
+            if (!documentId) {
+                sendJson(res, 400, { error: `documentId é obrigatório para ${operation}.` });
+                return;
+            }
+            existingDocForWrite = await adminDatabases.getDocument(effectiveDatabaseId, collectionId, documentId);
+
+            if (isTenantAware && authoritativeTenantId && existingDocForWrite.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+                sendJson(res, 403, {
+                    error: `Violação de Isolamento Multi-Tenant: Tentativa de ${operation === 'update' ? 'atualizar' : 'excluir'} documento de outro tenant.`
+                });
+                return;
+            }
+
+            if (isNotificationCol && !isTenantAdmin) {
+                if (existingDocForWrite.user_id && existingDocForWrite.user_id !== userId) {
+                    sendJson(res, 403, {
+                        code: 'NOTIFICATION_OWNERSHIP_VIOLATION',
+                        error: 'Acesso negado: Você só pode alterar ou excluir suas próprias notificações.'
+                    });
+                    return;
+                }
+            }
+
+            if (isContractCol) {
+                const existingStatus = String(existingDocForWrite.status || '').trim().toLowerCase();
+                if (existingStatus === 'signed' || existingStatus === 'assinado' || existingDocForWrite.signed_at) {
+                    sendJson(res, 403, {
+                        code: 'CONTRACT_IMMUTABLE_SIGNED',
+                        error: 'Contratos já assinados são imutáveis e não podem ser alterados ou excluídos via CRUD.'
+                    });
+                    return;
+                }
+            }
+        }
+
+        if (isContractCol && (operation === 'create' || operation === 'update') && data && typeof data === 'object') {
+            for (const forbiddenField of CONTRACT_SIGNATURE_FORBIDDEN_FIELDS) {
+                if (Object.prototype.hasOwnProperty.call(data, forbiddenField) && data[forbiddenField] !== undefined) {
+                    sendJson(res, 403, {
+                        code: 'FORBIDDEN_CONTRACT_SIGNATURE_FIELD',
+                        error: `O campo de assinatura '${forbiddenField}' não pode ser gravado via CRUD. Utilize /api/contracts/sign.`
+                    });
+                    return;
+                }
+            }
+            if (data.status) {
+                const statusLower = String(data.status).trim().toLowerCase();
+                if (statusLower === 'signed' || statusLower === 'assinado') {
+                    sendJson(res, 403, {
+                        code: 'FORBIDDEN_CONTRACT_SIGNATURE_STATUS',
+                        error: 'O status de contrato assinado só pode ser atribuído pelo endpoint público de assinatura (/api/contracts/sign).'
+                    });
+                    return;
+                }
+            }
+        }
+
+        if (['create', 'update', 'delete'].includes(operation)) {
+            const policyEval = writePolicyEngine.evaluate({
+                collectionId,
+                operation,
+                tenantId: authoritativeTenantId,
+                userId,
+                roles,
+                isSuperAdmin,
+                payload: data || {},
+                existingDocument: existingDocForWrite
+            });
+
+            if (!policyEval.allowed) {
+                sendJson(res, 422, {
+                    error: 'Operação bloqueada pelo Motor de Políticas de Escrita (Write Policy Engine).',
+                    code: 'WRITE_POLICY_VIOLATION',
+                    mode: policyEval.mode,
+                    violations: policyEval.violations
+                });
+                return;
+            }
+        }
+
+        switch (operation) {
+            case 'list': {
+                const finalQueries = [...queries];
+                if (isTenantAware) {
+                    if (authoritativeTenantId) {
+                        finalQueries.push(Query.equal('tenant_id', [authoritativeTenantId]));
+                    } else if (!isSuperAdmin) {
+                        sendJson(res, 403, { error: 'Tenant ID não resolvido para listagem.' });
+                        return;
+                    }
+                }
+                const result = await adminDatabases.listDocuments(effectiveDatabaseId, collectionId, finalQueries);
+
+                if (isNotificationCol && !isTenantAdmin) {
+                    const filteredDocs = (result.documents || []).filter(
+                        (doc: any) => !doc.user_id || doc.user_id === userId
+                    );
+                    sendJson(res, 200, {
+                        ...result,
+                        total: filteredDocs.length,
+                        documents: filteredDocs
+                    });
+                    return;
+                }
+
+                sendJson(res, 200, result);
+                return;
+            }
+
+            case 'get': {
+                if (!documentId) {
+                    sendJson(res, 400, { error: 'documentId é obrigatório para operação get.' });
+                    return;
+                }
+                const doc: any = await adminDatabases.getDocument(effectiveDatabaseId, collectionId, documentId);
+                if (isTenantAware && authoritativeTenantId && doc.tenant_id !== authoritativeTenantId && !isSuperAdmin) {
+                    sendJson(res, 403, { error: 'Violação de Isolamento Multi-Tenant: Documento pertence a outra empresa.' });
+                    return;
+                }
+                if (isNotificationCol && !isTenantAdmin && doc.user_id && doc.user_id !== userId) {
+                    sendJson(res, 403, { error: 'Acesso negado: Esta notificação pertence a outro usuário.' });
+                    return;
+                }
+                sendJson(res, 200, doc);
+                return;
+            }
+
+            case 'create': {
+                if (!data || typeof data !== 'object') {
+                    sendJson(res, 400, { error: 'Objeto data é obrigatório para operação create.' });
+                    return;
+                }
+                const cleanData: Record<string, any> = { ...data };
+                delete cleanData.$id;
+                delete cleanData.$createdAt;
+                delete cleanData.$updatedAt;
+                delete cleanData.$permissions;
+                delete cleanData.$databaseId;
+                delete cleanData.$collectionId;
+
+                if (isTenantAware) {
+                    if (!authoritativeTenantId && !isSuperAdmin) {
+                        sendJson(res, 403, { error: 'Não é possível criar registro sem Tenant ativo.' });
+                        return;
+                    }
+                    if (authoritativeTenantId) {
+                        cleanData.tenant_id = authoritativeTenantId;
+                    }
+                }
+
+                if (isNotificationCol && !cleanData.user_id) {
+                    cleanData.user_id = userId;
+                }
+
+                const finalDocId = documentId || ID.unique();
+                const writeStartMs = Date.now();
+                try {
+                    const created = await adminDatabases.createDocument(effectiveDatabaseId, collectionId, finalDocId, cleanData);
+                    writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
+                    sendJson(res, 201, {
+                        success: true,
+                        action: operation,
+                        collectionId,
+                        documentId: created.$id,
+                        data: created,
+                        ...created
+                    });
+                    return;
+                } catch (dbErr) {
+                    writePolicyEngine.recordFailure(dbErr, Date.now() - writeStartMs, effectiveDatabaseId);
+                    throw dbErr;
+                }
+            }
+
+            case 'update': {
+                if (!documentId || !data || typeof data !== 'object') {
+                    sendJson(res, 400, { success: false, error: 'documentId e data são obrigatórios para operação update.' });
+                    return;
+                }
+
+                // F22: Re-read fresh document to avoid race conditions under concurrency
+                let latestDoc = existingDocForWrite;
+                try {
+                    latestDoc = await adminDatabases.getDocument(effectiveDatabaseId, collectionId, documentId);
+                } catch {}
+
+                const cleanUpdateData: Record<string, any> = { ...data };
+                delete cleanUpdateData.$id;
+                delete cleanUpdateData.$createdAt;
+                delete cleanUpdateData.$updatedAt;
+                delete cleanUpdateData.$permissions;
+                delete cleanUpdateData.$databaseId;
+                delete cleanUpdateData.$collectionId;
+
+                if (isTenantAware && authoritativeTenantId && !isSuperAdmin) {
+                    cleanUpdateData.tenant_id = authoritativeTenantId;
+                }
+
+                if (isTicketCol && latestDoc && (cleanUpdateData.messages_json !== undefined || cleanUpdateData._append_message !== undefined)) {
+                    cleanUpdateData.messages_json = mergeJsonArrayById(
+                        latestDoc.messages_json,
+                        cleanUpdateData.messages_json,
+                        cleanUpdateData._append_message,
+                        'timestamp'
+                    );
+                    delete cleanUpdateData._append_message;
+                }
+
+                if (isServerCol && latestDoc && (cleanUpdateData.incidents_json !== undefined || cleanUpdateData._append_incident !== undefined)) {
+                    cleanUpdateData.incidents_json = mergeJsonArrayById(
+                        latestDoc.incidents_json,
+                        cleanUpdateData.incidents_json,
+                        cleanUpdateData._append_incident,
+                        'date'
+                    );
+                    delete cleanUpdateData._append_incident;
+                }
+
+                const writeStartMs = Date.now();
+                try {
+                    const updated = await adminDatabases.updateDocument(effectiveDatabaseId, collectionId, documentId, cleanUpdateData);
+                    writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
+                    sendJson(res, 200, {
+                        success: true,
+                        action: operation,
+                        collectionId,
+                        documentId: updated.$id || documentId,
+                        data: updated,
+                        ...updated
+                    });
+                    return;
+                } catch (dbErr) {
+                    writePolicyEngine.recordFailure(dbErr, Date.now() - writeStartMs, effectiveDatabaseId);
+                    throw dbErr;
+                }
+            }
+
+            case 'delete': {
+                const writeStartMs = Date.now();
+                try {
+                    await adminDatabases.deleteDocument(effectiveDatabaseId, collectionId, documentId!);
+                    writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
+                    sendJson(res, 200, {
+                        success: true,
+                        action: operation,
+                        collectionId,
+                        documentId,
+                        deletedId: documentId,
+                        data: { success: true, documentId, message: `Documento '${documentId}' excluído com sucesso.` },
+                        message: `Documento '${documentId}' excluído com sucesso.`
+                    });
+                    return;
+                } catch (dbErr) {
+                    writePolicyEngine.recordFailure(dbErr, Date.now() - writeStartMs, effectiveDatabaseId);
+                    throw dbErr;
+                }
+            }
+
+            default:
+                sendJson(res, 400, { error: `Operação desconhecida: ${operation}` });
+        }
+    } catch (err: any) {
+        const status = err?.status || err?.statusCode || err?.code || 500;
+        const httpStatus = typeof status === 'number' && status >= 100 && status < 600 ? status : 500;
+        sendJson(res, httpStatus, {
+            error: err?.message || 'Erro interno no servidor de API.',
+            code: err?.type || err?.code || 'INTERNAL_ERROR'
+        });
     }
-
-    throw { statusCode: 400, message: `Ação não reconhecida: "${action}".` };
-  } finally {
-    exitOp();
-  }
 }

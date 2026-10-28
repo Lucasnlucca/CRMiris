@@ -52,6 +52,131 @@ function sanitizeQueries(queries: any[]): any[] {
   });
 }
 
+const DEFAULT_PAGE_SIZE = 100;
+const MAX_PAGINATION_PAGES = 100;
+
+function inspectPaginationQueries(queries: any[]): {
+  queriesWithoutLimit: any[];
+  explicitLimit: number | null;
+  hasExplicitCursorOrOffset: boolean;
+} {
+  if (!Array.isArray(queries)) {
+    return { queriesWithoutLimit: [], explicitLimit: null, hasExplicitCursorOrOffset: false };
+  }
+
+  let explicitLimit: number | null = null;
+  let hasExplicitCursorOrOffset = false;
+  const queriesWithoutLimit: any[] = [];
+
+  for (const q of queries) {
+    const qStr = typeof q === 'string' ? q : JSON.stringify(q);
+    if (qStr.includes('"cursorAfter"') || qStr.includes('cursorAfter(') || qStr.includes('"offset"') || qStr.includes('offset(')) {
+      hasExplicitCursorOrOffset = true;
+      queriesWithoutLimit.push(q);
+      continue;
+    }
+
+    // Detecta Query.limit(n) em formato JSON ou string do Appwrite SDK
+    const limitMatch =
+      qStr.match(/"method"\s*:\s*"limit"[^}]*"values"\s*:\s*\[\s*(\d+)\s*\]/) ||
+      qStr.match(/limit\((\d+)\)/);
+
+    if (limitMatch && limitMatch[1]) {
+      explicitLimit = parseInt(limitMatch[1], 10);
+      continue;
+    }
+
+    queriesWithoutLimit.push(q);
+  }
+
+  return { queriesWithoutLimit, explicitLimit, hasExplicitCursorOrOffset };
+}
+
+async function paginateCollectionDocuments(
+  rawDatabases: Databases,
+  databaseId: string,
+  collectionId: string,
+  baseQueries: any[],
+  maxItems?: number
+) {
+  const pageSize = maxItems && maxItems < DEFAULT_PAGE_SIZE ? maxItems : DEFAULT_PAGE_SIZE;
+  const firstPage = await rawDatabases.listDocuments(databaseId, collectionId, [
+    ...baseQueries,
+    Query.limit(pageSize),
+  ]);
+
+  const firstDocs = Array.isArray(firstPage?.documents) ? firstPage.documents : [];
+  if (
+    firstDocs.length < pageSize ||
+    (typeof firstPage?.total === 'number' && firstDocs.length >= firstPage.total) ||
+    (maxItems && firstDocs.length >= maxItems)
+  ) {
+    return firstPage;
+  }
+
+  const allDocuments = [...firstDocs];
+  const seenIds = new Set<string>(
+    firstDocs.map((d: any) => d?.$id || d?.id).filter(Boolean)
+  );
+  let offset = firstDocs.length;
+
+  for (let page = 1; page < MAX_PAGINATION_PAGES; page++) {
+    if (maxItems && allDocuments.length >= maxItems) break;
+
+    const remaining = maxItems ? Math.min(DEFAULT_PAGE_SIZE, maxItems - allDocuments.length) : DEFAULT_PAGE_SIZE;
+    const lastDoc: any = allDocuments[allDocuments.length - 1];
+    const lastId = lastDoc?.$id || lastDoc?.id;
+
+    const pageQueries = [
+      ...baseQueries,
+      Query.limit(remaining),
+      lastId ? Query.cursorAfter(lastId) : Query.offset(offset),
+    ];
+
+    const nextPage = await rawDatabases.listDocuments(databaseId, collectionId, pageQueries);
+    const batch = Array.isArray(nextPage?.documents) ? nextPage.documents : [];
+    if (batch.length === 0) break;
+
+    let addedInBatch = 0;
+    for (const doc of batch) {
+      const docId = (doc as any)?.$id || (doc as any)?.id;
+      if (docId) {
+        if (seenIds.has(docId)) continue;
+        seenIds.add(docId);
+      }
+      allDocuments.push(doc);
+      addedInBatch++;
+      if (maxItems && allDocuments.length >= maxItems) break;
+    }
+
+    offset += batch.length;
+    if (addedInBatch === 0 || batch.length < remaining) break;
+    if (typeof nextPage?.total === 'number' && allDocuments.length >= nextPage.total) break;
+  }
+
+  return {
+    ...firstPage,
+    documents: allDocuments,
+    total:
+      typeof firstPage?.total === 'number'
+        ? Math.max(firstPage.total, allDocuments.length)
+        : allDocuments.length,
+  };
+}
+
+/**
+ * Busca todas as páginas de uma coleção preservando os filtros e o escopo do tenant ativo.
+ */
+export async function listAllDocuments(
+  db: Databases,
+  databaseId: string,
+  collectionId: string,
+  queries: any[] = []
+) {
+  const { queriesWithoutLimit } = inspectPaginationQueries(queries);
+  return await db.listDocuments(databaseId, collectionId, queriesWithoutLimit);
+}
+
 /**
  * Cria o wrapper centralizado de banco de dados para enforçar
  * as regras de multi-tenant nas operações do CRM.
@@ -62,42 +187,66 @@ export function createTenantDatabases(
   getUserId?: () => string | null,
   getIsSuperAdmin?: () => boolean
 ): Databases {
+  const executeScopedList = async (
+    databaseId: string,
+    collectionId: string,
+    queries: any[] = [],
+    forceAllPages = false
+  ) => {
+    const currentTenantId = getTenantId();
+    let effectiveQueries = Array.isArray(queries) ? [...queries] : [];
+
+    // 1. Coleções operacionais do Tenant
+    if (TENANT_AWARE_COLLECTIONS.has(collectionId)) {
+      if (currentTenantId) {
+        effectiveQueries = sanitizeQueries(effectiveQueries);
+        effectiveQueries.push(Query.equal('tenant_id', currentTenantId));
+      }
+    } else if (collectionId === 'users_hydra' && currentTenantId) {
+      // 2. Coleção de Usuários da Plataforma (users_hydra)
+      effectiveQueries = effectiveQueries.filter((q) => {
+        const qStr = typeof q === 'string' ? q : JSON.stringify(q);
+        return !qStr.includes('default_tenant_id');
+      });
+      effectiveQueries.push(Query.equal('default_tenant_id', currentTenantId));
+    }
+
+    const { queriesWithoutLimit, explicitLimit, hasExplicitCursorOrOffset } =
+      inspectPaginationQueries(effectiveQueries);
+
+    if (!forceAllPages && hasExplicitCursorOrOffset) {
+      return await rawDatabases.listDocuments(databaseId, collectionId, effectiveQueries);
+    }
+
+    if (!forceAllPages && explicitLimit !== null && explicitLimit <= DEFAULT_PAGE_SIZE) {
+      return await rawDatabases.listDocuments(databaseId, collectionId, effectiveQueries);
+    }
+
+    return await paginateCollectionDocuments(
+      rawDatabases,
+      databaseId,
+      collectionId,
+      queriesWithoutLimit,
+      !forceAllPages && explicitLimit !== null ? explicitLimit : undefined
+    );
+  };
+
   return {
     ...rawDatabases,
 
     /**
      * Listagem centralizada com injeção automática de Query.equal('tenant_id', currentTenantId)
+     * e paginação automática para evitar truncamento silencioso em 25/100 registros.
      */
     async listDocuments(databaseId: string, collectionId: string, queries: any[] = []) {
-      const currentTenantId = getTenantId();
+      return await executeScopedList(databaseId, collectionId, queries, false);
+    },
 
-      // 1. Coleções operacionais do Tenant
-      if (TENANT_AWARE_COLLECTIONS.has(collectionId)) {
-        if (currentTenantId) {
-          const cleanQueries = sanitizeQueries(queries);
-          cleanQueries.push(Query.equal('tenant_id', currentTenantId));
-          return await rawDatabases.listDocuments(databaseId, collectionId, cleanQueries);
-        } else {
-          // Sem tenant ativo (ex: rotas públicas ou inicialização transitória)
-          return await rawDatabases.listDocuments(databaseId, collectionId, queries);
-        }
-      }
-
-      // 2. Coleção de Usuários da Plataforma (users_hydra)
-      if (collectionId === 'users_hydra') {
-        if (currentTenantId) {
-          // Filtra usuários vinculados a esta empresa
-          const cleanQueries = queries.filter((q) => {
-            const qStr = typeof q === 'string' ? q : JSON.stringify(q);
-            return !qStr.includes('default_tenant_id');
-          });
-          cleanQueries.push(Query.equal('default_tenant_id', currentTenantId));
-          return await rawDatabases.listDocuments(databaseId, collectionId, cleanQueries);
-        }
-      }
-
-      // 3. Coleções globais ou de controle (ex: 'tenants')
-      return await rawDatabases.listDocuments(databaseId, collectionId, queries);
+    /**
+     * Listagem paginada completa de todos os documentos da coleção para o tenant ativo.
+     */
+    async listAllDocuments(databaseId: string, collectionId: string, queries: any[] = []) {
+      return await executeScopedList(databaseId, collectionId, queries, true);
     },
 
     /**
@@ -142,13 +291,18 @@ export function createTenantDatabases(
       let securePermissions = permissions;
 
       if (TENANT_AWARE_COLLECTIONS.has(collectionId)) {
+        const isSuper = !!getIsSuperAdmin?.();
+        if (currentTenantId && secureData.tenant_id && secureData.tenant_id !== currentTenantId && !isSuper) {
+          console.warn(`[Tenant Security] Tentativa ilegal de criar documento no tenant "${secureData.tenant_id}" a partir de "${currentTenantId}".`);
+          throw new Error(`[Tenant Security] Não é permitido criar documentos em outra organização.`);
+        }
         delete secureData.tenant_id;
         if (!currentTenantId) {
           console.warn(`[Tenant Security] Criação em "${collectionId}" sem tenant ativo.`);
         } else {
+          secureData.tenant_id = currentTenantId;
           // Injeta permissões autoritativas do Team da empresa
           const teamRole = `team:${currentTenantId}`;
-          const isSuper = !!getIsSuperAdmin?.();
           const superadminRole = 'team:superadmins';
 
           // Base de permissões: colaboradores da própria empresa têm acesso

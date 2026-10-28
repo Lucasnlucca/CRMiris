@@ -29,19 +29,27 @@
 
           if (!resolved) {
             var host = (window.location.hostname || '').toLowerCase();
+            if (host.startsWith('www.')) host = host.slice(4);
+
             if (host.endsWith('.lvplataform.com.br')) {
               var p1 = host.slice(0, -'.lvplataform.com.br'.length).split('.').filter(Boolean);
-              if (p1.length > 0 && !reserved[p1[0]]) resolved = p1[0];
+              for (var i = 0; i < p1.length; i++) {
+                if (!reserved[p1[i]]) { resolved = p1[i]; break; }
+              }
             } else if (host.endsWith('.lvplatform.com.br')) {
               var p2 = host.slice(0, -'.lvplatform.com.br'.length).split('.').filter(Boolean);
-              if (p2.length > 0 && !reserved[p2[0]]) resolved = p2[0];
+              for (var j = 0; j < p2.length; j++) {
+                if (!reserved[p2[j]]) { resolved = p2[j]; break; }
+              }
             } else if (host.endsWith('.localhost')) {
               var p3 = host.slice(0, -'.localhost'.length).split('.').filter(Boolean);
-              if (p3.length > 0 && !reserved[p3[0]]) resolved = p3[0];
+              for (var k = 0; k < p3.length; k++) {
+                if (!reserved[p3[k]]) { resolved = p3[k]; break; }
+              }
             } else if (host && host !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(host) && !host.endsWith('.easypanel.host')) {
               var parts = host.split('.').filter(Boolean);
-              if (parts.length >= 3 && !reserved[parts[0]]) {
-                resolved = parts[0];
+              for (var m = 0; m < parts.length; m++) {
+                if (!reserved[parts[m]]) { resolved = parts[m]; break; }
               }
             }
           }
@@ -50,14 +58,6 @@
             var params = new URLSearchParams(window.location.search);
             var qTenant = (params.get('tenant') || params.get('empresa') || '').trim().toLowerCase();
             if (qTenant && !reserved[qTenant]) resolved = qTenant;
-          }
-
-          if (!resolved && window.location.pathname && window.location.pathname !== '/') {
-            var segs = window.location.pathname.split('/').filter(Boolean);
-            if (segs.length > 0) {
-              var seg0 = segs[0].toLowerCase();
-              if (!reserved[seg0]) resolved = seg0;
-            }
           }
 
           root.setAttribute('data-tenant-host', window.location.hostname || 'localhost');
@@ -70,7 +70,130 @@
     </script>
   </head>
   <body class="bg-gray-50 dark:bg-[#1a1d23]">
-    <div id="root"></div>
+    <div id="root">
+      <style>
+        #preloader-initial {
+          position: fixed;
+          inset: 0;
+          z-index: 99999;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          background-color: #090d15;
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+          user-select: none;
+        }
+        .preloader-glow {
+          position: absolute;
+          width: 384px;
+          height: 384px;
+          border-radius: 9999px;
+          background: rgba(99, 102, 241, 0.08);
+          filter: blur(64px);
+          pointer-events: none;
+        }
+        .preloader-typo-box {
+          position: relative;
+          display: inline-block;
+          margin-bottom: 8px;
+        }
+        .preloader-base-text {
+          font-size: 44px;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          margin: 0;
+          line-height: 1.1;
+          color: transparent;
+          background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 55%, #94a3b8 100%);
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          filter: drop-shadow(0 2px 14px rgba(0, 0, 0, 0.6));
+        }
+        .preloader-lv-brand {
+          color: #818cf8;
+          -webkit-text-fill-color: #818cf8;
+          font-weight: 900;
+          margin-right: 2px;
+        }
+        .preloader-sweep-layer {
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+          font-size: 44px;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          margin: 0;
+          line-height: 1.1;
+          background: linear-gradient(110deg, transparent 32%, rgba(255, 255, 255, 0.12) 42%, rgba(255, 255, 255, 0.95) 50%, rgba(255, 255, 255, 0.12) 58%, transparent 68%);
+          background-size: 250% 100%;
+          -webkit-background-clip: text;
+          background-clip: text;
+          -webkit-text-fill-color: transparent;
+          animation: initialLightSweep 2s cubic-bezier(0.25, 1, 0.5, 1) 0.1s 1 forwards;
+        }
+        .preloader-subtitle {
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.28em;
+          color: rgba(148, 163, 184, 0.8);
+          margin-bottom: 24px;
+        }
+        .preloader-bar-track {
+          position: relative;
+          width: 180px;
+          height: 3px;
+          background: rgba(255, 255, 255, 0.06);
+          border-radius: 9999px;
+          overflow: hidden;
+          margin-bottom: 12px;
+        }
+        .preloader-bar-beam {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 0;
+          width: 35%;
+          background: linear-gradient(90deg, transparent, #818cf8, transparent);
+          border-radius: 9999px;
+          animation: initialProgress 1.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+        }
+        .preloader-caption {
+          font-size: 12px;
+          font-weight: 500;
+          letter-spacing: 0.025em;
+          color: #94a3b8;
+          animation: initialPulse 2s ease-in-out infinite;
+        }
+        @keyframes initialLightSweep {
+          0% { background-position: 130% 0; }
+          100% { background-position: -30% 0; }
+        }
+        @keyframes initialProgress {
+          0% { transform: translateX(-100%); }
+          50% { transform: translateX(150%); }
+          100% { transform: translateX(350%); }
+        }
+        @keyframes initialPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+      </style>
+      <div id="preloader-initial">
+        <div class="preloader-glow"></div>
+        <div class="preloader-typo-box">
+          <div class="preloader-base-text"><span class="preloader-lv-brand">LV</span>Platform</div>
+          <div class="preloader-sweep-layer" aria-hidden="true"><span style="margin-right:2px">LV</span>Platform</div>
+        </div>
+        <div class="preloader-subtitle">Central de Operações & CRM</div>
+        <div class="preloader-bar-track">
+          <div class="preloader-bar-beam"></div>
+        </div>
+        <div class="preloader-caption">Carregando LVPlatform...</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

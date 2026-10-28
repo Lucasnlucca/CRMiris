@@ -67,18 +67,39 @@ async function sendAuthorizedWriteRequest<T>(payload: {
     const json = (await response.json().catch(() => ({}))) as BackendBridgeResponse<T>;
 
     if (!response.ok || !json.success) {
+      if (response.status === 401) {
+        clearCachedJwt();
+      }
+      const status = response.status && response.status >= 400 ? response.status : 500;
       const errorMessage =
-        json.error || `[BackendBridge] Erro HTTP ${response.status} ao executar ${payload.action}.`;
-      const errorObj = new Error(errorMessage);
-      (errorObj as any).code = response.status;
+        json.error || `[BackendBridge] Erro HTTP ${status} ao executar ${payload.action}.`;
+      const errorObj = new Error(errorMessage) as Error & { code?: number; status?: number };
+      errorObj.code = status;
+      errorObj.status = status;
       throw errorObj;
     }
 
     return (json.data ?? json) as T;
   } catch (err: any) {
     clearTimeout(timeoutId);
-    if (err.name === 'AbortError') {
-      throw new Error(`[BackendBridge] Tempo limite esgotado (${REQUEST_TIMEOUT_MS}ms) na operação ${payload.action}.`);
+    if (err?.name === 'AbortError') {
+      const timeoutErr = new Error(
+        `[BackendBridge] Tempo limite esgotado (${REQUEST_TIMEOUT_MS}ms) na operação ${payload.action}.`
+      ) as Error & { code?: number; status?: number; isTimeout?: boolean };
+      timeoutErr.code = 408;
+      timeoutErr.status = 408;
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    if (err && typeof err === 'object') {
+      if (err.code === undefined && err.status === undefined) {
+        err.code = 503;
+        err.status = 503;
+      } else if (err.code === undefined) {
+        err.code = err.status;
+      } else if (err.status === undefined) {
+        err.status = err.code;
+      }
     }
     throw err;
   }

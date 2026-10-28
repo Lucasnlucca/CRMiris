@@ -28,6 +28,12 @@ import {
   PlayCircle,
   Database,
   ArrowRight,
+  ArrowLeft,
+  Copy,
+  Zap,
+  CheckSquare,
+  Square,
+  Layers,
   Eye,
   Sliders,
   Check,
@@ -50,6 +56,7 @@ import {
   fetchAdminTenants,
   createAdminTenant,
   updateAdminTenant,
+  deleteAdminTenant,
   CreateTenantPayload,
   UpdateTenantPayload,
 } from '../lib/adminTenantsApi';
@@ -76,6 +83,41 @@ const PRESET_COLORS = [
   { name: 'Ciano / Turquesa', hex: '#06b6d4' },
   { name: 'Vermelho Carmim', hex: '#ef4444' },
 ];
+
+const PLAN_TIERS = [
+  {
+    id: 'free',
+    name: 'Free',
+    tag: 'Degustação',
+    price: 'R$ 0/mês',
+    desc: 'Demonstrações e testes básicos com limites operacionais.',
+    popular: false,
+  },
+  {
+    id: 'starter',
+    name: 'Starter',
+    tag: 'Crescimento',
+    price: 'R$ 149/mês',
+    desc: 'Para pequenas equipes e operações com até 5 operadores.',
+    popular: false,
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    tag: 'Mais Popular',
+    price: 'R$ 299/mês',
+    desc: 'Funil avançado, automações, cobranças e relatórios completos.',
+    popular: true,
+  },
+  {
+    id: 'enterprise',
+    name: 'Enterprise',
+    tag: 'Dedicado',
+    price: 'Sob Consulta',
+    desc: 'Isolamento de banco, SLA de 99.9%, auditoria e suporte prioritário.',
+    popular: false,
+  },
+] as const;
 
 const ICON_MAP: Record<string, React.ElementType> = {
   Users,
@@ -131,6 +173,11 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
+  // Modal de Exclusão Segura com Confirmação pelo Nome do Servidor / CRM
+  const [tenantToDelete, setTenantToDelete] = useState<Tenant | null>(null);
+  const [deleteTenantInput, setDeleteTenantInput] = useState<string>('');
+  const [isDeletingTenant, setIsDeletingTenant] = useState<boolean>(false);
+
   // Form State para Tenants
   const [formData, setFormData] = useState({
     name: '',
@@ -145,6 +192,39 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
     primary_color: '#4f46e5',
     allowed_menus: ALL_CRM_MENUS.map((m) => m.id),
   });
+
+  const handleDeleteTenantConfirm = async () => {
+    if (!tenantToDelete) return;
+
+    const targetName = (tenantToDelete.name || tenantToDelete.trade_name || '').trim();
+    const isMatched =
+      deleteTenantInput.trim() === targetName ||
+      (tenantToDelete.trade_name && deleteTenantInput.trim() === tenantToDelete.trade_name.trim());
+
+    if (!isMatched) {
+      setError(`O nome digitado não corresponde a "${targetName}". Digite o nome exato para confirmar.`);
+      return;
+    }
+
+    setIsDeletingTenant(true);
+    setError(null);
+    try {
+      await deleteAdminTenant(tenantToDelete.id);
+      setSuccessNotice(`Servidor/CRM "${targetName}" excluído com sucesso!`);
+      setTenants((prev) => prev.filter((t) => t.id !== tenantToDelete.id));
+
+      if (currentActiveTenant?.id === tenantToDelete.id) {
+        setTenant('matriz');
+      }
+      refreshTenants();
+      setTenantToDelete(null);
+      setDeleteTenantInput('');
+    } catch (err: any) {
+      setError(err.message || 'Falha ao excluir o servidor.');
+    } finally {
+      setIsDeletingTenant(false);
+    }
+  };
 
   // Estado da aba de Personalização (Branding)
   const [selectedBrandingTenantId, setSelectedBrandingTenantId] = useState<string>('');
@@ -328,6 +408,43 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
     }
   };
 
+  const [copiedSlug, setCopiedSlug] = useState<boolean>(false);
+
+  const handleCopyDomain = () => {
+    const domainUrl = `https://${formData.slug || 'sua-empresa'}.lvplataform.com.br`;
+    navigator.clipboard.writeText(domainUrl);
+    setCopiedSlug(true);
+    setTimeout(() => setCopiedSlug(false), 2000);
+  };
+
+  const handleSelectAllMenus = () => {
+    setFormData((prev) => ({ ...prev, allowed_menus: ALL_CRM_MENUS.map((m) => m.id) }));
+  };
+
+  const handleDeselectAllMenus = () => {
+    setFormData((prev) => ({ ...prev, allowed_menus: [] }));
+  };
+
+  const handleToggleCategoryMenus = (category: string) => {
+    const categoryIds = ALL_CRM_MENUS.filter((m) => m.category === category).map((m) => m.id);
+    setFormData((prev) => {
+      const allSelected = categoryIds.every((id) => prev.allowed_menus.includes(id));
+      const nextMenus = allSelected
+        ? prev.allowed_menus.filter((id) => !categoryIds.includes(id))
+        : Array.from(new Set([...prev.allowed_menus, ...categoryIds]));
+      return { ...prev, allowed_menus: nextMenus };
+    });
+  };
+
+  const categorizedMenus = useMemo(() => {
+    const groups: Record<string, typeof ALL_CRM_MENUS> = {};
+    ALL_CRM_MENUS.forEach((menu) => {
+      if (!groups[menu.category]) groups[menu.category] = [];
+      groups[menu.category].push(menu);
+    });
+    return groups;
+  }, []);
+
   // Criar / Editar Tenant Modal Handlers
   const handleOpenCreate = () => {
     setFormData({
@@ -345,6 +462,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
     });
     setEditingTenant(null);
     setShowCreateModal(true);
+    handleTabChange('tenants');
   };
 
   const handleOpenEdit = (t: Tenant) => {
@@ -363,6 +481,7 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
       allowed_menus: parseAllowedMenus(t.settings_json),
     });
     setShowCreateModal(true);
+    handleTabChange('tenants');
   };
 
   const handleToggleAllowedMenu = (menuId: string) => {
@@ -523,7 +642,14 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
     const nextAllowed = !currentAllowed;
     setActionLoading(`rule-${collection}-${action}`);
     try {
-      const res = await toggleGranularRule(collection, action, nextAllowed, undefined, policyDbId, policyData?.stateVersion);
+      const res = await toggleGranularRule({
+        databaseId: policyDbId,
+        collectionId: collection,
+        action,
+        tenantId: policyTenantId || 'all',
+        enabled: nextAllowed,
+        expectedVersion: policyData?.stateVersion,
+      });
       setSuccessNotice(res.message);
       await loadPolicy();
     } catch (err: any) {
@@ -590,13 +716,23 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
               <RefreshCw className={`w-4 h-4 ${loading || policyLoading ? 'animate-spin' : ''}`} />
               Atualizar
             </button>
-            <button
-              onClick={handleOpenCreate}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition text-sm font-semibold shadow-sm shadow-indigo-600/20"
-            >
-              <Plus className="w-4 h-4" />
-              Novo CRM / Empresa
-            </button>
+            {showCreateModal && activeTab === 'tenants' ? (
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 transition text-sm font-semibold shadow-xs"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Voltar para Listagem
+              </button>
+            ) : (
+              <button
+                onClick={handleOpenCreate}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition text-sm font-semibold shadow-sm shadow-indigo-600/20"
+              >
+                <Plus className="w-4 h-4" />
+                Novo CRM / Empresa
+              </button>
+            )}
           </div>
         </div>
 
@@ -615,7 +751,10 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
           </button>
 
           <button
-            onClick={() => handleTabChange('tenants')}
+            onClick={() => {
+              setShowCreateModal(false);
+              handleTabChange('tenants');
+            }}
             className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
               activeTab === 'tenants'
                 ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-400 font-semibold shadow-sm'
@@ -851,8 +990,692 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
       {/* ABA 2: CLIENTES (CRMs ATIVOS)                                             */}
       {/* ========================================================================= */}
       {activeTab === 'tenants' && (
-        <div className="space-y-6">
-          {/* Barra de Filtros e Busca */}
+        showCreateModal ? (
+          <div className="space-y-6">
+            {/* Header da Tela com Breadcrumb e Ações */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-white/10">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateModal(false)}
+                    className="hover:text-indigo-600 dark:hover:text-indigo-400 font-medium flex items-center gap-1 transition"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    Clientes (CRMs)
+                  </button>
+                  <span>/</span>
+                  <span className="text-slate-800 dark:text-slate-200 font-semibold">
+                    {editingTenant ? `Editar Domínio: ${editingTenant.slug}` : 'Provisionar Novo Domínio'}
+                  </span>
+                </div>
+                <h2 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
+                  <span className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                    <Globe className="w-6 h-6" />
+                  </span>
+                  {editingTenant ? 'Editar Instância & Domínio CRM' : 'Provisionamento de Novo Domínio & CRM'}
+                </h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Configure os dados cadastrais, subdomínio exclusivo, governança e catálogo de módulos autorizados.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2.5 self-start sm:self-center">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-300 bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSubmitTenant}
+                  disabled={isSubmitting}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-600/20 transition disabled:opacity-50"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Processando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>{editingTenant ? 'Salvar Alterações' : 'Provisionar CRM'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleSubmitTenant} className="space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* ========================================================= */}
+                {/* COLUNA ESQUERDA (8 COLUNAS)                               */}
+                {/* ========================================================= */}
+                <div className="lg:col-span-8 space-y-6">
+                  
+                  {/* Card 1: Endereço & Domínio Dedicado (Hero Component) */}
+                  <div className="relative overflow-hidden bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/10 p-6 shadow-sm space-y-5">
+                    <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500" />
+                    
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                          <Globe className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                            Identificação & Domínio Dedicado
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Defina o endereço exclusivo e seguro pelo qual a equipe e clientes acessarão o CRM.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-semibold border border-emerald-500/20">
+                        <Lock className="w-3.5 h-3.5" />
+                        SSL Wildcard Ativo
+                      </div>
+                    </div>
+
+                    {/* Subdomínio / Slug */}
+                    <div className="space-y-2 pt-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                          <span>Subdomínio / Slug Exclusivo</span>
+                          <span className="text-rose-500">*</span>
+                        </label>
+                        {formData.slug && (
+                          <button
+                            type="button"
+                            onClick={handleCopyDomain}
+                            className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 font-medium"
+                          >
+                            {copiedSlug ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-500" />
+                                <span className="text-emerald-600 dark:text-emerald-400">Copiado!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                Copiar Link
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-stretch rounded-xl border border-slate-300 dark:border-white/15 bg-slate-50 dark:bg-[#0c1017] focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500 overflow-hidden shadow-xs">
+                        <span className="px-3.5 py-3 bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 text-sm font-mono flex items-center border-r border-slate-200 dark:border-white/10 select-none">
+                          https://
+                        </span>
+                        <input
+                          type="text"
+                          required
+                          value={formData.slug}
+                          onChange={(e) => {
+                            const cleaned = e.target.value
+                              .toLowerCase()
+                              .replace(/[^a-z0-9-]/g, '');
+                            setFormData((prev) => ({ ...prev, slug: cleaned }));
+                          }}
+                          placeholder="sua-empresa"
+                          className="flex-1 px-3.5 py-3 bg-transparent text-sm font-mono font-bold text-indigo-600 dark:text-indigo-400 focus:outline-none"
+                        />
+                        <span className="px-4 py-3 bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 text-sm font-mono font-semibold flex items-center border-l border-slate-200 dark:border-white/10 select-none">
+                          .lvplataform.com.br
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-slate-500">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          <span className="font-mono text-slate-700 dark:text-slate-300">
+                            https://{formData.slug || 'sua-empresa'}.lvplataform.com.br
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-400">
+                          Apenas letras minúsculas, números e hífens
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Nome da Empresa & Nome Fantasia */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          Nome da Empresa (Razão Social) <span className="text-rose-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={formData.name}
+                          onChange={(e) => handleSlugAutoGenerate(e.target.value)}
+                          placeholder="Ex: Empresa Telecomunicações Ltda"
+                          className="w-full text-xs p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          Nome Fantasia (Exibição Pública)
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.trade_name}
+                          onChange={(e) => setFormData((prev) => ({ ...prev, trade_name: e.target.value }))}
+                          placeholder="Ex: Telecom Fácil"
+                          className="w-full text-xs p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card 2: Dados Fiscais & Contato */}
+                  <div className="bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/10 p-6 shadow-sm space-y-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-500/10 text-purple-600 dark:text-purple-400 flex items-center justify-center shrink-0">
+                        <Building2 className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                          Dados Fiscais & Administrador Principal
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Informações de faturamento, contato e credenciais mestre de login.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          CNPJ ou CPF
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.document}
+                          onChange={(e) => setFormData((prev) => ({ ...prev, document: e.target.value }))}
+                          placeholder="00.000.000/0001-00"
+                          className="w-full text-xs p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          E-mail do Administrador
+                        </label>
+                        <input
+                          type="email"
+                          value={formData.email}
+                          onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
+                          placeholder="admin@empresa.com"
+                          className="w-full text-xs p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                          Telefone / WhatsApp
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.phone}
+                          onChange={(e) => setFormData((prev) => ({ ...prev, phone: e.target.value }))}
+                          placeholder="(11) 99999-9999"
+                          className="w-full text-xs p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 text-slate-800 dark:text-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Cor Temática da Marca */}
+                    <div className="pt-3 border-t border-slate-100 dark:border-white/5 space-y-2">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Cor Temática da Marca no CRM
+                      </label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {PRESET_COLORS.map((c) => (
+                          <button
+                            key={c.hex}
+                            type="button"
+                            onClick={() => setFormData((prev) => ({ ...prev, primary_color: c.hex }))}
+                            className={`w-7 h-7 rounded-lg border flex items-center justify-center transition-transform ${
+                              formData.primary_color === c.hex
+                                ? 'scale-110 ring-2 ring-offset-2 ring-indigo-500 border-white'
+                                : 'border-black/10 hover:scale-105'
+                            }`}
+                            style={{ backgroundColor: c.hex }}
+                            title={c.name}
+                          >
+                            {formData.primary_color === c.hex && <Check className="w-3.5 h-3.5 text-white stroke-[3]" />}
+                          </button>
+                        ))}
+                        <div className="flex items-center gap-2 ml-2 pl-2 border-l border-slate-200 dark:border-white/10">
+                          <input
+                            type="color"
+                            value={formData.primary_color}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, primary_color: e.target.value }))}
+                            className="w-8 h-8 rounded-lg cursor-pointer border-0 bg-transparent p-0"
+                            title="Personalizar cor hexadecimal"
+                          />
+                          <span className="font-mono text-xs text-slate-600 dark:text-slate-400 uppercase">
+                            {formData.primary_color}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card 3: Módulos Autorizados no CRM */}
+                  <div className="bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/10 p-6 shadow-sm space-y-5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                          <Layers className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                            Módulos Autorizados no CRM
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">
+                            Habilite as funcionalidades e ferramentas que estarão liberadas nesta instância.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/20">
+                          {formData.allowed_menus.length} de {ALL_CRM_MENUS.length} ativos
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleSelectAllMenus}
+                          className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-white/5 hover:bg-slate-200 text-slate-700 dark:text-slate-300 transition"
+                        >
+                          Todos
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDeselectAllMenus}
+                          className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-white/5 hover:bg-slate-200 text-slate-700 dark:text-slate-300 transition"
+                        >
+                          Nenhum
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Categorias e Módulos */}
+                    <div className="space-y-6 pt-2">
+                      {Object.entries(categorizedMenus).map(([category, menus]) => {
+                        const categorySelectedCount = menus.filter((m) => formData.allowed_menus.includes(m.id)).length;
+                        const allCategorySelected = categorySelectedCount === menus.length;
+
+                        return (
+                          <div key={category} className="space-y-3">
+                            <div className="flex items-center justify-between pb-1 border-b border-slate-100 dark:border-white/5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 uppercase tracking-wider">
+                                  {category}
+                                </span>
+                                <span className="text-[11px] text-slate-400">
+                                  ({categorySelectedCount}/{menus.length})
+                                </span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleToggleCategoryMenus(category)}
+                                className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline font-medium"
+                              >
+                                {allCategorySelected ? 'Desmarcar categoria' : 'Marcar categoria'}
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              {menus.map((menu) => {
+                                const isChecked = formData.allowed_menus.includes(menu.id);
+                                return (
+                                  <div
+                                    key={menu.id}
+                                    onClick={() => handleToggleAllowedMenu(menu.id)}
+                                    className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-start gap-3 select-none ${
+                                      isChecked
+                                        ? 'bg-indigo-50/50 dark:bg-indigo-500/10 border-indigo-500 dark:border-indigo-500/40 shadow-xs'
+                                        : 'bg-slate-50/60 dark:bg-white/[0.02] border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/15'
+                                    }`}
+                                  >
+                                    <div className="pt-0.5 shrink-0">
+                                      <div
+                                        className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors ${
+                                          isChecked
+                                            ? 'bg-indigo-600 text-white'
+                                            : 'border-2 border-slate-300 dark:border-slate-600'
+                                        }`}
+                                      >
+                                        {isChecked && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                                      </div>
+                                    </div>
+
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center justify-between">
+                                        <span
+                                          className={`text-xs font-bold ${
+                                            isChecked
+                                              ? 'text-indigo-900 dark:text-indigo-200'
+                                              : 'text-slate-700 dark:text-slate-300'
+                                          }`}
+                                        >
+                                          {menu.label}
+                                        </span>
+                                      </div>
+                                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
+                                        {menu.description}
+                                      </p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* ========================================================= */}
+                {/* COLUNA DIREITA / SIDEBAR (4 COLUNAS)                      */}
+                {/* ========================================================= */}
+                <div className="lg:col-span-4 space-y-6 lg:sticky lg:top-6">
+                  
+                  {/* Card 4: Live Preview do Domínio & CRM */}
+                  <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-slate-900 text-white shadow-xl overflow-hidden">
+                    <div className="bg-slate-950/80 px-4 py-3 flex items-center gap-3 border-b border-white/10">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-2.5 h-2.5 rounded-full bg-rose-500/80" />
+                        <div className="w-2.5 h-2.5 rounded-full bg-amber-500/80" />
+                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/80" />
+                      </div>
+                      <div className="flex-1 flex items-center justify-center">
+                        <div className="w-full max-w-[210px] bg-slate-900/90 border border-white/10 rounded-lg px-2.5 py-1 flex items-center gap-1.5 text-[11px] text-slate-300 font-mono">
+                          <Lock className="w-3 h-3 text-emerald-400 shrink-0" />
+                          <span className="truncate">
+                            {formData.slug || 'empresa'}.lvplataform.com.br
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-slate-900/90 space-y-3">
+                      <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                        <div className="flex items-center gap-2.5">
+                          <div
+                            className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs text-white shadow-xs overflow-hidden shrink-0"
+                            style={{ backgroundColor: formData.primary_color || '#4f46e5' }}
+                          >
+                            {formData.logo_url ? (
+                              <img src={formData.logo_url} alt="Logo" className="w-full h-full object-contain p-1" />
+                            ) : (
+                              (formData.trade_name || formData.name || 'CRM').substring(0, 2).toUpperCase()
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold text-white truncate max-w-[130px]">
+                              {formData.trade_name || formData.name || 'Nome da Empresa'}
+                            </div>
+                            <div className="text-[10px] text-indigo-400 font-mono truncate">
+                              {formData.slug || 'empresa'}.lvplataform.com.br
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                            {formData.plan}
+                          </span>
+                          <span
+                            className={`w-2.5 h-2.5 rounded-full ${
+                              formData.status === 'active'
+                                ? 'bg-emerald-400'
+                                : formData.status === 'trial'
+                                ? 'bg-amber-400'
+                                : 'bg-rose-400'
+                            } animate-pulse`}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                        <div className="p-2.5 rounded-xl bg-white/5 border border-white/5">
+                          <div className="text-slate-400 text-[10px]">Módulos Ativos</div>
+                          <div className="text-sm font-bold text-emerald-400 mt-0.5">
+                            {formData.allowed_menus.length} de {ALL_CRM_MENUS.length}
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-white/5 border border-white/5">
+                          <div className="text-slate-400 text-[10px]">Certificado SSL</div>
+                          <div className="text-sm font-bold text-indigo-400 mt-0.5 flex items-center gap-1">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            Wildcard
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card 5: Seleção de Plano */}
+                  <div className="bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/10 p-5 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                        Plano de Assinatura
+                      </h4>
+                      <span className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold capitalize">
+                        Plano {formData.plan}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      {PLAN_TIERS.map((tier) => {
+                        const isSelected = formData.plan === tier.id;
+                        return (
+                          <div
+                            key={tier.id}
+                            onClick={() => setFormData((prev) => ({ ...prev, plan: tier.id as any }))}
+                            className={`p-3 rounded-xl border cursor-pointer transition-all ${
+                              isSelected
+                                ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-500/10 shadow-xs ring-1 ring-indigo-600'
+                                : 'border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/15'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                                {tier.name}
+                              </span>
+                              {tier.popular && (
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-600 text-white font-bold">
+                                  ★
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">
+                              {tier.price}
+                            </div>
+                            <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-1">
+                              {tier.desc}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Card 6: Status Operacional */}
+                  <div className="bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/10 p-5 shadow-sm space-y-3">
+                    <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                      Status Operacional
+                    </h4>
+
+                    <div className="space-y-2">
+                      {[
+                        { id: 'active', label: 'Ativo', desc: 'Acesso normal liberado para a equipe', color: 'emerald' },
+                        { id: 'trial', label: 'Trial', desc: 'Período de avaliação de 14 dias', color: 'amber' },
+                        { id: 'suspended', label: 'Suspenso', desc: 'Acesso temporariamente bloqueado', color: 'rose' },
+                      ].map((st) => {
+                        const isSelected = formData.status === st.id;
+                        return (
+                          <div
+                            key={st.id}
+                            onClick={() => setFormData((prev) => ({ ...prev, status: st.id as any }))}
+                            className={`p-3 rounded-xl border cursor-pointer transition-all flex items-center justify-between ${
+                              isSelected
+                                ? st.id === 'active'
+                                  ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-500/10'
+                                  : st.id === 'trial'
+                                  ? 'border-amber-500 bg-amber-50/50 dark:bg-amber-500/10'
+                                  : 'border-rose-500 bg-rose-50/50 dark:bg-rose-500/10'
+                                : 'border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/15'
+                            }`}
+                          >
+                            <div>
+                              <div className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                                {st.label}
+                              </div>
+                              <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                                {st.desc}
+                              </div>
+                            </div>
+                            <div
+                              className={`w-3.5 h-3.5 rounded-full border-2 ${
+                                isSelected
+                                  ? st.id === 'active'
+                                    ? 'border-emerald-500 bg-emerald-500'
+                                    : st.id === 'trial'
+                                    ? 'border-amber-500 bg-amber-500'
+                                    : 'border-rose-500 bg-rose-500'
+                                  : 'border-slate-300 dark:border-slate-600'
+                              }`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Card 7: Logomarca da Empresa */}
+                  <div className="bg-white dark:bg-[#121722] rounded-2xl border border-slate-200 dark:border-white/10 p-5 shadow-sm space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                        Logomarca da Empresa
+                      </h4>
+                      <span className="text-[11px] text-slate-400">PNG, SVG, JPG (máx. 5MB)</span>
+                    </div>
+
+                    <input
+                      ref={modalFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/svg+xml,image/webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleFileUpload(file, true);
+                        e.target.value = '';
+                      }}
+                    />
+
+                    {formData.logo_url ? (
+                      <div className="space-y-3">
+                        <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-white/10 flex items-center justify-center min-h-[90px]">
+                          <img
+                            src={formData.logo_url}
+                            alt="Logo"
+                            className="max-h-16 max-w-full object-contain"
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => modalFileInputRef.current?.click()}
+                            disabled={uploadingLogo}
+                            className="flex-1 py-2 text-xs font-semibold rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-slate-300 transition text-center"
+                          >
+                            Substituir Arquivo
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFormData((prev) => ({ ...prev, logo_url: '' }))}
+                            className="p-2 rounded-xl text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition"
+                            title="Remover Logo"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        onClick={() => modalFileInputRef.current?.click()}
+                        className="border-2 border-dashed border-slate-300 dark:border-white/15 rounded-xl p-6 flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-indigo-500 transition group text-center"
+                      >
+                        {uploadingLogo ? (
+                          <>
+                            <RefreshCw className="w-6 h-6 animate-spin text-indigo-500" />
+                            <span className="text-xs text-slate-500">Otimizando e enviando...</span>
+                          </>
+                        ) : (
+                          <>
+                            <div className="w-10 h-10 rounded-full bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center group-hover:scale-110 transition">
+                              <UploadCloud className="w-5 h-5" />
+                            </div>
+                            <div className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                              Clique para anexar arquivo da logo
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              Otimização automática de resolução e transparência
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Card 8: Ações Finais */}
+                  <div className="p-4 rounded-2xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 space-y-3">
+                    <button
+                      type="submit"
+                      disabled={isSubmitting}
+                      className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/30 transition disabled:opacity-50"
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>Salvando no Cluster...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>{editingTenant ? 'Salvar Alterações' : '🚀 Provisionar Instância CRM'}</span>
+                        </>
+                      )}
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateModal(false)}
+                      className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-200/50 dark:hover:bg-white/5 transition text-center"
+                    >
+                      Cancelar e Voltar à Listagem
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {/* Barra de Filtros e Busca */}
           <div className="bg-white dark:bg-[#121722] p-4 rounded-2xl border border-slate-200 dark:border-white/10 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="relative w-full md:w-80">
               <Search className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
@@ -999,13 +1822,35 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                     >
                       <Palette className="w-4 h-4" />
                     </button>
+
+                    {t.slug !== 'matriz' && t.id !== 'tenant_default' ? (
+                      <button
+                        onClick={() => {
+                          setTenantToDelete(t);
+                          setDeleteTenantInput('');
+                        }}
+                        title="Excluir Servidor / CRM"
+                        className="p-2 rounded-xl border border-rose-200 dark:border-rose-900/40 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-rose-600 dark:text-rose-400 transition"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    ) : (
+                      <button
+                        disabled
+                        title="A empresa Matriz principal não pode ser excluída"
+                        className="p-2 rounded-xl border border-slate-100 dark:border-white/5 text-slate-300 dark:text-slate-600 cursor-not-allowed opacity-50"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
-      )}
+      )
+    )}
 
       {/* ========================================================================= */}
       {/* ABA 3: PERSONALIZAÇÃO & CORES (WHITE-LABEL)                               */}
@@ -1659,13 +2504,13 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
                             {new Date(log.timestamp).toLocaleString('pt-BR')}
                           </td>
                           <td className="py-2.5 font-medium text-slate-800 dark:text-slate-200">
-                            {log.userEmail || log.userId}
+                            {log.actorId || (log as any).userEmail || (log as any).userId}
                           </td>
                           <td className="py-2.5 font-semibold text-indigo-600 dark:text-indigo-400">
                             {log.action}
                           </td>
                           <td className="py-2.5 font-mono text-slate-600 dark:text-slate-300">
-                            {log.target}
+                            {log.targetCollection || (log as any).target}
                           </td>
                           <td className="py-2.5 text-slate-500 italic">
                             {log.reason || 'Não informado'}
@@ -1777,248 +2622,104 @@ export default function SuperAdminMaster({ defaultTab = 'dashboard' }: SuperAdmi
         </div>
       )}
 
-      {/* Modal de Provisionamento / Edição de Tenant */}
-      {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-[#0c1017] rounded-3xl max-w-xl w-full p-6 border border-slate-200 dark:border-slate-800 shadow-2xl my-8 space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-white/5 pb-4">
-              <div>
-                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                  {editingTenant ? 'Editar Empresa / CRM' : 'Provisionar Novo CRM'}
+      {/* Modal de Exclusão com Confirmação Obrigatória pelo Nome */}
+      {tenantToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fadeIn">
+          <div className="w-full max-w-md bg-white dark:bg-[#121722] rounded-2xl border border-rose-200 dark:border-rose-900/50 shadow-2xl p-6 space-y-5">
+            {/* Header com alerta */}
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Excluir Servidor / CRM?
                 </h3>
-                <p className="text-xs text-slate-500">
-                  Configure os dados cadastrais, subdomínio e identidade visual
+                <p className="text-xs text-rose-600 dark:text-rose-400 font-medium mt-0.5">
+                  Esta ação é irreversível e excluirá permanentemente o servidor.
                 </p>
               </div>
-              <button
-                onClick={() => setShowCreateModal(false)}
-                className="text-slate-400 hover:text-slate-600 text-sm font-semibold"
-              >
-                ✕
-              </button>
             </div>
 
-            <form onSubmit={handleSubmitTenant} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Nome da Empresa *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.name}
-                    onChange={(e) => handleSlugAutoGenerate(e.target.value)}
-                    placeholder="Ex: Empresa Telecom"
-                    className="w-full text-xs p-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Nome Fantasia
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.trade_name}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, trade_name: e.target.value }))}
-                    placeholder="Ex: Telecom Fácil"
-                    className="w-full text-xs p-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10"
-                  />
-                </div>
+            {/* Caixa com detalhes do servidor */}
+            <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-200 dark:border-white/5 space-y-1.5 text-xs text-slate-600 dark:text-slate-400">
+              <div className="flex justify-between">
+                <span>Servidor:</span>
+                <strong className="text-slate-900 dark:text-white font-semibold">
+                  {tenantToDelete.name}
+                </strong>
               </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Subdomínio / Slug *
-                </label>
-                <div className="flex items-center">
-                  <input
-                    type="text"
-                    required
-                    value={formData.slug}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, slug: e.target.value }))}
-                    placeholder="telecom"
-                    className="flex-1 text-xs p-2.5 rounded-l-xl bg-slate-50 dark:bg-white/5 border border-r-0 border-slate-200 dark:border-white/10 font-mono text-indigo-600"
-                  />
-                  <span className="px-3 py-2.5 bg-slate-100 dark:bg-white/10 border border-slate-200 dark:border-white/10 rounded-r-xl text-xs text-slate-500 font-mono">
-                    .lvplataform.com.br
-                  </span>
-                </div>
+              <div className="flex justify-between">
+                <span>Domínio:</span>
+                <span className="font-mono text-slate-500">
+                  {tenantToDelete.slug}.lvplataform.com.br
+                </span>
               </div>
+            </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    CNPJ ou CPF
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.document}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, document: e.target.value }))}
-                    placeholder="00.000.000/0001-00"
-                    className="w-full text-xs p-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10"
-                  />
-                </div>
+            {/* Instruções de confirmação */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+                Para confirmar a exclusão, digite o nome exato do servidor:{' '}
+                <strong className="text-rose-600 dark:text-rose-400 font-mono select-all bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded">
+                  {tenantToDelete.name}
+                </strong>
+              </label>
+              <input
+                type="text"
+                value={deleteTenantInput}
+                onChange={(e) => setDeleteTenantInput(e.target.value)}
+                placeholder={`Digite "${tenantToDelete.name}"`}
+                disabled={isDeletingTenant}
+                autoFocus
+                className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-300 dark:border-white/10 bg-white dark:bg-[#0c1017] text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-rose-500"
+              />
+            </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    E-mail do Administrador
-                  </label>
-                  <input
-                    type="email"
-                    value={formData.email}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, email: e.target.value }))}
-                    placeholder="admin@empresa.com"
-                    className="w-full text-xs p-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Plano
-                  </label>
-                  <select
-                    value={formData.plan}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, plan: e.target.value as any }))}
-                    className="w-full text-xs p-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10"
-                  >
-                    <option value="free">Free</option>
-                    <option value="starter">Starter</option>
-                    <option value="pro">Pro</option>
-                    <option value="enterprise">Enterprise</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                    Status
-                  </label>
-                  <select
-                    value={formData.status}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, status: e.target.value as any }))}
-                    className="w-full text-xs p-2.5 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10"
-                  >
-                    <option value="active">Ativo</option>
-                    <option value="trial">Trial (Avaliação)</option>
-                    <option value="suspended">Suspenso</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Upload da Logo da Empresa em formato de arquivo */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Logomarca da Empresa (Arquivo de Imagem)
-                </label>
-                <input
-                  ref={modalFileInputRef}
-                  type="file"
-                  accept="image/png,image/jpeg,image/svg+xml,image/webp"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleFileUpload(file, true);
-                    e.target.value = '';
-                  }}
-                />
-                {formData.logo_url ? (
-                  <div className="flex items-center gap-3 p-3 rounded-xl border border-indigo-200 dark:border-white/10 bg-indigo-50/40 dark:bg-white/5">
-                    <div className="w-12 h-12 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 p-1 flex items-center justify-center shrink-0 overflow-hidden shadow-2xs">
-                      <img
-                        src={formData.logo_url}
-                        alt="Logo"
-                        className="max-h-full max-w-full object-contain rounded-lg"
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                        Arquivo de logo anexado
-                      </p>
-                      <p className="text-[11px] text-slate-500 truncate">
-                        {formData.logo_url.startsWith('data:') ? 'Imagem de alta resolução' : formData.logo_url}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => modalFileInputRef.current?.click()}
-                        disabled={uploadingLogo}
-                        className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-white dark:bg-white/10 border border-slate-200 dark:border-white/10 hover:bg-slate-50 text-slate-700 dark:text-slate-200"
-                      >
-                        Substituir
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setFormData((prev) => ({ ...prev, logo_url: '' }))}
-                        className="p-1 text-rose-500 hover:text-rose-700"
-                        title="Remover"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
+            {/* Ações */}
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100 dark:border-white/5">
+              <button
+                type="button"
+                onClick={() => {
+                  setTenantToDelete(null);
+                  setDeleteTenantInput('');
+                }}
+                disabled={isDeletingTenant}
+                className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 text-slate-700 dark:text-slate-300 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteTenantConfirm}
+                disabled={
+                  (deleteTenantInput.trim() !== tenantToDelete.name.trim() &&
+                    (!tenantToDelete.trade_name ||
+                      deleteTenantInput.trim() !== tenantToDelete.trade_name.trim())) ||
+                  isDeletingTenant
+                }
+                className={`px-4 py-2 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition ${
+                  (deleteTenantInput.trim() === tenantToDelete.name.trim() ||
+                    (tenantToDelete.trade_name &&
+                      deleteTenantInput.trim() === tenantToDelete.trade_name.trim())) &&
+                  !isDeletingTenant
+                    ? 'bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 active:scale-[0.98] cursor-pointer'
+                    : 'bg-slate-200 dark:bg-white/5 text-slate-400 dark:text-slate-500 cursor-not-allowed opacity-60'
+                }`}
+              >
+                {isDeletingTenant ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Excluindo...
+                  </>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => modalFileInputRef.current?.click()}
-                    disabled={uploadingLogo}
-                    className="w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 dark:border-white/15 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition"
-                  >
-                    {uploadingLogo ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin text-indigo-500" />
-                        <span>Carregando arquivo...</span>
-                      </>
-                    ) : (
-                      <>
-                        <UploadCloud className="w-4 h-4 text-indigo-500" />
-                        <span>Selecionar Arquivo da Logo (PNG, SVG, JPG, WebP - máx. 5MB)</span>
-                      </>
-                    )}
-                  </button>
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Excluir Servidor
+                  </>
                 )}
-              </div>
-
-              {/* Módulos Permitidos */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-                  Módulos Autorizados no CRM:
-                </label>
-                <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto p-2 bg-slate-50 dark:bg-white/5 rounded-xl border border-slate-200 dark:border-white/10">
-                  {ALL_CRM_MENUS.map((menu) => (
-                    <label key={menu.id} className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={formData.allowed_menus.includes(menu.id)}
-                        onChange={() => handleToggleAllowedMenu(menu.id)}
-                        className="rounded text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>{menu.name}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100 dark:border-white/5">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-5 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm"
-                >
-                  {isSubmitting ? 'Salvando...' : editingTenant ? 'Salvar Alterações' : 'Provisionar CRM'}
-                </button>
-              </div>
-            </form>
+              </button>
+            </div>
           </div>
         </div>
       )}

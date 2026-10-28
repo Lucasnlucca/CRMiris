@@ -4,17 +4,19 @@ import { createPortal } from "react-dom";
 
 interface QuickAddUser { id: string; name: string; }
 
-interface QuickAddForm {
+export interface QuickAddForm {
   name: string;
   assigned_to: string;
   due_date: string;
+  dueDate?: string;
   priority: string;
   label: string;
 }
 
 interface Props {
   users: QuickAddUser[];
-  onSave: (form: QuickAddForm) => Promise<void>;
+  onSave?: (form: QuickAddForm) => Promise<void>;
+  onAdd?: (form: QuickAddForm) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -59,8 +61,8 @@ function FixedDropdown({ pos, children, onClose }: { pos: DropdownPos; children:
   );
 }
 
-export default function QuickAddCard({ users, onSave, onCancel }: Props) {
-  const [form, setForm] = useState<QuickAddForm>({ name: "", assigned_to: "", due_date: "", priority: "", label: "" });
+export default function QuickAddCard({ users, onSave, onAdd, onCancel }: Props) {
+  const [form, setForm] = useState<QuickAddForm>({ name: "", assigned_to: "", due_date: "", dueDate: "", priority: "", label: "" });
   const [saving, setSaving] = useState(false);
   const [openDd, setOpenDd] = useState<DropdownType>(null);
   const [ddPos, setDdPos] = useState<DropdownPos>({ top: 0, left: 0 });
@@ -82,12 +84,32 @@ export default function QuickAddCard({ users, onSave, onCancel }: Props) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim() || saving) return;
+
+    const validPriorities = new Set(PRIORITIES.map((p) => p.v));
+    const normalizedPriority = validPriorities.has(form.priority) ? form.priority : "normal";
+    const rawDate = (form.due_date || form.dueDate || "").trim();
+    const normalizedDueDate = rawDate && !Number.isNaN(new Date(rawDate).getTime()) ? rawDate : "";
+
+    const submitPayload: QuickAddForm = {
+      ...form,
+      name: form.name.trim(),
+      priority: normalizedPriority,
+      due_date: normalizedDueDate,
+      dueDate: normalizedDueDate,
+    };
+
+    const handler = onAdd || onSave;
+    if (!handler) return;
+
     setSaving(true);
-    await onSave(form);
-    setSaving(false);
+    try {
+      await handler(submitPayload);
+    } finally {
+      setSaving(false);
+    }
   }
 
-  const assignedUser = users.find((u) => u.id === form.assigned_to);
+  const assignedUser = users.find((u) => (u.id || (u as any).$id) === form.assigned_to);
   const priorityCfg = PRIORITIES.find((p) => p.v === form.priority);
 
   return (
@@ -197,20 +219,24 @@ export default function QuickAddCard({ users, onSave, onCancel }: Props) {
           <div className="px-3 py-2 border-b border-gray-100 dark:border-white/5">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Responsáveis</p>
           </div>
-          {users.map((u) => (
-            <button
-              key={u.id}
-              type="button"
-              onClick={() => { setForm({ ...form, assigned_to: u.id }); closeDropdown(); }}
-              className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition hover:bg-gray-50 dark:hover:bg-white/5 ${form.assigned_to === u.id ? "bg-gray-50 dark:bg-white/5 font-semibold" : ""}`}
-            >
-              <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">
-                {getInitials(u.name)}
-              </div>
-              <span className="text-gray-800 dark:text-gray-100">{u.name}</span>
-              {form.assigned_to === u.id && <span className="ml-auto text-teal-500 text-xs">✓</span>}
-            </button>
-          ))}
+          {users.map((u) => {
+            const uId = u.id || (u as any).$id;
+            const isSelected = Boolean(form.assigned_to && form.assigned_to === uId);
+            return (
+              <button
+                key={uId}
+                type="button"
+                onClick={() => { setForm({ ...form, assigned_to: uId }); closeDropdown(); }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-sm transition hover:bg-gray-50 dark:hover:bg-white/5 ${isSelected ? "bg-gray-50 dark:bg-white/5 font-semibold" : ""}`}
+              >
+                <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-teal-600 text-[10px] font-bold text-white">
+                  {getInitials(u.name)}
+                </div>
+                <span className="text-gray-800 dark:text-gray-100">{u.name}</span>
+                {isSelected && <span className="ml-auto text-teal-500 text-xs">✓</span>}
+              </button>
+            );
+          })}
         </FixedDropdown>
       )}
 

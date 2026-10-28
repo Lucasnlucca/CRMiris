@@ -22,6 +22,7 @@ import LineChart from '../components/LineChart';
 import { databases, client } from '../lib/appwrite';
 import { Query } from 'appwrite';
 import { ChartDataPoint } from '../types';
+import { useTenant } from '../context/TenantContext';
 
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 
@@ -130,6 +131,7 @@ function buildChartData(
 }
 
 export default function Dashboard({ onPageChange }: DashboardProps) {
+  const { tenant } = useTenant();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -194,11 +196,11 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
       } catch (e) {}
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, []);
+  }, [tenant?.id]);
 
   useEffect(() => {
     loadChart(chartPeriod);
-  }, [chartPeriod]);
+  }, [chartPeriod, tenant?.id]);
 
   async function loadAll() {
     setLoading(true);
@@ -215,7 +217,8 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
   async function loadKpis() {
     const countDocs = async (col: string, q: any[] = []) => {
       try {
-        const { total } = await databases.listDocuments(DATABASE_ID, col, [...q, Query.limit(1)]);
+        const tenantQuery = tenant?.id ? [Query.equal('tenant_id', tenant.id)] : [];
+        const { total } = await databases.listDocuments(DATABASE_ID, col, [...tenantQuery, ...q, Query.limit(1)]);
         return total;
       } catch (e) {
         return 0;
@@ -233,9 +236,10 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
 
   async function loadPipelineData() {
     try {
+      const tenantQuery = tenant?.id ? [Query.equal('tenant_id', tenant.id)] : [];
       const [colsRes, dealsRes] = await Promise.all([
-        databases.listDocuments(DATABASE_ID, 'pipeline_columns', [Query.orderAsc('position'), Query.limit(100)]),
-        databases.listDocuments(DATABASE_ID, 'pipeline_deals', [Query.orderDesc('$createdAt'), Query.limit(300)]),
+        databases.listDocuments(DATABASE_ID, 'pipeline_columns', [...tenantQuery, Query.orderAsc('position'), Query.limit(100)]),
+        databases.listDocuments(DATABASE_ID, 'pipeline_deals', [...tenantQuery, Query.orderDesc('$createdAt'), Query.limit(300)]),
       ]);
 
       const cols = colsRes.documents;
@@ -246,6 +250,7 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
         let cursor = allDeals[allDeals.length - 1]?.$id;
         while (allDeals.length < dealsRes.total && cursor) {
           const nextRes = await databases.listDocuments(DATABASE_ID, 'pipeline_deals', [
+            ...tenantQuery,
             Query.orderDesc('$createdAt'),
             Query.cursorAfter(cursor),
             Query.limit(100),
@@ -342,7 +347,9 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
 
   async function loadRecentClients() {
     try {
+      const tenantQuery = tenant?.id ? [Query.equal('tenant_id', tenant.id)] : [];
       const { documents } = await databases.listDocuments(DATABASE_ID, 'clients', [
+        ...tenantQuery,
         Query.orderDesc('$createdAt'),
         Query.limit(6),
       ]);
@@ -374,7 +381,9 @@ export default function Dashboard({ onPageChange }: DashboardProps) {
     }
 
     try {
+      const tenantQuery = tenant?.id ? [Query.equal('tenant_id', tenant.id)] : [];
       const { documents } = await databases.listDocuments(DATABASE_ID, 'pipeline_deals', [
+        ...tenantQuery,
         Query.greaterThanEqual('$createdAt', startDate.toISOString()),
         Query.limit(500),
       ]);

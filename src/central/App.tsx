@@ -27,6 +27,7 @@ import Usuarios from '../pages/Usuarios';
 import SuperAdminMaster from '../pages/SuperAdminMaster';
 import Phonebook from '../pages/Phonebook';
 import { useAuth } from '../context/AuthContext';
+import { useTenant } from '../context/TenantContext';
 
 function RequireSession() {
   const { session } = useApp();
@@ -36,21 +37,37 @@ function RequireSession() {
 function Permission({ roles, children }: { roles: Role[]; children: ReactNode }) {
   const { session } = useApp();
   const { user } = useAuth();
+  const { isSuperAdmin } = useTenant();
   const navigate = useNavigate();
-  const effectiveRole: Role = session?.role ?? (user?.role === 'admin' || user?.role === 'owner' ? 'admin' : 'support');
-  return roles.includes(effectiveRole) ? (
+
+  // Superadministrador possui autonomia total e acesso irrestrito a todos os módulos administrativos
+  if (isSuperAdmin || user?.role === 'superadmin') {
+    if (roles.includes('admin') || !roles.includes('client')) {
+      return <>{children}</>;
+    }
+  }
+
+  const effectiveRole: Role =
+    session?.role ??
+    (user?.role === 'client'
+      ? 'client'
+      : user?.role === 'admin' || user?.role === 'owner' || user?.role === 'superadmin'
+      ? 'admin'
+      : 'support');
+  return isSuperAdmin || roles.includes(effectiveRole) ? (
     <>{children}</>
   ) : (
     <EmptyState
       title="Este módulo não está disponível neste perfil"
       description="Você pode continuar no seu portal ou alternar a visão operacional."
-      action={<Button onClick={() => navigate('/acesso')}>Alternar visão</Button>}
+      action={<Button onClick={() => navigate(effectiveRole === 'client' ? '/portal' : '/acesso')}>Alternar visão</Button>}
     />
   );
 }
 function Home() {
   const { session } = useApp();
-  return session?.role === 'client' ? <Navigate to="/portal" replace /> : <DashboardPage />;
+  const { user } = useAuth();
+  return (session?.role === 'client' || user?.role === 'client') ? <Navigate to="/portal" replace /> : <DashboardPage />;
 }
 function NotFound() {
   const { session } = useApp();
@@ -87,6 +104,25 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: boolean 
     );
   }
 }
+function PropostasRoute() {
+  const navigate = useNavigate();
+  return (
+    <Propostas
+      onPageChange={(page: string) => {
+        if (page === 'crm-contratos' || page === 'contratos-crm' || page === 'contratos') {
+          navigate('/contratos-crm');
+        } else if (page === 'crm-propostas' || page === 'propostas') {
+          navigate('/propostas');
+        } else if (page === 'crm-pipeline' || page === 'pipeline') {
+          navigate('/pipeline');
+        } else if (page.startsWith('/')) {
+          navigate(page);
+        }
+      }}
+    />
+  );
+}
+
 export function AppRoutes() {
   return (
     <Routes>
@@ -241,7 +277,7 @@ export function AppRoutes() {
           {/* CRM & Vendas */}
           <Route path="pipeline" element={<Pipeline />} />
           <Route path="negocios" element={<Navigate to="/pipeline" replace />} />
-          <Route path="propostas" element={<Propostas />} />
+          <Route path="propostas" element={<PropostasRoute />} />
           <Route path="contratos-crm" element={<Contratos />} />
           <Route path="itens" element={<CrmItems />} />
           <Route path="automacoes" element={<Automacoes />} />

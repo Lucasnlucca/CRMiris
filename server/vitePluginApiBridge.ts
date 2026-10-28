@@ -1,169 +1,196 @@
 /**
- * Plugin do Vite para o Backend API Bridge do CRM
- *
- * Fornece os endpoints de backend (/api/crm/write e /api/contracts/sign)
- * de forma nativa e segura durante o desenvolvimento e execução pelo Vite.
- * Utiliza as credenciais de servidor de forma isolada, sem vazamento para o frontend.
+ * ============================================================================
+ * VITE PLUGIN: BACKEND API BRIDGE MIDDLEWARE (Development Server)
+ * ============================================================================
+ * Mounts `/api/data`, `/api/admin/policies/*`, `/api/admin/tenants/*`,
+ * `/api/admin/users/*`, `/api/portal/*`, `/api/asaas/*`, `/api/contracts/*`,
+ * `/api/auth/login`, `/api/logos/*`, and `/api/health` directly into Vite's
+ * Connect dev server so local development behaves identically to production.
+ * ============================================================================
  */
 
 import type { Plugin } from 'vite';
+import { loadEnv } from 'vite';
+import { Client, Databases } from 'node-appwrite';
 import fs from 'fs';
 import path from 'path';
-import { executeAuthoritativeWrite, writePolicyEngine } from './backendApiBridge';
-import { handleAdminPolicyRoutes } from './adminPolicyHandler';
-import { GovernancePersistenceAdapter } from './governancePersistenceAdapter';
-import { readJsonBody } from './requestUtils';
+import { handleApiDataRequest, writePolicyEngine } from './backendApiBridge.ts';
+import { resolveGovernanceConfig } from './governanceConfig.ts';
+import { GovernancePersistenceAdapter } from './governancePersistenceAdapter.ts';
+import { handleAdminPolicyRoutes } from './adminPolicyHandler.ts';
+import { handleUserManagementRoutes } from './userManagementHandler.ts';
+import { handleTenantProvisioningRoutes } from './tenantProvisioningHandler.ts';
+import { handlePortalRoutes } from './portalHandler.ts';
+import { handleAsaasRoutes } from './asaasHandler.ts';
+import { handleAuthLoginRoute } from './authLoginHandler.ts';
+import { handleContractRoutes } from './signContractHandler.ts';
 
-function getEnvValue(key: string): string {
-  if (process.env[key]) return process.env[key]!;
-  for (const fileName of ['.env.local', '.env']) {
-    try {
-      const envFile = path.resolve(process.cwd(), fileName);
-      if (fs.existsSync(envFile)) {
-        const lines = fs.readFileSync(envFile, 'utf8').split('\n');
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
-            const idx = trimmed.indexOf('=');
-            const k = trimmed.slice(0, idx).trim();
-            const v = trimmed.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
-            if (k === key) return v;
-          }
-        }
-      }
-    } catch {}
-  }
-  return '';
-}
+export function vitePluginApiBridge(): Plugin {
+    return {
+        name: 'crm-hydra-api-bridge',
+        configureServer(server) {
+            const env = loadEnv(server.config.mode, process.cwd(), '');
 
-import { resolveGovernanceConfig, initializeGovernance } from './governanceConfig';
+            const bridgeEnv = {
+                endpoint: env.VITE_APPWRITE_URL || env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || process.env.VITE_APPWRITE_ENDPOINT || process.env.APPWRITE_ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1',
+                ENDPOINT: env.VITE_APPWRITE_URL || env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || process.env.VITE_APPWRITE_ENDPOINT || process.env.APPWRITE_ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1',
+                projectId: env.VITE_APPWRITE_PROJECT_ID || process.env.VITE_APPWRITE_PROJECT_ID || process.env.APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f',
+                PROJECT_ID: env.VITE_APPWRITE_PROJECT_ID || process.env.VITE_APPWRITE_PROJECT_ID || process.env.APPWRITE_PROJECT_ID || '6a6cac620021f4c64b3f',
+                apiKey: env.APPWRITE_API_KEY || process.env.APPWRITE_API_KEY || '',
+                API_KEY: env.APPWRITE_API_KEY || process.env.APPWRITE_API_KEY || '',
+                databaseId: env.VITE_APPWRITE_DATABASE_ID || process.env.VITE_APPWRITE_DATABASE_ID || process.env.APPWRITE_DATABASE_ID || 'crm_db',
+                DATABASE_ID: env.VITE_APPWRITE_DATABASE_ID || process.env.VITE_APPWRITE_DATABASE_ID || process.env.APPWRITE_DATABASE_ID || 'crm_db'
+            };
 
-export function crmApiBridgePlugin(): Plugin {
-  return {
-    name: 'crm-api-bridge-plugin',
-    configureServer(server) {
-      const endpoint = process.env.VITE_APPWRITE_ENDPOINT || process.env.VITE_APPWRITE_URL || getEnvValue('VITE_APPWRITE_URL') || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
-      const projectId = process.env.VITE_APPWRITE_PROJECT_ID || getEnvValue('VITE_APPWRITE_PROJECT_ID') || '6a6cac620021f4c64b3f';
-      const apiKey = process.env.APPWRITE_API_KEY || getEnvValue('APPWRITE_API_KEY');
-      const targetDatabaseId = process.env.GOVERNANCE_DATABASE_ID || process.env.VITE_APPWRITE_DATABASE_ID || getEnvValue('VITE_APPWRITE_DATABASE_ID') || 'crm_db';
-      const isSandbox = targetDatabaseId === 'crm_isolated_test' || targetDatabaseId === 'crm_sandbox_test';
+            const govConfig = resolveGovernanceConfig({ ...process.env, ...env });
+            let persistenceAdapter: GovernancePersistenceAdapter | null = null;
 
-      const viteEnv = {
-        ...process.env,
-        GOVERNANCE_ENVIRONMENT: process.env.GOVERNANCE_ENVIRONMENT || (isSandbox ? 'sandbox' : 'production'),
-        GOVERNANCE_DATABASE_ID: targetDatabaseId,
-        ENABLE_SANDBOX_GOVERNANCE_PERSISTENCE: isSandbox
-          ? (process.env.ENABLE_SANDBOX_GOVERNANCE_PERSISTENCE || (apiKey ? 'true' : 'false'))
-          : 'false',
-        ENABLE_PROD_GOVERNANCE_PERSISTENCE: 'false',
-      };
+            if (govConfig.status === 'READY' && govConfig.mode === 'PERSISTENT') {
+                try {
+                    let adminDb: Databases | null = null;
+                    if (bridgeEnv.projectId && bridgeEnv.apiKey) {
+                        const adminClient = new Client()
+                            .setEndpoint(bridgeEnv.endpoint)
+                            .setProject(bridgeEnv.projectId)
+                            .setKey(bridgeEnv.apiKey);
+                        adminDb = new Databases(adminClient);
+                    }
+                    persistenceAdapter = new GovernancePersistenceAdapter(adminDb, govConfig.targetDb);
+                    persistenceAdapter.restoreIntoEngine(writePolicyEngine).catch((err) => {
+                        console.warn('[VitePluginApiBridge] Governance restore warning (Fail-Closed activated):', err.message);
+                        writePolicyEngine.setMode('enforce', 'system:boot-fail-closed', `Fail-closed activated due to restore error: ${err.message}`, govConfig.targetDb);
+                    });
+                } catch (e: any) {
+                    console.warn('[VitePluginApiBridge] Governance adapter init warning:', e.message);
+                }
+            }
 
-      const governanceConfig = resolveGovernanceConfig(viteEnv, { runtime: 'vite' });
+            server.middlewares.use(async (req, res, next) => {
+                if (!req.url) return next();
 
-      if (apiKey && !writePolicyEngine.persistenceAdapter && !(writePolicyEngine as any).governanceDatabaseId) {
-        initializeGovernance(writePolicyEngine, governanceConfig, {
-          logPrefix: '[VITE_BRIDGE]',
-          createAdapter: (targetDb) => {
-            return new GovernancePersistenceAdapter({
-              endpoint,
-              projectId,
-              apiKey,
-              databaseId: targetDb,
+                try {
+                    const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+                    const pathname = urlObj.pathname;
+
+                    const sharedEnvConfig = {
+                        ...bridgeEnv,
+                        governanceConfig: govConfig
+                    };
+
+                    if (pathname.startsWith('/api/admin/policies')) {
+                        const handled = await handleAdminPolicyRoutes(
+                            req,
+                            res,
+                            writePolicyEngine,
+                            sharedEnvConfig,
+                            govConfig,
+                            persistenceAdapter
+                        );
+                        if (handled) return;
+                    }
+
+                    if (pathname.startsWith('/api/admin/tenants')) {
+                        await handleTenantProvisioningRoutes(req, res, sharedEnvConfig);
+                        return;
+                    }
+
+                    if (pathname.startsWith('/api/admin/users')) {
+                        const handled = await handleUserManagementRoutes(
+                            req,
+                            res,
+                            sharedEnvConfig,
+                            govConfig
+                        );
+                        if (handled) return;
+                    }
+
+                    if (pathname === '/api/portal' || pathname.startsWith('/api/portal/')) {
+                        const subPath = pathname.slice('/api/portal'.length) || '/';
+                        await handlePortalRoutes(req, res, subPath, sharedEnvConfig);
+                        return;
+                    }
+
+                    if (pathname === '/api/asaas' || pathname.startsWith('/api/asaas/')) {
+                        const subPath = pathname.slice('/api/asaas'.length) || '/';
+                        await handleAsaasRoutes(req, res, subPath, sharedEnvConfig);
+                        return;
+                    }
+
+                    if (pathname === '/api/contracts' || pathname.startsWith('/api/contracts/')) {
+                        const handled = await handleContractRoutes(req, res, sharedEnvConfig);
+                        if (handled) return;
+                    }
+
+                    if (pathname === '/api/auth/login') {
+                        await handleAuthLoginRoute(req, res, sharedEnvConfig);
+                        return;
+                    }
+
+                    if (pathname.startsWith('/api/logos/') && req.method === 'GET') {
+                        let decodedName = '';
+                        try {
+                            decodedName = decodeURIComponent(pathname.replace('/api/logos/', ''));
+                        } catch {
+                            res.writeHead(400, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ error: 'URI de arquivo malformada.' }));
+                            return;
+                        }
+                        const fileName = path.basename(decodedName);
+                        const logoPath = path.resolve(process.cwd(), 'public', 'uploads', 'logos', fileName);
+                        if (fs.existsSync(logoPath) && fs.statSync(logoPath).isFile()) {
+                            const ext = path.extname(logoPath).toLowerCase();
+                            const mimeMap: Record<string, string> = {
+                                '.png': 'image/png',
+                                '.jpg': 'image/jpeg',
+                                '.jpeg': 'image/jpeg',
+                                '.webp': 'image/webp',
+                                '.svg': 'image/svg+xml'
+                            };
+                            res.writeHead(200, {
+                                'Content-Type': mimeMap[ext] || 'application/octet-stream',
+                                'Cache-Control': 'public, max-age=86400'
+                            });
+                            fs.createReadStream(logoPath).pipe(res);
+                            return;
+                        }
+                        res.writeHead(404, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: 'Logo not found' }));
+                        return;
+                    }
+
+                    if (pathname === '/api/health') {
+                        res.writeHead(200, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({
+                            status: 'ok',
+                            service: 'crm-hydra-vite-api-bridge',
+                            bridgeActive: Boolean(bridgeEnv.projectId && bridgeEnv.apiKey),
+                            policyEngineMode: writePolicyEngine.mode,
+                            governanceMode: govConfig.mode,
+                            timestamp: new Date().toISOString()
+                        }));
+                        return;
+                    }
+
+                    if (pathname === '/api/data') {
+                        await handleApiDataRequest(req, res, bridgeEnv);
+                        return;
+                    }
+
+                    next();
+                } catch (err: any) {
+                    const statusCode = err?.statusCode || err?.code || 500;
+                    const httpStatus = typeof statusCode === 'number' && statusCode >= 100 && statusCode < 600 ? statusCode : 500;
+                    if (!res.headersSent) {
+                        res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({
+                            success: false,
+                            error: err?.message || 'Erro interno no servidor de desenvolvimento.'
+                        }));
+                    }
+                }
             });
-          },
-        }).catch((err) => {
-          console.warn('[VITE_BRIDGE] Aviso ao inicializar governança no Vite:', err.message);
-        });
-      }
-
-      // 1. Endpoints de Governança e Disjuntores SuperAdmin: /api/admin/policy
-      server.middlewares.use('/api/admin/policy', async (req, res) => {
-        try {
-          await handleAdminPolicyRoutes(req, res, writePolicyEngine, {
-            ENDPOINT: endpoint,
-            PROJECT_ID: projectId,
-            API_KEY: apiKey,
-            governanceConfig,
-          });
-        } catch (err: any) {
-          const status = err.statusCode || 500;
-          res.statusCode = status;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: err.message, code: status }));
         }
-      });
-
-      // 1.5. Endpoints de Provisionamento e Gestão de Empresas SuperAdmin: /api/admin/tenants
-      server.middlewares.use('/api/admin/tenants', async (req, res) => {
-        try {
-          const { handleTenantProvisioningRoutes } = await import('./tenantProvisioningHandler');
-          await handleTenantProvisioningRoutes(req, res, {
-            ENDPOINT: endpoint,
-            PROJECT_ID: projectId,
-            API_KEY: apiKey,
-            governanceConfig,
-          });
-        } catch (err: any) {
-          const status = err.statusCode || 500;
-          res.statusCode = status;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: err.message, code: status }));
-        }
-      });
-
-      // 1.6. Endpoints de Gestão de Usuários e Convites por Empresa: /api/admin/users
-      server.middlewares.use('/api/admin/users', async (req, res) => {
-        try {
-          const { handleUserManagementRoutes } = await import('./userManagementHandler');
-          await handleUserManagementRoutes(req, res, {
-            ENDPOINT: endpoint,
-            PROJECT_ID: projectId,
-            API_KEY: apiKey,
-            governanceConfig,
-          });
-        } catch (err: any) {
-          const status = err.statusCode || 500;
-          res.statusCode = status;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: err.message, code: status }));
-        }
-      });
-
-      // 2. Endpoint de Escrita do CRM: /api/crm/write (S10: Limite estrito de payload)
-      server.middlewares.use('/api/crm/write', async (req, res) => {
-        if (req.method !== 'POST') {
-          res.statusCode = 405;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ error: 'Método não permitido. Utilize POST.' }));
-          return;
-        }
-
-        try {
-          const body = await readJsonBody(req, { maxBytes: 512 * 1024, timeoutMs: 15000 });
-
-          const result = await executeAuthoritativeWrite({
-            headers: req.headers,
-            socket: req.socket,
-            body,
-          });
-
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(result));
-        } catch (err: any) {
-          const status = err.statusCode || err.code || 500;
-          res.statusCode =
-            typeof status === 'number' && status >= 400 && status < 600 ? status : 500;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              success: false,
-              error: err.message || 'Erro interno no Backend API Bridge.',
-              code: res.statusCode,
-            })
-          );
-        }
-      });
-    },
-  };
+    };
 }
+
+export { vitePluginApiBridge as crmApiBridgePlugin };

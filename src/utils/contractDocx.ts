@@ -17,13 +17,50 @@ import {
 } from 'docx';
 import { Contract, ContractClause, ContractItem, formatDocumentMask } from '../pages/Contratos';
 
-// Helper de conversão de Imagem (URL ou Data-URL base64) para Uint8Array
-async function getImageBuffer(urlOrBase64?: string): Promise<Uint8Array | null> {
+type DocxImageType = 'png' | 'jpg' | 'gif' | 'bmp';
+
+interface LoadedDocxImage {
+  data: Uint8Array;
+  type: DocxImageType;
+}
+
+function detectImageType(bytes: Uint8Array, mimeOrUrl?: string): DocxImageType | null {
+  if (bytes && bytes.length >= 4) {
+    // PNG: 89 50 4E 47
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+      return 'png';
+    }
+    // JPEG: FF D8 FF
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return 'jpg';
+    }
+    // GIF: 47 49 46
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+      return 'gif';
+    }
+    // BMP: 42 4D
+    if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+      return 'bmp';
+    }
+  }
+  if (mimeOrUrl) {
+    const lower = mimeOrUrl.toLowerCase();
+    if (lower.includes('image/png') || /\.png(\?|#|$)/.test(lower)) return 'png';
+    if (lower.includes('image/jpeg') || lower.includes('image/jpg') || /\.(jpe?g)(\?|#|$)/.test(lower)) return 'jpg';
+    if (lower.includes('image/gif') || /\.gif(\?|#|$)/.test(lower)) return 'gif';
+    if (lower.includes('image/bmp') || /\.bmp(\?|#|$)/.test(lower)) return 'bmp';
+  }
+  return null;
+}
+
+// Helper de conversão de Imagem (URL ou Data-URL base64) para Uint8Array + tipo suportado pelo docx v9
+async function getImageBuffer(urlOrBase64?: string): Promise<LoadedDocxImage | null> {
   if (!urlOrBase64) return null;
   try {
     if (urlOrBase64.startsWith('data:')) {
       const commaIndex = urlOrBase64.indexOf(',');
       if (commaIndex === -1) return null;
+      const header = urlOrBase64.slice(0, commaIndex);
       const base64 = urlOrBase64.slice(commaIndex + 1);
       const binaryString = atob(base64);
       const len = binaryString.length;
@@ -31,12 +68,24 @@ async function getImageBuffer(urlOrBase64?: string): Promise<Uint8Array | null> 
       for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      return bytes;
+      const detectedType = detectImageType(bytes, header);
+      if (!detectedType) {
+        console.warn('Formato de imagem não suportado pelo DOCX (ex: WebP/SVG) em contrato:', header);
+        return null;
+      }
+      return { data: bytes, type: detectedType };
     } else {
       const resp = await fetch(urlOrBase64);
       if (!resp.ok) return null;
+      const contentType = resp.headers.get('content-type') || urlOrBase64;
       const arrayBuffer = await resp.arrayBuffer();
-      return new Uint8Array(arrayBuffer);
+      const bytes = new Uint8Array(arrayBuffer);
+      const detectedType = detectImageType(bytes, contentType);
+      if (!detectedType) {
+        console.warn('Formato de imagem remoto não suportado pelo DOCX em contrato:', contentType);
+        return null;
+      }
+      return { data: bytes, type: detectedType };
     }
   } catch (e) {
     console.warn('Erro ao processar imagem para DOCX de contrato:', e);
@@ -50,8 +99,18 @@ function formatBRL(val?: number): string {
 
 function formatDate(dateStr?: string): string {
   if (!dateStr) return '-';
+  const trimmed = String(dateStr).trim();
+  const civilMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (civilMatch) {
+    const [, year, month, day] = civilMatch;
+    return `${day}/${month}/${year}`;
+  }
+  const brMatch = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (brMatch) {
+    return trimmed;
+  }
   try {
-    const d = new Date(dateStr.includes('T') ? dateStr : dateStr + 'T00:00:00');
+    const d = new Date(trimmed);
     if (isNaN(d.getTime())) return dateStr;
     return d.toLocaleDateString('pt-BR');
   } catch {
@@ -68,7 +127,7 @@ export async function downloadContractDocx(
   clauses: ContractClause[]
 ): Promise<void> {
   // Carregar imagens anexas às cláusulas assincronamente
-  const clauseImageBuffers: Record<string, Uint8Array | null> = {};
+  const clauseImageBuffers: Record<string, LoadedDocxImage | null> = {};
   for (let i = 0; i < clauses.length; i++) {
     const cl = clauses[i];
     if (cl.imageUrl) {
@@ -355,6 +414,17 @@ export async function downloadContractDocx(
     items.forEach((item, idx) => {
       const isEven = idx % 2 === 0;
       const bg = isEven ? 'FFFFFF' : 'F8FAFC';
+      const rawBillingType = (item as any).billingType || (item as any).itemType || '';
+      const billingLabel =
+        rawBillingType === 'setup'
+          ? ' [Implantação / Setup]'
+          : rawBillingType === 'one_time'
+          ? ' [Pagamento Único]'
+          : rawBillingType === 'monthly_additional'
+          ? ' [Adicional Mensal]'
+          : rawBillingType === 'recurring'
+          ? ' [Recorrente]'
+          : '';
       itemRows.push(
         new TableRow({
           children: [
@@ -364,7 +434,7 @@ export async function downloadContractDocx(
               margins: { top: 100, bottom: 100, left: 120, right: 120 },
               borders: thinBorder,
               children: [
-                new Paragraph({ children: [new TextRun({ text: item.name, bold: true, size: 18, color: '0F172A' })] }),
+                new Paragraph({ children: [new TextRun({ text: `${item.name}${billingLabel}`, bold: true, size: 18, color: '0F172A' })] }),
                 ...(item.description ? [new Paragraph({ children: [new TextRun({ text: item.description, size: 15, color: '64748B' })] })] : []),
               ],
             }),
@@ -470,9 +540,10 @@ export async function downloadContractDocx(
           spacing: { before: 100, after: 140 },
           children: [
             new ImageRun({
-              data: imgBuf,
+              type: imgBuf.type,
+              data: imgBuf.data,
               transformation: { width: 480, height: 200 },
-            } as any),
+            }),
           ],
         })
       );

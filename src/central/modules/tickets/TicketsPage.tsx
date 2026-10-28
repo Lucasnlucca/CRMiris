@@ -49,6 +49,7 @@ import {
 import type { Attachment, Priority, Ticket, TicketMessage, TicketStatus } from '../../types';
 import { date, dateTime, localDateTime, newId, today, translateErrorMessage } from '../../utils/format';
 import { fileStore } from '../../services/files';
+import { notifyTicketAssigned, sendSystemNotification } from '../../../services/notificationService';
 import './tickets.css';
 
 const statuses: TicketStatus[] = [
@@ -377,6 +378,9 @@ function TicketForm({
           : { number: Math.max(1000, ...data.tickets.map((item) => item.number)) + 1 }),
       });
       notify(ticket ? 'Ticket atualizado com sucesso.' : `Ticket #${result.number} aberto com sucesso.`);
+      if (result.assigneeId && (!ticket || ticket.assigneeId !== result.assigneeId)) {
+        notifyTicketAssigned(result.assigneeId, result.number, result.title, result.id).catch(() => {});
+      }
       onSaved(result);
     } catch (error) {
       notify(
@@ -1313,6 +1317,16 @@ export function TicketDetailPage() {
     try {
       await patch('tickets', ticket.id, fields);
       notify(success);
+      if (fields.status === 'Resolvido' && ticket.assigneeId) {
+        sendSystemNotification({
+          userId: ticket.assigneeId,
+          title: `✅ Chamado #${ticket.number} Resolvido`,
+          message: `O atendimento de "${ticket.title}" foi concluído e marcado como resolvido.`,
+          type: `ticket:${ticket.id}`,
+          referenceId: ticket.id,
+          referenceType: 'ticket',
+        }).catch(() => {});
+      }
     } catch (error) {
       notify(
         translateErrorMessage(error, 'Não foi possível atualizar o ticket.'),
@@ -1331,8 +1345,9 @@ export function TicketDetailPage() {
     }
     setSending(true);
     const internal = !portal && mode === 'internal';
+    const deterministicMsgId = `message_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const entry: TicketMessage = {
-      id: newId('message'),
+      id: deterministicMsgId,
       text: message.trim(),
       author: actor,
       internal,
@@ -1344,6 +1359,18 @@ export function TicketDetailPage() {
       setMessage('');
       setAttachments([]);
       notify(internal ? 'Nota interna adicionada.' : 'Mensagem adicionada à conversa.');
+
+      if (ticket.assigneeId && ticket.assigneeId !== session?.userId) {
+        sendSystemNotification({
+          userId: ticket.assigneeId,
+          title: `💬 Mensagem no chamado #${ticket.number}`,
+          message: `${actor}: "${message.trim().slice(0, 80)}"`,
+          type: `ticket:${ticket.id}`,
+          referenceId: ticket.id,
+          referenceType: 'ticket',
+        }).catch(() => {});
+      }
+
       setTimeout(
         () => endOfConversation.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
         80,

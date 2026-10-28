@@ -1,20 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Search, Filter, Trash2, CreditCard as Edit2, X, Check, Flag, Calendar, Paperclip, Building2, Clock, Sparkles, AlertTriangle, User } from "lucide-react";
-import { databases, client } from '../lib/appwrite';
+import { useSearchParams } from "react-router-dom";
+import { Plus, Search, Filter, Trash2, CreditCard as Edit2, X, Check, Flag, Calendar, Paperclip, Building2, Clock, Sparkles, AlertTriangle, User, SlidersHorizontal, Kanban } from "lucide-react";
+import { databases, client, currentTenantId } from '../lib/appwrite';
 import { Query, ID } from 'appwrite';
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 import { useAuth } from "../context/AuthContext";
 import { useTenant } from "../context/TenantContext";
 import PipelineItemView from "../components/pipeline/PipelineItemView";
-import QuickAddCard from "../components/pipeline/QuickAddCard";
+import QuickAddCard, { QuickAddForm as QuickAddCardPayload } from "../components/pipeline/QuickAddCard";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import confetti from "canvas-confetti";
+import {
+  sendSystemNotification,
+  notifyDealAssigned,
+  notifyDealWon,
+  notifyActivityAssigned,
+} from "../services/notificationService";
 
 interface Column {
   id: string;
   name: string;
   color: string;
   position: number;
+  tenant_id?: string;
 }
 
 interface Activity {
@@ -28,6 +36,7 @@ interface Activity {
   description: string;
   status: "Planejado" | "Concluído";
   created_at: string;
+  tenant_id?: string;
 }
 
 interface HistoryItem {
@@ -36,12 +45,14 @@ interface HistoryItem {
   text: string;
   created_by: string | null;
   created_at: string;
+  tenant_id?: string;
 }
 
 interface Deal {
   id: string;
   name: string;
   company: string;
+  client_id?: string | null;
   value: number;
   column_id: string;
   tags: string[];
@@ -55,11 +66,15 @@ interface Deal {
   assigned_to: string | null;
   created_by: string | null;
   position: number;
+  priority?: "baixa" | "normal" | "alta" | "urgente" | string;
+  due_date?: string | null;
+  dueDate?: string | null;
   completed: boolean;
   completed_at: string | null;
   completed_by: string | null;
   created_at: string;
   updated_at: string;
+  tenant_id?: string;
   activities?: Activity[];
   history?: HistoryItem[];
 }
@@ -67,6 +82,7 @@ interface Deal {
 type DealFormData = {
   name: string;
   company: string;
+  client_id: string;
   value: string;
   column_id: string;
   tags: string;
@@ -90,9 +106,106 @@ type ColumnFormData = {
 
 type DetailTab = "negocios" | "atividades" | "historico" | "contato" | "notas";
 
+const VALID_PRIORITIES = new Set(["baixa", "normal", "alta", "urgente"]);
+
+function normalizePriority(value?: string | null): "baixa" | "normal" | "alta" | "urgente" {
+  const normalized = (value || "normal").trim().toLowerCase();
+  return VALID_PRIORITIES.has(normalized)
+    ? (normalized as "baixa" | "normal" | "alta" | "urgente")
+    : "normal";
+}
+
+function normalizeDueDate(value?: string | null): string | null {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeDealRecord(d: any): Deal {
+  const resolvedDueDate = normalizeDueDate(d.due_date ?? d.dueDate ?? null);
+  return {
+    ...d,
+    id: d.$id || d.id,
+    tags: Array.isArray(d.tags) ? [...d.tags] : [],
+    priority: normalizePriority(d.priority),
+    due_date: resolvedDueDate,
+    dueDate: resolvedDueDate,
+  };
+}
+
+async function fetchAllCollectionPages(
+  collectionId: string,
+  baseQueries: string[] = [],
+  pageSize = 100
+): Promise<any[]> {
+  const allDocs: any[] = [];
+  const seenIds = new Set<string>();
+  let lastId: string | null = null;
+  let offset = 0;
+  let useOffsetFallback = false;
+  const maxPages = 100;
+
+  for (let page = 0; page < maxPages; page++) {
+    const pageQueries = [...baseQueries, Query.limit(pageSize)];
+    if (useOffsetFallback) {
+      if (offset > 0) pageQueries.push(Query.offset(offset));
+    } else if (lastId) {
+      pageQueries.push(Query.cursorAfter(lastId));
+    }
+
+    let response: any;
+    try {
+      response = await databases.listDocuments(DATABASE_ID, collectionId, pageQueries);
+    } catch (err) {
+      if (!useOffsetFallback && lastId) {
+        useOffsetFallback = true;
+        const fallbackQueries = [...baseQueries, Query.limit(pageSize), Query.offset(offset)];
+        response = await databases.listDocuments(DATABASE_ID, collectionId, fallbackQueries);
+      } else {
+        throw err;
+      }
+    }
+
+    const docs: any[] = Array.isArray(response?.documents) ? response.documents : [];
+    if (docs.length === 0) break;
+
+    let addedInBatch = 0;
+    for (const doc of docs) {
+      const docId = String(doc?.$id || doc?.id || "");
+      if (docId) {
+        if (seenIds.has(docId)) continue;
+        seenIds.add(docId);
+      }
+      allDocs.push(doc);
+      addedInBatch++;
+    }
+
+    if (docs.length < pageSize || addedInBatch === 0) {
+      break;
+    }
+
+    if (page === maxPages - 1 && docs.length >= pageSize) {
+      console.warn(`[fetchAllCollectionPages] Limite máximo de paginação (${maxPages} páginas, ${allDocs.length} itens) atingido para '${collectionId}'. Notificando carregamento parcial.`);
+      (allDocs as any).isTruncated = true;
+    }
+
+    const tailDoc = docs[docs.length - 1];
+    const tailId = String(tailDoc?.$id || tailDoc?.id || "");
+    if (!tailId) {
+      useOffsetFallback = true;
+    } else {
+      lastId = tailId;
+    }
+    offset += docs.length;
+  }
+
+  return allDocs;
+}
+
 const initialDealForm: DealFormData = {
   name: "",
   company: "",
+  client_id: "",
   value: "",
   column_id: "",
   tags: "",
@@ -140,8 +253,12 @@ interface User {
 
 interface ClientSuggestion {
   id: string;
+  $id?: string;
   name: string;
   fantasy_name: string;
+  phone?: string;
+  email?: string;
+  document?: string;
 }
 
 interface PipelineProps {
@@ -150,12 +267,16 @@ interface PipelineProps {
 }
 
 export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const { tenant } = useTenant();
+  const activeTenantId = tenant?.id || currentTenantId || "";
+
   const [columns, setColumns] = useState<Column[]>([]);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [clients, setClients] = useState<ClientSuggestion[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showCompanySuggestions, setShowCompanySuggestions] = useState(false);
   const companyInputRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
@@ -177,6 +298,23 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
   const [quickAddSaving, setQuickAddSaving] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [onlyMyDeals, setOnlyMyDeals] = useState<boolean>(false);
+  const [compactView, setCompactView] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("crm_pipeline_view_mode") !== "detailed";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleViewMode = () => {
+    setCompactView((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("crm_pipeline_view_mode", next ? "compact" : "detailed");
+      } catch {}
+      return next;
+    });
+  };
 
   const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null);
   const [activeTab, setActiveTab] = useState<DetailTab>("atividades");
@@ -191,19 +329,50 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     description: "",
   });
 
-  useEffect(() => {
-    loadInitialData();
+  // Generation counter bound to userId + tenantId to discard delayed/out-of-order responses
+  const loadGenerationRef = useRef<number>(0);
+  const activeTenantIdRef = useRef<string>(activeTenantId);
+  activeTenantIdRef.current = activeTenantId;
 
-    const cleanup = setupRealtimeSubscriptions();
+  useEffect(() => {
+    loadGenerationRef.current += 1;
+    const currentGen = loadGenerationRef.current;
+
+    // Clear state immediately on tenant/user switch so stale cross-tenant data is never shown
+    setColumns([]);
+    setDeals([]);
+    setUsers([]);
+    setClients([]);
+    setSelectedDeal(null);
+    setEditingDeal(null);
+    setEditingColumn(null);
+    setShowDealModal(false);
+    setShowColumnModal(false);
+    setQuickAddColumnId(null);
+    setActivities([]);
+    setHistory([]);
+    setLoadError(null);
+
+    if (!activeTenantId) {
+      setLoading(false);
+      return;
+    }
+
+    loadInitialData(currentGen, activeTenantId);
+
+    const cleanup = setupRealtimeSubscriptions(activeTenantId, currentGen);
 
     return () => {
       cleanup?.();
     };
-  }, [tenant?.id]);
+  }, [activeTenantId, user?.id]);
 
   useEffect(() => {
-    if (initialDealId && deals.length > 0 && !loading) {
-      const deal = deals.find((d) => d.id === initialDealId);
+    const queryDealId = searchParams.get("deal") || searchParams.get("dealId");
+    const targetDealId = initialDealId || queryDealId;
+
+    if (targetDealId && deals.length > 0 && !loading) {
+      const deal = deals.find((d) => d.id === targetDealId);
       if (deal) {
         openDealDetails(deal);
         if (onDealOpened) {
@@ -211,104 +380,149 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
         }
       }
     }
-  }, [initialDealId, deals, loading]);
+  }, [initialDealId, searchParams, deals, loading]);
 
-  async function loadInitialData() {
+  async function loadInitialData(gen = loadGenerationRef.current, targetTenantId = activeTenantId) {
+    if (!targetTenantId) {
+      if (gen === loadGenerationRef.current) {
+        setLoading(false);
+      }
+      return;
+    }
+
     try {
-      setLoading(true);
-      await Promise.all([loadColumns(), loadDeals(), loadUsers(), loadClients()]);
-    } catch (error) {
+      if (gen === loadGenerationRef.current) {
+        setLoading(true);
+        setLoadError(null);
+      }
+      await Promise.all([
+        loadColumns(gen, targetTenantId),
+        loadDeals(gen, targetTenantId),
+        loadUsers(gen),
+        loadClients(gen, targetTenantId),
+      ]);
+    } catch (error: any) {
       console.error("Erro ao carregar dados:", error);
+      if (gen === loadGenerationRef.current) {
+        setLoadError(error?.message || "Erro ao carregar dados do pipeline.");
+      }
     } finally {
-      setLoading(false);
+      if (gen === loadGenerationRef.current) {
+        setLoading(false);
+      }
     }
   }
 
-  async function loadClients() {
+  async function loadClients(gen = loadGenerationRef.current, targetTenantId = activeTenantId) {
+    if (!targetTenantId) return;
     try {
-      const { documents: data } = await databases.listDocuments(DATABASE_ID, "clients", [Query.orderAsc("name")]);
-      setClients(data.map((d: any) => ({ id: d.$id, name: d.name, fantasy_name: d.fantasy_name })) || []);
+      const tenantQuery = [Query.equal("tenant_id", targetTenantId), Query.orderAsc("name")];
+      const data = await fetchAllCollectionPages("clients", tenantQuery);
+      if (gen !== loadGenerationRef.current) return;
+
+      setClients(
+        (data || []).map((d: any) => ({
+          id: d.$id || d.id,
+          $id: d.$id || d.id,
+          name: d.name,
+          fantasy_name: d.fantasy_name || d.tradeName || "",
+          phone: d.phone || "",
+          email: d.email || "",
+          document: d.document || "",
+        }))
+      );
     } catch (e) {
       console.error("Erro ao carregar clientes:", e);
     }
   }
 
-  async function loadColumns() {
-    let error = null;
-    let data: any[] = [];
+  async function loadColumns(gen = loadGenerationRef.current, targetTenantId = activeTenantId) {
+    if (!targetTenantId) return;
     try {
-      const { documents } = await databases.listDocuments(DATABASE_ID, "pipeline_columns", [Query.orderAsc("position")]);
-      data = documents;
-    } catch (e) {
-      error = e;
-    }
+      const tenantQuery = [Query.equal("tenant_id", targetTenantId), Query.orderAsc("position")];
+      const data = await fetchAllCollectionPages("pipeline_columns", tenantQuery);
+      if (gen !== loadGenerationRef.current) return;
 
-    if (error) {
+      setColumns(
+        (data || [])
+          .filter((d: any) => !d.tenant_id || d.tenant_id === targetTenantId)
+          .map((d: any) => ({ ...d, id: d.$id || d.id }))
+      );
+    } catch (error: any) {
       console.error("Erro ao carregar colunas:", error);
-      return;
+      if (gen === loadGenerationRef.current) {
+        setLoadError(error?.message || "Falha ao sincronizar colunas do funil.");
+      }
     }
-
-    setColumns(data.map(d => ({...d, id: d.$id})) as any || []);
   }
 
-  async function loadDeals() {
-    let error = null;
-    let data: any[] = [];
+  async function loadDeals(gen = loadGenerationRef.current, targetTenantId = activeTenantId) {
+    if (!targetTenantId) return;
     try {
-      const { documents } = await databases.listDocuments(DATABASE_ID, "pipeline_deals", [Query.orderAsc("position")]);
-      data = documents;
-    } catch (e) {
-      error = e;
-    }
+      const tenantQuery = [Query.equal("tenant_id", targetTenantId), Query.orderAsc("position")];
+      const data = await fetchAllCollectionPages("pipeline_deals", tenantQuery);
+      if (gen !== loadGenerationRef.current) return;
 
-    if (error) {
+      setDeals(
+        (data || [])
+          .filter((d: any) => !d.tenant_id || d.tenant_id === targetTenantId)
+          .map((d: any) => normalizeDealRecord(d))
+      );
+    } catch (error: any) {
       console.error("Erro ao carregar deals:", error);
-      return;
+      if (gen === loadGenerationRef.current) {
+        setLoadError(error?.message || "Falha ao sincronizar negócios do funil.");
+      }
     }
-
-    setDeals(data.map(d => ({...d, id: d.$id})) as any || []);
   }
 
-  async function loadUsers() {
-    let error = null;
-    let data: any[] = [];
+  async function loadUsers(gen = loadGenerationRef.current) {
     try {
-      const { documents } = await databases.listDocuments(DATABASE_ID, "users_hydra", [Query.equal("is_active", true), Query.orderAsc("name")]);
-      data = documents;
-    } catch (e) {
-      error = e;
-    }
+      const data = await fetchAllCollectionPages("users_hydra", [
+        Query.equal("is_active", true),
+        Query.orderAsc("name"),
+      ]);
+      if (gen !== loadGenerationRef.current) return;
 
-    if (error) {
+      setUsers((data || []).map((d: any) => ({ ...d, id: d.$id || d.id })));
+    } catch (error) {
       console.error("Erro ao carregar usuários:", error);
-      return;
     }
-
-    setUsers(data || []);
   }
 
-  async function loadDealDetails(dealId: string) {
-    const [activitiesRes, historyRes] = await Promise.all([
-      databases.listDocuments(DATABASE_ID, "pipeline_activities", [Query.equal("deal_id", dealId), Query.orderDesc("created_at")]),
-      databases.listDocuments(DATABASE_ID, "pipeline_history", [Query.equal("deal_id", dealId), Query.orderDesc("created_at")]),
+  async function loadDealDetails(dealId: string, gen = loadGenerationRef.current) {
+    const tenantFilter = activeTenantId ? [Query.equal("tenant_id", activeTenantId)] : [];
+    const [loadedActivities, loadedHistory] = await Promise.all([
+      fetchAllCollectionPages("pipeline_activities", [
+        ...tenantFilter,
+        Query.equal("deal_id", dealId),
+        Query.orderDesc("created_at"),
+      ]),
+      fetchAllCollectionPages("pipeline_history", [
+        ...tenantFilter,
+        Query.equal("deal_id", dealId),
+        Query.orderDesc("created_at"),
+      ]),
     ]);
 
-    const loadedActivities = activitiesRes.documents as any[] || [];
-    const loadedHistory = historyRes.documents as any[] || [];
+    const normalizedActivities = (loadedActivities || []).map((a: any) => ({ ...a, id: a.$id || a.id }));
+    const normalizedHistory = (loadedHistory || []).map((h: any) => ({ ...h, id: h.$id || h.id }));
 
-    setActivities(loadedActivities);
-    setHistory(loadedHistory);
+    if (gen === loadGenerationRef.current) {
+      setActivities(normalizedActivities);
+      setHistory(normalizedHistory);
+    }
 
     return {
-      activities: loadedActivities,
-      history: loadedHistory,
+      activities: normalizedActivities,
+      history: normalizedHistory,
     };
   }
 
   const selectedDealRef = useRef<Deal | null>(null);
   selectedDealRef.current = selectedDeal;
 
-  function setupRealtimeSubscriptions() {
+  function setupRealtimeSubscriptions(boundTenantId: string, boundGen: number) {
     const dealsChannel = `databases.${DATABASE_ID}.collections.pipeline_deals.documents`;
     const columnsChannel = `databases.${DATABASE_ID}.collections.pipeline_columns.documents`;
     const activitiesChannel = `databases.${DATABASE_ID}.collections.pipeline_activities.documents`;
@@ -317,20 +531,23 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     const unsubscribe = client.subscribe(
       [dealsChannel, columnsChannel, activitiesChannel, historyChannel],
       (response: any) => {
+        if (boundGen !== loadGenerationRef.current) return;
         const events: string[] = response.events || [];
         const payload = response.payload;
-        if (!payload) return;
+
+        // Mandatory tenant isolation check for all realtime events (create, update, delete)
+        if (!payload || !boundTenantId || payload.tenant_id !== boundTenantId) return;
 
         // Pipeline Deals events
         if (events.some((e: string) => e.includes("pipeline_deals"))) {
           if (events.some((e: string) => e.includes(".create"))) {
-            const newDeal: Deal = { ...payload, id: payload.$id };
+            const newDeal: Deal = normalizeDealRecord(payload);
             setDeals((prev) => {
               if (prev.some((d) => d.id === newDeal.id)) return prev;
               return [...prev, newDeal];
             });
           } else if (events.some((e: string) => e.includes(".update"))) {
-            const updatedDeal: Deal = { ...payload, id: payload.$id };
+            const updatedDeal: Deal = normalizeDealRecord(payload);
             setDeals((prev) =>
               prev.map((d) => (d.id === updatedDeal.id ? { ...d, ...updatedDeal } : d))
             );
@@ -338,7 +555,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
               setSelectedDeal((prev) => (prev ? { ...prev, ...updatedDeal } : null));
             }
           } else if (events.some((e: string) => e.includes(".delete"))) {
-            const deletedId = payload.$id;
+            const deletedId = payload.$id || payload.id;
             setDeals((prev) => prev.filter((d) => d.id !== deletedId));
             if (selectedDealRef.current?.id === deletedId) {
               setSelectedDeal(null);
@@ -349,20 +566,20 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
         // Pipeline Columns events
         if (events.some((e: string) => e.includes("pipeline_columns"))) {
           if (events.some((e: string) => e.includes(".create"))) {
-            const newCol: Column = { ...payload, id: payload.$id };
+            const newCol: Column = { ...payload, id: payload.$id || payload.id };
             setColumns((prev) => {
               if (prev.some((c) => c.id === newCol.id)) return prev;
               return [...prev, newCol].sort((a, b) => a.position - b.position);
             });
           } else if (events.some((e: string) => e.includes(".update"))) {
-            const updatedCol: Column = { ...payload, id: payload.$id };
+            const updatedCol: Column = { ...payload, id: payload.$id || payload.id };
             setColumns((prev) =>
               prev
                 .map((c) => (c.id === updatedCol.id ? { ...c, ...updatedCol } : c))
                 .sort((a, b) => a.position - b.position)
             );
           } else if (events.some((e: string) => e.includes(".delete"))) {
-            const deletedId = payload.$id;
+            const deletedId = payload.$id || payload.id;
             setColumns((prev) => prev.filter((c) => c.id !== deletedId));
           }
         }
@@ -370,17 +587,18 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
         // Pipeline Activities events
         if (events.some((e: string) => e.includes("pipeline_activities"))) {
           if (selectedDealRef.current && payload.deal_id === selectedDealRef.current.id) {
+            const actId = payload.$id || payload.id;
             if (events.some((e: string) => e.includes(".create"))) {
               setActivities((prev) => {
-                if (prev.some((a) => a.id === payload.$id)) return prev;
-                return [{ ...payload, id: payload.$id }, ...prev];
+                if (prev.some((a) => a.id === actId)) return prev;
+                return [{ ...payload, id: actId }, ...prev];
               });
             } else if (events.some((e: string) => e.includes(".update"))) {
               setActivities((prev) =>
-                prev.map((a) => (a.id === payload.$id ? { ...payload, id: payload.$id } : a))
+                prev.map((a) => (a.id === actId ? { ...payload, id: actId } : a))
               );
             } else if (events.some((e: string) => e.includes(".delete"))) {
-              setActivities((prev) => prev.filter((a) => a.id !== payload.$id));
+              setActivities((prev) => prev.filter((a) => a.id !== actId));
             }
           }
         }
@@ -388,10 +606,11 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
         // Pipeline History events
         if (events.some((e: string) => e.includes("pipeline_history"))) {
           if (selectedDealRef.current && payload.deal_id === selectedDealRef.current.id) {
+            const histId = payload.$id || payload.id;
             if (events.some((e: string) => e.includes(".create"))) {
               setHistory((prev) => {
-                if (prev.some((h) => h.id === payload.$id)) return prev;
-                return [{ ...payload, id: payload.$id }, ...prev];
+                if (prev.some((h) => h.id === histId)) return prev;
+                return [{ ...payload, id: histId }, ...prev];
               });
             }
           }
@@ -419,7 +638,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     const term = search.trim().toLowerCase();
 
     return deals.filter((deal) => {
-      if (priorityFilter !== "all" && ((deal as any).priority || "normal") !== priorityFilter) {
+      if (priorityFilter !== "all" && (deal.priority || "normal") !== priorityFilter) {
         return false;
       }
       if (onlyMyDeals && deal.assigned_to !== user?.id) {
@@ -479,6 +698,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
       ...initialDealForm,
       column_id: columnId || columns[0]?.id || "",
       assigned_to: "",
+      client_id: "",
     });
     setShowDealModal(true);
   }
@@ -488,9 +708,10 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     setDealForm({
       name: deal.name,
       company: deal.company || "",
+      client_id: deal.client_id || "",
       value: String(deal.value || ""),
       column_id: deal.column_id,
-      tags: deal.tags.join(", "),
+      tags: (deal.tags || []).join(", "),
       last_contact: deal.last_contact,
       pending: deal.pending,
       assigned_to: deal.assigned_to || "",
@@ -534,6 +755,90 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     setQuickAddForm({ name: "", assigned_to: "", due_date: "", priority: "", label: "" });
   }
 
+  async function handleQuickAddSave(columnId: string, form: QuickAddCardPayload) {
+    const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
+    const resolvedPriority = normalizePriority(form.priority);
+    const resolvedDueDate = normalizeDueDate(form.due_date ?? form.dueDate ?? null);
+    const currentColumnDeals = deals.filter((d) => d.column_id === columnId);
+
+    setQuickAddSaving(true);
+    try {
+      const payload = {
+        name: form.name.trim(),
+        company: "",
+        value: 0,
+        column_id: columnId,
+        tags: form.label ? [form.label] : [],
+        last_contact: "0d",
+        pending: "0/0",
+        notes: "",
+        contact_phone: "",
+        contact_email: "",
+        contact_company: "",
+        contact_position: "",
+        assigned_to: form.assigned_to || null,
+        priority: resolvedPriority,
+        due_date: resolvedDueDate,
+        position: currentColumnDeals.length,
+        tenant_id: targetTenantId,
+      };
+
+      const createdDoc = await databases.createDocument(
+        DATABASE_ID,
+        "pipeline_deals",
+        ID.unique(),
+        payload
+      );
+
+      if (!createdDoc) {
+        throw new Error("Falha ao criar card.");
+      }
+
+      const normalizedCreatedDeal: Deal = normalizeDealRecord({
+        ...payload,
+        ...createdDoc,
+        id: createdDoc.$id || (createdDoc as any).id,
+        priority: createdDoc.priority || resolvedPriority,
+        due_date: createdDoc.due_date ?? resolvedDueDate,
+        dueDate: createdDoc.due_date ?? resolvedDueDate,
+      });
+
+      setDeals((prev) => {
+        const exists = prev.some((d) => d.id === normalizedCreatedDeal.id);
+        if (exists) {
+          return prev.map((d) => (d.id === normalizedCreatedDeal.id ? normalizedCreatedDeal : d));
+        }
+        return [...prev, normalizedCreatedDeal];
+      });
+
+      await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
+        deal_id: normalizedCreatedDeal.id,
+        text: "Card criado.",
+        created_by: user?.id || null,
+        tenant_id: targetTenantId,
+      });
+
+      if (form.assigned_to && form.assigned_to !== user?.id) {
+        notifyDealAssigned(
+          form.assigned_to,
+          form.name.trim(),
+          normalizedCreatedDeal.id,
+          user?.name,
+          targetTenantId
+        ).catch(() => {});
+      }
+
+      closeQuickAdd();
+      await loadDeals(loadGenerationRef.current, activeTenantId || targetTenantId);
+      setSelectedDeal(normalizedCreatedDeal);
+    } catch (err) {
+      console.error("Erro ao criar card:", err);
+      throw err;
+    } finally {
+      setQuickAddSaving(false);
+    }
+  }
+
   async function saveDeal(e: React.FormEvent) {
     e.preventDefault();
 
@@ -547,9 +852,12 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
       return;
     }
 
+    const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
+
     const dealData = {
       name: dealForm.name.trim(),
       company: dealForm.company.trim(),
+      client_id: dealForm.client_id || null,
       value: Number(dealForm.value || 0),
       column_id: dealForm.column_id,
       tags: dealForm.tags
@@ -564,6 +872,9 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
       contact_company: dealForm.company.trim(),
       contact_position: editingDeal?.contact_position || "",
       assigned_to: dealForm.assigned_to || null,
+      priority: normalizePriority(editingDeal?.priority),
+      due_date: normalizeDueDate(editingDeal?.due_date ?? editingDeal?.dueDate ?? null),
+      tenant_id: targetTenantId,
     };
 
     setSaving(true);
@@ -571,22 +882,13 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
       if (editingDeal) {
         const previousAssignedTo = editingDeal.assigned_to;
 
-        console.log("Atualizando deal:", editingDeal.id, dealData);
-        let error = null;
-        try {
-          await databases.updateDocument(DATABASE_ID, "pipeline_deals", editingDeal.id, dealData);
-        } catch (e) { error = e; }
-
-        if (error) {
-          console.error("Erro do Supabase ao atualizar:", error);
-          throw error;
-        }
-
-        console.log("Deal atualizado com sucesso!");
+        await databases.updateDocument(DATABASE_ID, "pipeline_deals", editingDeal.id, dealData);
 
         await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
           deal_id: editingDeal.id,
           text: "Card editado.",
+          created_by: user?.id || null,
+          tenant_id: targetTenantId,
         });
 
         if (dealForm.assigned_to && dealForm.assigned_to !== previousAssignedTo && dealForm.assigned_to !== user?.id) {
@@ -600,24 +902,23 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
           );
         }
       } else {
-        console.log("Criando novo deal:", dealData);
-        let error = null;
-        let newDeal = null;
-        try {
-          newDeal = await databases.createDocument(DATABASE_ID, "pipeline_deals", ID.unique(), dealData);
-          if (newDeal) newDeal = { ...newDeal, id: newDeal.$id };
-        } catch (e) { error = e; }
-
-        if (error) {
-          console.error("Erro do Supabase ao criar:", error);
-          throw error;
-        }
-
-        console.log("Deal criado com sucesso:", newDeal);
+        const createdDoc = await databases.createDocument(
+          DATABASE_ID,
+          "pipeline_deals",
+          ID.unique(),
+          dealData
+        );
+        const newDeal = normalizeDealRecord({
+          ...dealData,
+          ...createdDoc,
+          id: createdDoc.$id || (createdDoc as any).id,
+        });
 
         await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
-          deal_id: newDeal?.id,
+          deal_id: newDeal.id,
           text: "Card criado.",
+          created_by: user?.id || null,
+          tenant_id: targetTenantId,
         });
 
         if (dealForm.assigned_to && dealForm.assigned_to !== user?.id) {
@@ -626,15 +927,14 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
             "Voce foi atribuido a um novo card",
             `Voce foi atribuido como responsavel pelo card "${dealForm.name}"`,
             "pipeline_assignment",
-            newDeal?.id as string,
+            newDeal.id,
             "deal"
           );
         }
 
         closeDealModal();
         await loadDeals();
-        // Auto-open the newly created deal in the task view
-        setSelectedDeal(newDeal as unknown as Deal);
+        setSelectedDeal(newDeal);
         return;
       }
 
@@ -656,35 +956,23 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
       return;
     }
 
+    const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
+
     setSaving(true);
     try {
       if (editingColumn) {
-        console.log("Atualizando coluna:", editingColumn.id, columnForm);
-        try {
-          await databases.updateDocument(DATABASE_ID, "pipeline_columns", editingColumn.id, {
-            name: columnForm.name.trim(),
-            color: columnForm.color,
-          });
-        } catch (error) {
-          console.error("Erro ao atualizar coluna:", error);
-          throw error;
-        }
-
-        console.log("Coluna atualizada com sucesso!");
+        await databases.updateDocument(DATABASE_ID, "pipeline_columns", editingColumn.id, {
+          name: columnForm.name.trim(),
+          color: columnForm.color,
+          tenant_id: targetTenantId,
+        });
       } else {
-        console.log("Criando nova coluna:", columnForm);
-        try {
-          await databases.createDocument(DATABASE_ID, "pipeline_columns", ID.unique(), {
-            name: columnForm.name.trim(),
-            color: columnForm.color,
-            position: columns.length,
-          });
-        } catch (error) {
-          console.error("Erro ao criar coluna:", error);
-          throw error;
-        }
-
-        console.log("Coluna criada com sucesso!");
+        await databases.createDocument(DATABASE_ID, "pipeline_columns", ID.unique(), {
+          name: columnForm.name.trim(),
+          color: columnForm.color,
+          position: columns.length,
+          tenant_id: targetTenantId,
+        });
       }
 
       closeColumnModal();
@@ -703,6 +991,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
 
     try {
       await databases.deleteDocument(DATABASE_ID, "pipeline_deals", dealId);
+      setDeals((prev) => prev.filter((d) => d.id !== dealId));
 
       if (selectedDeal?.id === dealId) {
         setSelectedDeal(null);
@@ -730,6 +1019,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
 
     try {
       await databases.deleteDocument(DATABASE_ID, "pipeline_columns", columnId);
+      setColumns((prev) => prev.filter((c) => c.id !== columnId));
     } catch (error) {
       console.error("Erro ao excluir coluna:", error);
       alert("Erro ao excluir coluna. Tente novamente.");
@@ -743,77 +1033,174 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
 
     const { source, destination, draggableId } = result;
 
-    // Se soltou fora de qualquer coluna
     if (!destination) return;
-
-    // Se soltou no mesmo lugar
     if (source.droppableId === destination.droppableId && source.index === destination.index) return;
 
-    // Atualização otimista
-    const newDeals = Array.from(deals);
-    
-    // Separa os deals da coluna de origem e destino
-    const sourceDeals = newDeals.filter(d => d.column_id === source.droppableId).sort((a: any, b: any) => (a.position || 0) - (b.position || 0));
-    const destDeals = source.droppableId === destination.droppableId 
-      ? sourceDeals 
-      : newDeals.filter(d => d.column_id === destination.droppableId).sort((a: any, b: any) => (a.position || 0) - (b.position || 0));
+    // Deep-clone columns and deals before optimistic update (never mutate items in place)
+    const previousColumnsSnapshot: Column[] = columns.map((col) => ({ ...col }));
+    const previousDealsSnapshot: Deal[] = deals.map((deal) => ({
+      ...deal,
+      tags: Array.isArray(deal.tags) ? [...deal.tags] : [],
+    }));
 
-    // Remove do index original
-    const [reorderedItem] = sourceDeals.splice(source.index, 1);
-    
-    // Atualiza a coluna e insere no novo index
-    reorderedItem.column_id = destination.droppableId;
-    destDeals.splice(destination.index, 0, reorderedItem);
+    // Always locate the moved card by its draggableId, never by source.index on unfiltered deals
+    const movedOriginal = previousDealsSnapshot.find((d) => d.id === draggableId);
+    if (!movedOriginal) return;
 
-    // Recalcula positions da coluna de origem
-    sourceDeals.forEach((d, idx) => { d.position = idx; });
-    // Recalcula positions da coluna de destino se for diferente
-    if (source.droppableId !== destination.droppableId) {
-      destDeals.forEach((d, idx) => { d.position = idx; });
+    const sameColumn = source.droppableId === destination.droppableId;
+
+    // Unfiltered deals in source and destination columns sorted by current position
+    const allSourceDeals = previousDealsSnapshot
+      .filter((d) => d.column_id === source.droppableId)
+      .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+    const allDestDeals = sameColumn
+      ? allSourceDeals
+      : previousDealsSnapshot
+          .filter((d) => d.column_id === destination.droppableId)
+          .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+    // Visible (filtered) deals in the destination column excluding the moved card
+    const visibleDestWithoutMoved = filteredDeals
+      .filter((d) => d.column_id === destination.droppableId && d.id !== draggableId)
+      .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+    // Unfiltered destination deals excluding the moved card
+    const destWithoutMoved = allDestDeals
+      .filter((d) => d.id !== draggableId)
+      .map((d) => ({ ...d, tags: Array.isArray(d.tags) ? [...d.tags] : [] }));
+
+    const movedUpdated: Deal = {
+      ...movedOriginal,
+      tags: Array.isArray(movedOriginal.tags) ? [...movedOriginal.tags] : [],
+      column_id: destination.droppableId,
+    };
+
+    // Determine exact insertion index in destWithoutMoved relative to visible cards
+    let insertIndexInDest = destWithoutMoved.length;
+    if (destination.index <= 0) {
+      if (visibleDestWithoutMoved.length > 0) {
+        const firstVisibleId = visibleDestWithoutMoved[0].id;
+        const idx = destWithoutMoved.findIndex((d) => d.id === firstVisibleId);
+        insertIndexInDest = idx >= 0 ? idx : 0;
+      } else {
+        insertIndexInDest = 0;
+      }
+    } else if (destination.index < visibleDestWithoutMoved.length) {
+      const targetVisibleAfter = visibleDestWithoutMoved[destination.index];
+      const idx = destWithoutMoved.findIndex((d) => d.id === targetVisibleAfter.id);
+      insertIndexInDest = idx >= 0 ? idx : destWithoutMoved.length;
+    } else if (visibleDestWithoutMoved.length > 0) {
+      const lastVisibleBefore = visibleDestWithoutMoved[visibleDestWithoutMoved.length - 1];
+      const idx = destWithoutMoved.findIndex((d) => d.id === lastVisibleBefore.id);
+      insertIndexInDest = idx >= 0 ? idx + 1 : destWithoutMoved.length;
     }
 
-    setDeals(newDeals); // Atualiza UI instantaneamente
+    destWithoutMoved.splice(insertIndexInDest, 0, movedUpdated);
+
+    const updatedDestDeals: Deal[] = destWithoutMoved.map((d, idx) => ({
+      ...d,
+      column_id: destination.droppableId,
+      position: idx,
+    }));
+
+    const updatedSourceDeals: Deal[] = sameColumn
+      ? []
+      : allSourceDeals
+          .filter((d) => d.id !== draggableId)
+          .map((d, idx) => ({
+            ...d,
+            tags: Array.isArray(d.tags) ? [...d.tags] : [],
+            position: idx,
+          }));
+
+    const updatedMap = new Map<string, Deal>();
+    for (const d of updatedDestDeals) {
+      updatedMap.set(d.id, d);
+    }
+    for (const d of updatedSourceDeals) {
+      updatedMap.set(d.id, d);
+    }
+
+    const nextDeals: Deal[] = previousDealsSnapshot.map((d) => {
+      const replacement = updatedMap.get(d.id);
+      return replacement
+        ? { ...replacement, tags: Array.isArray(replacement.tags) ? [...replacement.tags] : [] }
+        : { ...d, tags: Array.isArray(d.tags) ? [...d.tags] : [] };
+    });
+
+    setDeals(nextDeals);
 
     try {
-      // Prepara atualizações pro DB
-      const updates = destDeals.map(d => 
-        databases.updateDocument(DATABASE_ID, "pipeline_deals", d.id, { position: d.position, column_id: d.column_id })
+      const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
+      const updates = updatedDestDeals.map((d) =>
+        databases.updateDocument(DATABASE_ID, "pipeline_deals", d.id, {
+          position: d.position,
+          column_id: d.column_id,
+          tenant_id: d.tenant_id || targetTenantId,
+        })
       );
-      
-      if (source.droppableId !== destination.droppableId) {
-        updates.push(...sourceDeals.map(d => 
-          databases.updateDocument(DATABASE_ID, "pipeline_deals", d.id, { position: d.position })
-        ));
+
+      if (!sameColumn) {
+        updates.push(
+          ...updatedSourceDeals.map((d) =>
+            databases.updateDocument(DATABASE_ID, "pipeline_deals", d.id, {
+              position: d.position,
+              tenant_id: d.tenant_id || targetTenantId,
+            })
+          )
+        );
       }
 
       await Promise.all(updates);
 
-      // Histórico e Confete (se mudou de coluna)
-      if (source.droppableId !== destination.droppableId) {
-        const sourceColumn = columns.find(c => c.id === source.droppableId);
-        const destinationColumn = columns.find(c => c.id === destination.droppableId);
-        
+      if (!sameColumn) {
+        const sourceColumn = columns.find((c) => c.id === source.droppableId);
+        const destinationColumn = columns.find((c) => c.id === destination.droppableId);
+
         const historyText = `Card movido de '${sourceColumn?.name || "Desconhecido"}' para '${destinationColumn?.name || "Desconhecido"}'.`;
         await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
           deal_id: draggableId,
           text: historyText,
           created_by: user?.id || null,
+          tenant_id: targetTenantId,
         });
-        
-        // CRM Automation: Celebrate on final stage
-        if (destinationColumn?.name.toLowerCase().includes("ganho") || destinationColumn?.name.toLowerCase().includes("fechad") || destinationColumn?.name.toLowerCase().includes("won")) {
+
+        if (
+          destinationColumn?.name.toLowerCase().includes("ganho") ||
+          destinationColumn?.name.toLowerCase().includes("fechad") ||
+          destinationColumn?.name.toLowerCase().includes("won")
+        ) {
           confetti({
             particleCount: 150,
             spread: 70,
             origin: { y: 0.6 },
-            colors: ['#6366F1', '#10B981', '#F59E0B', '#FFFFFF']
+            colors: ["#6366F1", "#10B981", "#F59E0B", "#FFFFFF"],
           });
+
+          if (movedUpdated.assigned_to) {
+            const formattedVal = movedUpdated.value
+              ? Number(movedUpdated.value).toLocaleString("pt-BR", {
+                  style: "currency",
+                  currency: "BRL",
+                })
+              : undefined;
+            notifyDealWon(
+              movedUpdated.assigned_to,
+              movedUpdated.name,
+              movedUpdated.id,
+              formattedVal,
+              targetTenantId
+            ).catch(() => {});
+          }
         }
       }
     } catch (err) {
       console.error("Erro ao mover card:", err);
+      // Roll back strictly to the pre-drag deep snapshot
+      setColumns(previousColumnsSnapshot);
+      setDeals(previousDealsSnapshot);
       alert("Erro ao sincronizar movimentação do card.");
-      loadDeals(); // Reverte para o que está no DB em caso de erro
     }
   }
 
@@ -825,6 +1212,13 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
 
   function closeDealDetails() {
     setSelectedDeal(null);
+    if (searchParams.get("deal") || searchParams.get("dealId") || searchParams.get("tab")) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("deal");
+      next.delete("dealId");
+      next.delete("tab");
+      setSearchParams(next, { replace: true });
+    }
     setActivityForm({
       type: "Lembrete",
       responsible: "",
@@ -843,18 +1237,15 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     referenceId?: string,
     referenceType?: string
   ) {
-    try {
-      await databases.createDocument(DATABASE_ID, "notifications", ID.unique(), {
-        user_id: userId,
-        title,
-        message,
-        type,
-        reference_id: referenceId || null,
-        reference_type: referenceType || null,
-      });
-    } catch (error) {
-      console.error("Erro ao enviar notificacao:", error);
-    }
+    await sendSystemNotification({
+      userId,
+      title,
+      message,
+      type,
+      referenceId,
+      referenceType,
+      tenantId: activeTenantId || undefined,
+    });
   }
 
   async function addActivity(e: React.FormEvent) {
@@ -866,34 +1257,37 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
       return;
     }
 
+    const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
+
     try {
       const data = await databases.createDocument(DATABASE_ID, "pipeline_activities", ID.unique(), {
-          deal_id: selectedDeal.id,
-          type: activityForm.type,
-          responsible: activityForm.responsible,
-          subject: activityForm.subject,
-          scheduled_for: activityForm.scheduled_for || null,
-          duration: Number(activityForm.duration),
-          description: activityForm.description,
-          status: "Planejado",
-        });
+        deal_id: selectedDeal.id,
+        type: activityForm.type,
+        responsible: activityForm.responsible,
+        subject: activityForm.subject,
+        scheduled_for: activityForm.scheduled_for || null,
+        duration: Number(activityForm.duration),
+        description: activityForm.description,
+        status: "Planejado",
+        tenant_id: targetTenantId,
+      });
 
       await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
         deal_id: selectedDeal.id,
         text: `Atividade criada: ${activityForm.subject}`,
+        created_by: user?.id || null,
+        tenant_id: targetTenantId,
       });
 
       if (activityForm.responsible) {
-        const responsibleUser = users.find(
-          (u) => u.name === activityForm.responsible
-        );
+        const responsibleUser = users.find((u) => u.name === activityForm.responsible);
         if (responsibleUser && responsibleUser.id !== user?.id) {
           await sendNotificationToUser(
             responsibleUser.id,
             "Nova atividade atribuida",
             `Voce foi atribuido a atividade "${activityForm.subject}" no card "${selectedDeal.name}"`,
             "pipeline_assignment",
-            data.id,
+            data.$id || (data as any).id,
             "activity"
           );
         }
@@ -922,10 +1316,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
     setSelectedDeal({ ...selectedDeal, notes: value });
 
     try {
-      console.log("Atualizando notas do deal:", selectedDeal.id);
       await databases.updateDocument(DATABASE_ID, "pipeline_deals", selectedDeal.id, { notes: value });
-
-      console.log("Notas atualizadas com sucesso!");
     } catch (error) {
       console.error("Erro ao atualizar notas:", error);
       alert("Erro ao atualizar notas. Tente novamente.");
@@ -937,15 +1328,14 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
 
     const updatedDeal = {
       ...selectedDeal,
-      [`contact_${field}`]: value
+      [`contact_${field}`]: value,
     } as Deal;
     setSelectedDeal(updatedDeal);
 
     try {
-      console.log(`Atualizando contato ${field} do deal:`, selectedDeal.id);
-      await databases.updateDocument(DATABASE_ID, "pipeline_deals", selectedDeal.id, { [`contact_${field}`]: value });
-
-      console.log("Contato atualizado com sucesso!");
+      await databases.updateDocument(DATABASE_ID, "pipeline_deals", selectedDeal.id, {
+        [`contact_${field}`]: value,
+      });
     } catch (error) {
       console.error("Erro ao atualizar contato:", error);
       alert("Erro ao atualizar contato. Tente novamente.");
@@ -953,106 +1343,168 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
   }
 
   async function toggleDealCompleted(dealId: string, currentCompleted: boolean) {
-  const newCompleted = !currentCompleted;
+    const newCompleted = !currentCompleted;
 
-  const updateData = {
-    completed: newCompleted,
-    completed_at: newCompleted ? new Date().toISOString() : null,
-    completed_by: newCompleted ? user?.id || null : null,
-  };
+    const updateData = {
+      completed: newCompleted,
+      completed_at: newCompleted ? new Date().toISOString() : null,
+      completed_by: newCompleted ? user?.id || null : null,
+    };
 
-  const previousDeal = deals.find((deal) => deal.id === dealId);
+    const previousDeal = deals.find((deal) => deal.id === dealId);
 
-  setDeals((prev) =>
-    prev.map((deal) =>
-      deal.id === dealId ? { ...deal, ...updateData } : deal
-    )
-  );
+    setDeals((prev) =>
+      prev.map((deal) => (deal.id === dealId ? { ...deal, ...updateData } : deal))
+    );
 
-  setSelectedDeal((prev) =>
-    prev?.id === dealId ? { ...prev, ...updateData } : prev
-  );
+    setSelectedDeal((prev) =>
+      prev?.id === dealId ? { ...prev, ...updateData } : prev
+    );
 
-  try {
-    await databases.updateDocument(DATABASE_ID, "pipeline_deals", dealId, updateData);
+    try {
+      const targetTenantId = tenant?.id || currentTenantId || "tenant_default";
+      await databases.updateDocument(DATABASE_ID, "pipeline_deals", dealId, updateData);
 
-    await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
-      deal_id: dealId,
-      text: newCompleted
-        ? "Card marcado como concluído"
-        : "Card desmarcado como concluído",
-      created_by: user?.id || null,
-    });
-  } catch (error) {
-    console.error("Erro ao atualizar status de conclusão:", error);
+      await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), {
+        deal_id: dealId,
+        text: newCompleted
+          ? "Card marcado como concluído"
+          : "Card desmarcado como concluído",
+        created_by: user?.id || null,
+        tenant_id: targetTenantId,
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar status de conclusão:", error);
 
-    if (previousDeal) {
-      setDeals((prev) =>
-        prev.map((deal) => (deal.id === dealId ? previousDeal : deal))
-      );
+      if (previousDeal) {
+        setDeals((prev) =>
+          prev.map((deal) => (deal.id === dealId ? previousDeal : deal))
+        );
 
-      setSelectedDeal((prev) =>
-        prev?.id === dealId ? { ...prev, ...previousDeal } : prev
-      );
+        setSelectedDeal((prev) =>
+          prev?.id === dealId ? { ...prev, ...previousDeal } : prev
+        );
+      }
+
+      alert("Erro ao atualizar status. Tente novamente.");
     }
-
-    alert("Erro ao atualizar status. Tente novamente.");
   }
-}
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#f6f7fb] dark:bg-[#0d1117] flex items-center justify-center">
-        <div className="text-gray-500 dark:text-gray-400">Carregando pipeline...</div>
+      <div className="space-y-5 animate-pulse">
+        <div className="mx-auto max-w-[1800px] space-y-4">
+          {/* Skeleton Toolbar */}
+          <div className="rounded-2xl border border-slate-200/70 dark:border-white/[0.08] bg-white dark:bg-[#121824] p-4 sm:p-5 shadow-xs">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-slate-200 dark:bg-white/[0.08]" />
+                <div className="space-y-2">
+                  <div className="h-4 w-32 rounded bg-slate-200 dark:bg-white/[0.08]" />
+                  <div className="h-3 w-48 rounded bg-slate-100 dark:bg-white/[0.04]" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="h-8 w-28 rounded-xl bg-slate-200 dark:bg-white/[0.08]" />
+                <div className="h-8 w-24 rounded-xl bg-slate-200 dark:bg-white/[0.08]" />
+                <div className="h-8 w-32 rounded-xl bg-indigo-200 dark:bg-indigo-500/20" />
+              </div>
+            </div>
+          </div>
+
+          {/* Skeleton Columns */}
+          <div className="flex gap-4 overflow-hidden pb-4">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="w-[315px] shrink-0 rounded-2xl bg-slate-100/60 dark:bg-[#121824] border border-slate-200/70 dark:border-white/[0.07] p-3.5 space-y-3">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-200/50 dark:border-white/[0.05]">
+                  <div className="h-4 w-28 rounded bg-slate-200 dark:bg-white/[0.08]" />
+                  <div className="h-4 w-8 rounded-full bg-slate-200 dark:bg-white/[0.08]" />
+                </div>
+                {[1, 2, 3].map((j) => (
+                  <div key={j} className="h-28 rounded-xl bg-white dark:bg-[#161d2a] border border-slate-200/70 dark:border-white/[0.06] p-3.5 space-y-2.5">
+                    <div className="h-3 w-20 rounded bg-slate-100 dark:bg-white/[0.05]" />
+                    <div className="h-4 w-3/4 rounded bg-slate-200 dark:bg-white/[0.08]" />
+                    <div className="flex justify-between items-center pt-2 border-t border-slate-100 dark:border-white/[0.04]">
+                      <div className="h-3.5 w-16 rounded bg-emerald-100 dark:bg-emerald-500/20" />
+                      <div className="h-5 w-5 rounded-full bg-slate-200 dark:bg-white/[0.08]" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="mx-auto max-w-[1800px] space-y-5">
-        {/* Ultra-Modern Kanban Toolbar */}
-        <div className="rounded-2xl border border-slate-200/80 dark:border-white/[0.08] bg-white dark:bg-[#121824] p-5 shadow-xs space-y-4">
-          {/* Top row: Metrics + Actions */}
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+    <div className="space-y-5">
+      <div className="mx-auto max-w-[1800px] space-y-4">
+        {loadError && (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-3 rounded-2xl border border-rose-200 dark:border-rose-500/30 bg-rose-50 dark:bg-rose-500/10 px-4 py-3 text-xs font-medium text-rose-700 dark:text-rose-300"
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>{loadError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => loadInitialData(loadGenerationRef.current, activeTenantId)}
+              className="rounded-lg bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-500 transition"
+            >
+              Tentar novamente
+            </button>
+          </div>
+        )}
+
+        {/* Streamlined, Organized Toolbar */}
+        <div className="rounded-2xl border border-slate-200/70 dark:border-white/[0.08] bg-white dark:bg-[#121824] p-4 sm:p-5 shadow-xs space-y-3.5">
+          {/* Top Row: Title, Summary & Quick Actions */}
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2.5">
                 <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-sm shadow-indigo-500/25">
-                  <Filter className="h-4 w-4" />
+                  <Kanban className="h-4 w-4" />
                 </span>
                 <div>
-                  <h2 className="text-base font-bold text-slate-900 dark:text-white leading-tight">
-                    Funil de Vendas
-                  </h2>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-slate-900 dark:text-white leading-tight">
+                      Funil de Vendas
+                    </h2>
+                    <span className="flex h-5 items-center justify-center rounded-full px-2 text-[11px] font-semibold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                      {activeDealsCount} {activeDealsCount === 1 ? "ativo" : "ativos"}
+                    </span>
+                  </div>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
-                    Operação Comercial & Oportunidades
+                    Volume em aberto: <span className="font-semibold text-emerald-600 dark:text-emerald-400 font-mono">{currencyBRL(totalPipelineValue)}</span>
                   </p>
                 </div>
               </div>
-
-              <div className="h-5 w-px bg-slate-200 dark:bg-white/[0.08] mx-1 hidden sm:block" />
-
-              {/* Total pipeline value badge */}
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08]">
-                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Total em Pipeline:</span>
-                <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                  {currencyBRL(totalPipelineValue)}
-                </span>
-              </div>
-
-              {/* Active deals counter badge */}
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100/80 dark:bg-white/[0.04] border border-slate-200/80 dark:border-white/[0.08] text-xs">
-                <span className="font-bold text-indigo-600 dark:text-indigo-400">{activeDealsCount}</span>
-                <span className="font-medium text-slate-500 dark:text-slate-400">negócios ativos</span>
-              </div>
             </div>
 
-            {/* Action buttons */}
-            <div className="flex items-center gap-2.5">
+            {/* Action buttons & View mode toggle */}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={toggleViewMode}
+                className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                  compactView
+                    ? "bg-indigo-50/80 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-500/30"
+                    : "border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.04] text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-white/[0.08]"
+                }`}
+                title={compactView ? "Modo Limpo ativo (menos informações visuais). Clique para modo completo." : "Modo Completo ativo. Clique para modo limpo."}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                <span>{compactView ? "Visão Limpa" : "Visão Completa"}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={openNewColumnModal}
-                className="flex items-center gap-2 rounded-xl border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.04] px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-xs transition hover:bg-slate-50 dark:hover:bg-white/[0.08] hover:border-slate-300 active:scale-[0.98]"
+                className="flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-white/[0.1] bg-white dark:bg-white/[0.04] px-3.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 shadow-xs transition hover:bg-slate-50 dark:hover:bg-white/[0.08] hover:border-slate-300 active:scale-[0.98]"
               >
                 <Plus className="h-3.5 w-3.5" />
                 <span>Nova Etapa</span>
@@ -1061,28 +1513,24 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
               <button
                 type="button"
                 onClick={() => columns.length > 0 && openQuickAdd(columns[0].id)}
-                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm shadow-indigo-500/25 transition hover:scale-[1.02] active:scale-[0.98]"
+                className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm shadow-indigo-500/25 transition hover:scale-[1.01] active:scale-[0.98]"
               >
-                <Plus className="h-3.5 w-3.5" />
+                <Plus className="h-3.5 w-3.5 stroke-[2.5]" />
                 <span>Novo Negócio</span>
               </button>
             </div>
           </div>
 
-          {/* Bottom row: Search & Quick Filter Pills */}
-          <div className="flex flex-col gap-3 pt-3 border-t border-slate-100 dark:border-white/[0.06] md:flex-row md:items-center md:justify-between">
-            {/* Quick Filter Pills */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mr-1">
-                Filtrar:
-              </span>
-
+          {/* Bottom Row: Quick Filters & Search */}
+          <div className="flex flex-col gap-2.5 pt-3 border-t border-slate-100 dark:border-white/[0.06] md:flex-row md:items-center md:justify-between">
+            {/* Filter Capsule Group */}
+            <div className="flex flex-wrap items-center gap-1 bg-slate-100/70 dark:bg-white/[0.04] p-1 rounded-xl border border-slate-200/60 dark:border-white/[0.05]">
               <button
                 onClick={() => { setPriorityFilter("all"); setOnlyMyDeals(false); }}
                 className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
                   priorityFilter === "all" && !onlyMyDeals
-                    ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-xs"
-                    : "bg-slate-100 dark:bg-white/[0.04] text-slate-600 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-white/[0.08]"
+                    ? "bg-white dark:bg-[#1a2232] text-slate-900 dark:text-white shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
                 }`}
               >
                 Todos ({deals.length})
@@ -1092,19 +1540,19 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                 onClick={() => setOnlyMyDeals(!onlyMyDeals)}
                 className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold transition ${
                   onlyMyDeals
-                    ? "bg-indigo-600 text-white shadow-xs shadow-indigo-500/30"
-                    : "bg-slate-100 dark:bg-white/[0.04] text-slate-600 dark:text-slate-400 hover:bg-slate-200/70 dark:hover:bg-white/[0.08]"
+                    ? "bg-indigo-600 text-white shadow-xs shadow-indigo-500/20"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
                 }`}
               >
-                <span>👤 Meus Cards</span>
+                <span>Meus Cards</span>
               </button>
 
               <button
                 onClick={() => setPriorityFilter(priorityFilter === "urgente" ? "all" : "urgente")}
                 className={`flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-semibold transition ${
                   priorityFilter === "urgente"
-                    ? "bg-rose-500 text-white shadow-xs shadow-rose-500/30"
-                    : "bg-slate-100 dark:bg-white/[0.04] text-rose-600 dark:text-rose-400 hover:bg-rose-500/10"
+                    ? "bg-rose-500 text-white shadow-xs shadow-rose-500/20"
+                    : "text-slate-600 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400"
                 }`}
               >
                 <span>🔥 Urgentes</span>
@@ -1114,23 +1562,23 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                 onClick={() => setPriorityFilter(priorityFilter === "alta" ? "all" : "alta")}
                 className={`flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-semibold transition ${
                   priorityFilter === "alta"
-                    ? "bg-amber-500 text-white shadow-xs shadow-amber-500/30"
-                    : "bg-slate-100 dark:bg-white/[0.04] text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+                    ? "bg-amber-500 text-white shadow-xs shadow-amber-500/20"
+                    : "text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-400"
                 }`}
               >
-                <span>⚡ Alta Prioridade</span>
+                <span>⚡ Alta</span>
               </button>
             </div>
 
             {/* Search Input */}
-            <div className="relative min-w-[260px]">
-              <Search className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+            <div className="relative min-w-[260px] max-w-sm w-full md:w-auto">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 placeholder="Buscar por cliente, tag ou valor..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/70 dark:bg-white/[0.04] py-1.5 pl-9 pr-4 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 outline-none transition focus:border-indigo-500 focus:bg-white dark:focus:bg-[#0c1017] focus:ring-2 focus:ring-indigo-500/20"
+                className="w-full rounded-xl border border-slate-200 dark:border-white/[0.08] bg-slate-50/70 dark:bg-white/[0.03] py-1.5 pl-8.5 pr-8 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 outline-none transition focus:border-indigo-500 focus:bg-white dark:focus:bg-[#0c1017] focus:ring-2 focus:ring-indigo-500/20"
               />
               {search && (
                 <button
@@ -1144,6 +1592,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
           </div>
         </div>
 
+        {/* Kanban Board Container */}
         <div className="overflow-x-auto pb-4">
           <DragDropContext onDragEnd={handleDragEnd} onDragStart={() => setIsDragging(true)}>
             <div className="flex min-w-max gap-4">
@@ -1156,17 +1605,17 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
               return (
                 <div
                   key={column.id}
-                  className="flex w-[325px] shrink-0 flex-col rounded-2xl bg-slate-100/70 dark:bg-[#121824] border border-slate-200/80 dark:border-white/[0.08] shadow-xs"
+                  className="group/col flex w-[315px] shrink-0 flex-col rounded-2xl bg-slate-100/60 dark:bg-[#121824] border border-slate-200/70 dark:border-white/[0.07] shadow-xs"
                 >
                   {/* Column Header */}
-                  <div className="flex flex-col gap-1.5 px-4 pt-3.5 pb-2.5">
+                  <div className="flex flex-col gap-1 px-4 pt-3 pb-2 border-b border-slate-200/50 dark:border-white/[0.05]">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 min-w-0">
                         <span
                           className="w-2.5 h-2.5 rounded-full shrink-0 ring-2 ring-white/10"
                           style={{ backgroundColor: column.color }}
                         />
-                        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate tracking-tight">
+                        <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate tracking-tight">
                           {column.name}
                         </h3>
                         <span
@@ -1176,39 +1625,42 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                         </span>
                       </div>
 
+                      {/* Header Actions - '+' is visible, edit & delete revealed on hover */}
                       <div className="flex items-center gap-0.5">
                         <button
                           type="button"
                           onClick={() => openQuickAdd(column.id)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/10 transition-colors"
-                          title="Novo card"
+                          className="rounded-lg p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/10 transition-colors"
+                          title="Novo card nesta coluna"
                         >
                           <Plus className="h-3.5 w-3.5" />
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => openEditColumnModal(column)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/10 transition-colors"
-                          title="Editar coluna"
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="opacity-0 group-hover/col:opacity-100 transition-opacity flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => openEditColumnModal(column)}
+                            className="rounded-lg p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-white/10 transition-colors"
+                            title="Editar coluna"
+                          >
+                            <Edit2 className="h-3 w-3" />
+                          </button>
 
-                        <button
-                          type="button"
-                          onClick={() => deleteColumn(column.id)}
-                          className="rounded-lg p-1.5 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors"
-                          title="Excluir coluna"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteColumn(column.id)}
+                            className="rounded-lg p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/10 transition-colors"
+                            title="Excluir coluna"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between text-[11.5px] text-slate-500 dark:text-slate-400">
-                      <span>Total em aberto</span>
-                      <span className="font-semibold text-slate-700 dark:text-slate-300">
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500 font-mono">
+                      <span>Subtotal</span>
+                      <span className="font-semibold text-slate-600 dark:text-slate-300">
                         {currencyBRL(columnTotal)}
                       </span>
                     </div>
@@ -1220,7 +1672,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                       <div
                         ref={provided.innerRef}
                         {...provided.droppableProps}
-                        className={`min-h-[500px] flex flex-col gap-2.5 p-2.5 rounded-xl transition-colors duration-150 ${
+                        className={`min-h-[460px] flex flex-col gap-2 p-2 rounded-xl transition-colors duration-150 ${
                           snapshot.isDraggingOver
                             ? "bg-indigo-500/[0.04] dark:bg-indigo-500/[0.08] ring-2 ring-dashed ring-indigo-400/50 dark:ring-indigo-500/40"
                             : ""
@@ -1231,61 +1683,14 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                           <QuickAddCard
                             users={users}
                             onCancel={closeQuickAdd}
-                            onSave={async (form) => {
-                              setQuickAddSaving(true);
-                              try {
-                                let error = null;
-                                let newDeal = null;
-                                try {
-                                  newDeal = await databases.createDocument(DATABASE_ID, "pipeline_deals", ID.unique(), {
-                                    name: form.name.trim(),
-                                    company: "",
-                                    value: 0,
-                                    column_id: column.id,
-                                    tags: form.label ? [form.label] : [],
-                                    last_contact: "0d",
-                                    pending: "0/0",
-                                    notes: "",
-                                    contact_phone: "",
-                                    contact_email: "",
-                                    contact_company: "",
-                                    contact_position: "",
-                                    assigned_to: form.assigned_to || null,
-                                  });
-                                  if (newDeal) newDeal = { ...newDeal, id: newDeal.$id };
-                                } catch (e) { error = e; }
-                                if (error) throw error;
-                                if (newDeal) {
-                                  await databases.createDocument(DATABASE_ID, "pipeline_history", ID.unique(), { deal_id: newDeal.id, text: "Card criado.", created_by: user?.id || null });
-                                  closeQuickAdd();
-                                  await loadDeals();
-                                  setSelectedDeal(newDeal as unknown as Deal);
-                                }
-                              } catch (err) {
-                                console.error("Erro ao criar card:", err);
-                              } finally {
-                                setQuickAddSaving(false);
-                              }
-                            }}
+                            onSave={(form) => handleQuickAddSave(column.id, form)}
                           />
                         )}
 
                         {columnDeals.map((deal, index) => {
-                          const assignedUser = users.find((u) => u.id === deal.assigned_to);
-                          const priorityColors: Record<string, string> = {
-                            urgente: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20",
-                            alta: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-                            normal: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
-                            baixa: "bg-slate-500/10 text-slate-500 dark:text-slate-400 border-slate-500/20",
-                          };
-                          const priorityLabels: Record<string, string> = {
-                            urgente: "Urgente",
-                            alta: "Alta",
-                            normal: "Normal",
-                            baixa: "Baixa",
-                          };
-                          const dealPriority = (deal as any).priority || "normal";
-                          const dealDueDate = (deal as any).due_date as string | null;
+                          const assignedUser = users.find((u) => (u.id || (u as any).$id) === deal.assigned_to);
+                          const dealPriority = normalizePriority(deal.priority);
+                          const dealDueDate = normalizeDueDate(deal.due_date ?? deal.dueDate ?? null);
 
                           return (
                             <Draggable key={deal.id} draggableId={deal.id} index={index}>
@@ -1296,45 +1701,48 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                                   {...provided.dragHandleProps}
                                   style={provided.draggableProps.style}
                                   onClick={() => !isDragging && openDealDetails(deal)}
-                                  className={`group relative rounded-xl border p-3 select-none bg-white dark:bg-[#161d2a] transition-colors transition-shadow duration-150 ${
+                                  className={`group relative rounded-xl border p-3 select-none bg-white dark:bg-[#161d2a] transition-all duration-150 cursor-pointer ${
                                     snapshot.isDragging
                                       ? "shadow-2xl ring-2 ring-indigo-500 border-indigo-500 opacity-95 z-[9999]"
-                                      : "shadow-xs hover:shadow-md hover:border-slate-300 dark:hover:border-white/20"
+                                      : "shadow-2xs hover:shadow-md hover:border-indigo-400/50 dark:hover:border-indigo-500/40"
                                   } ${
                                     deal.completed
-                                      ? "border-emerald-500/25 bg-emerald-50/30 dark:bg-emerald-500/[0.03]"
-                                      : "border-slate-200/80 dark:border-white/[0.07]"
+                                      ? "border-emerald-500/30 bg-emerald-50/20 dark:bg-emerald-500/[0.02]"
+                                      : "border-slate-200/70 dark:border-white/[0.07]"
                                   }`}
                                 >
-                                  {/* Top row: Checkbox, Name, and Hover Actions */}
-                                  <div className="flex items-start gap-2.5">
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleDealCompleted(deal.id, deal.completed);
-                                      }}
-                                      className={`mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
-                                        deal.completed
-                                          ? "border-emerald-500 bg-emerald-500 text-white shadow-xs"
-                                          : "border-slate-300 dark:border-white/20 hover:border-emerald-500 dark:hover:border-emerald-400"
-                                      }`}
-                                      title={deal.completed ? "Reabrir card" : "Marcar como concluído"}
-                                    >
-                                      {deal.completed && <Check className="h-2.5 w-2.5 stroke-[3]" />}
-                                    </button>
+                                  {/* Top Row: Company or Priority + Hover Actions */}
+                                  <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                                    <div className="flex items-center gap-1.5 min-w-0">
+                                      {deal.company ? (
+                                        <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500 truncate">
+                                          {deal.company}
+                                        </span>
+                                      ) : (
+                                        <span className="text-[11px] font-medium text-slate-300 dark:text-slate-600">
+                                          Oportunidade
+                                        </span>
+                                      )}
 
-                                    <h4
-                                      className={`flex-1 text-[13.5px] font-semibold leading-snug tracking-tight transition-colors line-clamp-2 ${
-                                        deal.completed
-                                          ? "line-through text-slate-400 dark:text-slate-500"
-                                          : "text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400"
-                                      }`}
-                                    >
-                                      {deal.name}
-                                    </h4>
+                                      {dealPriority === "urgente" && (
+                                        <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] font-bold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">
+                                          🔥 Urgente
+                                        </span>
+                                      )}
+                                      {dealPriority === "alta" && (
+                                        <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] font-bold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                                          ⚡ Alta
+                                        </span>
+                                      )}
+                                      {dealPriority === "baixa" && (
+                                        <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] font-bold bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20">
+                                          Baixa
+                                        </span>
+                                      )}
+                                    </div>
 
-                                    <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                                    {/* Action icons revealed on card hover */}
+                                    <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                                       <button
                                         type="button"
                                         onClick={(e) => {
@@ -1360,71 +1768,93 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                                     </div>
                                   </div>
 
-                                  {/* Company Name if present */}
+                                  {/* Title & Checkbox */}
+                                  <div className="flex items-start gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleDealCompleted(deal.id, deal.completed);
+                                      }}
+                                      className={`mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
+                                        deal.completed
+                                          ? "border-emerald-500 bg-emerald-500 text-white shadow-xs"
+                                          : "border-slate-300 dark:border-white/20 hover:border-emerald-500 dark:hover:border-emerald-400"
+                                      }`}
+                                      title={deal.completed ? "Reabrir card" : "Marcar como concluído"}
+                                    >
+                                      {deal.completed && <Check className="h-2.5 w-2.5 stroke-[3]" />}
+                                    </button>
+
+                                    <h4
+                                      className={`flex-1 text-[13.5px] font-semibold leading-snug tracking-tight line-clamp-2 transition-colors ${
+                                        deal.completed
+                                          ? "line-through text-slate-400 dark:text-slate-500"
+                                          : "text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400"
+                                      }`}
+                                    >
+                                      {deal.name}
+                                    </h4>
+                                  </div>
+
+                                  {/* Company & Linked Client */}
                                   {deal.company && (
-                                    <div className="flex items-center gap-1.5 mt-1.5 pl-6.5 text-[11.5px] text-slate-500 dark:text-slate-400 font-medium">
-                                      <Building2 className="w-3 h-3 text-slate-400 shrink-0" />
+                                    <div className="flex items-center gap-1.5 mt-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                      <Building2 className="h-3 w-3 shrink-0 text-slate-400" />
                                       <span className="truncate">{deal.company}</span>
+                                      {deal.client_id && (
+                                        <span
+                                          className="inline-flex items-center px-1.5 py-0.2 rounded text-[8.5px] font-bold bg-indigo-50 dark:bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-500/30 shrink-0"
+                                          title="Cliente cadastrado vinculado"
+                                        >
+                                          ✓ Cliente
+                                        </span>
+                                      )}
                                     </div>
                                   )}
 
-                                  {/* Tags & Priority Row */}
-                                  {(dealPriority !== "normal" || (deal.tags && deal.tags.length > 0) || (deal as any).labels?.length > 0) && (
-                                    <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-                                      {dealPriority && dealPriority !== "normal" && (
-                                        <span
-                                          className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
-                                            priorityColors[dealPriority] || "bg-slate-500/10 text-slate-500 border-slate-500/20"
-                                          }`}
-                                        >
-                                          <Flag className="h-2.5 w-2.5" />
-                                          {priorityLabels[dealPriority] || dealPriority}
-                                        </span>
-                                      )}
-
+                                  {/* Detailed View Tags (Hidden in Clean Mode for Less Clutter) */}
+                                  {!compactView && ((deal.tags && deal.tags.length > 0) || ((deal as any).labels && (deal as any).labels.length > 0)) && (
+                                    <div className="flex flex-wrap items-center gap-1 mt-2">
                                       {(deal.tags || []).map((tag: string) => (
                                         <span
                                           key={tag}
-                                          className={`rounded-md px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
+                                          className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
                                             tagColors[tag] || "bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 border border-slate-200/60 dark:border-white/10"
                                           }`}
                                         >
                                           {tag}
                                         </span>
                                       ))}
-
-                                      {((deal as any).labels || []).map((lbl: string) => (
-                                        <span
-                                          key={lbl}
-                                          className="rounded-md bg-slate-100 dark:bg-white/5 px-2 py-0.5 text-[10.5px] font-medium text-slate-600 dark:text-slate-300 border border-slate-200/60 dark:border-white/10"
-                                        >
-                                          {lbl}
-                                        </span>
-                                      ))}
                                     </div>
                                   )}
 
-                                  {/* Footer: Value & Metadata (Assignee, Date) */}
-                                  <div className="flex items-center justify-between border-t border-slate-100 dark:border-white/[0.06] mt-3 pt-2.5">
+                                  {/* Footer: Value, Date & Assignee */}
+                                  <div className="flex items-center justify-between border-t border-slate-100 dark:border-white/[0.05] mt-2.5 pt-2">
                                     {deal.value > 0 ? (
-                                      <span className="inline-flex items-center rounded-md bg-emerald-500/10 dark:bg-emerald-500/15 border border-emerald-500/20 px-2 py-0.5 text-[11px] font-mono font-medium text-emerald-600 dark:text-emerald-400">
+                                      <span className="text-[12px] font-mono font-bold text-emerald-600 dark:text-emerald-400">
                                         {currencyBRL(deal.value)}
                                       </span>
                                     ) : (
-                                      <span className="text-[11px] text-slate-400 italic">Sem valor</span>
+                                      <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500">
+                                        R$ 0,00
+                                      </span>
                                     )}
 
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-1.5">
                                       {dealDueDate && (
-                                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                                          <Calendar className="h-3 w-3 text-slate-400" />
-                                          {new Date(dealDueDate).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}
+                                        <span
+                                          className="inline-flex items-center gap-1 text-[10.5px] font-medium text-slate-400 dark:text-slate-500"
+                                          title={`Prazo: ${dealDueDate}`}
+                                        >
+                                          <Calendar className="h-3 w-3" />
+                                          {new Date(dealDueDate.includes("T") ? dealDueDate : `${dealDueDate}T00:00:00`).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" })}
                                         </span>
                                       )}
 
                                       {assignedUser && (
                                         <div
-                                          className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-600 to-violet-600 text-[8.5px] font-bold text-white shadow-xs ring-1 ring-white/20"
+                                          className="flex h-5 w-5 items-center justify-center rounded-full bg-gradient-to-tr from-indigo-600 to-violet-600 text-[8.5px] font-bold text-white shadow-2xs ring-1 ring-white/20"
                                           title={`Responsável: ${assignedUser.name}`}
                                         >
                                           {getInitials(assignedUser.name)}
@@ -1444,7 +1874,7 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                           <button
                             type="button"
                             onClick={() => openQuickAdd(column.id)}
-                            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-slate-300 dark:border-white/10 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 hover:border-indigo-500/50 hover:bg-white dark:hover:bg-white/5 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all shadow-2xs"
+                            className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-slate-200 dark:border-white/10 py-2 text-xs font-semibold text-slate-400 dark:text-slate-500 hover:border-indigo-400/60 hover:bg-white/80 dark:hover:bg-white/[0.03] hover:text-indigo-600 dark:hover:text-indigo-400 transition-all shadow-2xs"
                           >
                             <Plus className="h-3.5 w-3.5" />
                             Adicionar card
@@ -1492,6 +1922,77 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                 />
               </div>
 
+              {/* Vincular Cliente */}
+              <div>
+                <label className="mb-2 flex items-center justify-between text-sm font-medium text-gray-700 dark:text-gray-300">
+                  <span className="flex items-center gap-1.5">
+                    <Building2 className="h-4 w-4 text-indigo-500" />
+                    Vincular Cliente <span className="text-xs text-gray-400 font-normal">(opcional)</span>
+                  </span>
+                  {dealForm.client_id && (
+                    <button
+                      type="button"
+                      onClick={() => setDealForm({ ...dealForm, client_id: "" })}
+                      className="text-xs text-red-500 hover:text-red-700 dark:hover:text-red-400 font-semibold transition"
+                    >
+                      Desvincular
+                    </button>
+                  )}
+                </label>
+
+                {dealForm.client_id ? (
+                  <div className="flex items-center justify-between p-3 rounded-2xl border border-indigo-200/80 dark:border-indigo-500/20 bg-indigo-50/60 dark:bg-indigo-500/10">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-xs">
+                        <Building2 className="h-4 w-4" />
+                      </div>
+                      <div className="truncate">
+                        <div className="text-xs font-bold text-indigo-950 dark:text-indigo-200 truncate">
+                          {(() => {
+                            const sel = clients.find(c => (c.id || c.$id) === dealForm.client_id);
+                            return sel ? (sel.fantasy_name || sel.name) : dealForm.company || "Cliente Vinculado";
+                          })()}
+                        </div>
+                        <div className="text-[11px] text-indigo-600/80 dark:text-indigo-400">
+                          Cliente cadastrado vinculado
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDealForm({ ...dealForm, client_id: "" })}
+                      className="text-xs text-red-500 hover:text-red-700 dark:hover:text-red-400 font-semibold px-2 py-1 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 transition"
+                    >
+                      Remover
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    value={dealForm.client_id}
+                    onChange={(e) => {
+                      const cid = e.target.value;
+                      const selClient = clients.find(c => (c.id || c.$id) === cid);
+                      setDealForm({
+                        ...dealForm,
+                        client_id: cid,
+                        company: selClient ? (selClient.fantasy_name || selClient.name) : dealForm.company,
+                      });
+                    }}
+                    className="w-full rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 py-3 text-gray-900 dark:text-gray-200 outline-none transition focus:border-blue-400 dark:focus:border-emerald-400/50 focus:ring-4 focus:ring-blue-100 dark:focus:ring-emerald-400/20 text-sm"
+                  >
+                    <option value="">Nenhum cliente vinculado (Lead avulso)</option>
+                    {clients.map((client) => {
+                      const cid = client.id || client.$id;
+                      return (
+                        <option key={cid} value={cid}>
+                          {client.fantasy_name || client.name} {client.fantasy_name && client.name !== client.fantasy_name ? `(${client.name})` : ""}
+                        </option>
+                      );
+                    })}
+                  </select>
+                )}
+              </div>
+
               <div className="relative" ref={companyInputRef}>
                 <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Empresa / observação
@@ -1516,7 +2017,11 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                         key={client.id}
                         type="button"
                         onMouseDown={() => {
-                          setDealForm({ ...dealForm, company: client.fantasy_name || client.name });
+                          setDealForm({
+                            ...dealForm,
+                            client_id: client.id || client.$id || "",
+                            company: client.fantasy_name || client.name,
+                          });
                           setShowCompanySuggestions(false);
                         }}
                         className="flex w-full flex-col px-4 py-2.5 text-left transition hover:bg-gray-50 dark:hover:bg-white/5"
@@ -1589,11 +2094,14 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
                     className="w-full rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 px-4 py-3 text-gray-900 dark:text-gray-200 outline-none transition focus:border-blue-400 dark:focus:border-emerald-400/50 focus:ring-4 focus:ring-blue-100 dark:focus:ring-emerald-400/20"
                   >
                     <option value="">Selecione um responsavel</option>
-                    {users.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.name} ({u.role})
-                      </option>
-                    ))}
+                    {users.map((u) => {
+                      const uId = u.id || (u as any).$id;
+                      return (
+                        <option key={uId} value={uId}>
+                          {u.name} ({u.role})
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               </div>
@@ -1740,13 +2248,17 @@ export default function Pipeline({ initialDealId, onDealOpened }: PipelineProps)
 
       {selectedDeal && (
         <PipelineItemView
+          key={selectedDeal.id}
           deal={selectedDeal as any}
           columns={columns as any}
           users={users as any}
+          clients={clients as any}
+          defaultTab={searchParams.get("tab") === "comments" || searchParams.get("tab") === "mensagens" ? "comments" : "activity"}
           onClose={closeDealDetails}
           onUpdated={(updated) => {
-            setDeals((prev) => prev.map((d) => d.id === updated.id ? { ...d, ...updated } : d));
-            setSelectedDeal({ ...selectedDeal, ...updated } as any);
+            const normalizedUpdated = normalizeDealRecord({ ...selectedDeal, ...updated });
+            setDeals((prev) => prev.map((d) => d.id === normalizedUpdated.id ? { ...d, ...normalizedUpdated } : d));
+            setSelectedDeal(normalizedUpdated);
           }}
         />
       )}

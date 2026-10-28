@@ -1,7 +1,8 @@
 import { Query, ID } from 'appwrite';
-import { databases, client as appwriteClient, DATABASE_ID, currentTenantId } from '../../lib/appwrite';
-import { DATABASE_VERSION } from '../data/seed';
+import { databases, client as appwriteClient, DATABASE_ID, currentTenantId, getAuthoritativeAuthHeaders } from '../../lib/appwrite';
+import { savePortalClientCredentials } from '../../context/AuthContext';
 
+export const DATABASE_VERSION = 1;
 const getTenantId = () => currentTenantId;
 import type {
   Activity,
@@ -10,6 +11,7 @@ import type {
   Charge,
   ChargeStatus,
   Client,
+  ClientPortalAccess,
   CollectionKey,
   Collections,
   Contact,
@@ -26,6 +28,7 @@ import type {
   Service,
   Session,
   Settings,
+  ModulePermissionRule,
   Ticket,
   TicketMessage,
   TicketStatus,
@@ -69,24 +72,100 @@ const DEFAULT_SERVICE_TYPES = [
   'Suporte gerenciado',
 ];
 
-const DEFAULT_SETTINGS: Settings = {
-  company: {
-    name: 'Telefonia Fácil Tecnologia Ltda',
-    tradeName: 'Telefonia Fácil',
-    document: '',
-    phone: '(11) 3199-0000',
-    email: 'operacoes@telefoniafacil.com.br',
-    address: 'São Paulo — SP',
+export const DEFAULT_ROLE_PERMISSIONS: ModulePermissionRule[] = [
+  {
+    moduleId: 'clients',
+    moduleName: 'Clientes & Contatos',
+    description: 'Gestão da carteira de clientes, dados cadastrais, empresas e contatos operacionais.',
+    admin: 'manage',
+    support: 'manage',
+    finance: 'view',
+    client: 'own',
   },
-  ticketCategories: [...DEFAULT_TICKET_CATEGORIES],
-  serviceTypes: [...DEFAULT_SERVICE_TYPES],
-  density: 'comfortable',
-};
+  {
+    moduleId: 'tickets',
+    moduleName: 'Tickets & Chamados',
+    description: 'Abertura, acompanhamento, atribuição técnica, SLA e resolução de chamados de suporte.',
+    admin: 'manage',
+    support: 'manage',
+    finance: 'none',
+    client: 'own',
+  },
+  {
+    moduleId: 'servers',
+    moduleName: 'Servidores & Infraestrutura',
+    description: 'Monitoramento de servidores PBX/VoIP, ramais registrados, troncos SIP e status.',
+    admin: 'manage',
+    support: 'manage',
+    finance: 'none',
+    client: 'own',
+  },
+  {
+    moduleId: 'documents',
+    moduleName: 'Documentos & Arquivos',
+    description: 'Armazenamento de contratos, termos aditivos, arquivos e propostas comerciais.',
+    admin: 'manage',
+    support: 'manage',
+    finance: 'manage',
+    client: 'view',
+  },
+  {
+    moduleId: 'charges',
+    moduleName: 'Cobranças & Notas Fiscais',
+    description: 'Emissão de faturas, integração de pagamento Asaas/Pix/Boleto e notas financeiras.',
+    admin: 'manage',
+    support: 'none',
+    finance: 'manage',
+    client: 'own',
+  },
+  {
+    moduleId: 'agenda',
+    moduleName: 'Agenda Operacional',
+    description: 'Compromissos, visitas presenciais, reuniões e manutenções programadas da equipe.',
+    admin: 'manage',
+    support: 'manage',
+    finance: 'manage',
+    client: 'none',
+  },
+  {
+    moduleId: 'pipeline',
+    moduleName: 'Pipeline & Propostas Comerciais',
+    description: 'Funil de vendas, oportunidades, propostas e negociação de contratos.',
+    admin: 'manage',
+    support: 'view',
+    finance: 'view',
+    client: 'none',
+  },
+  {
+    moduleId: 'settings',
+    moduleName: 'Configurações da Empresa',
+    description: 'Dados institucionais da organização, parâmetros do servidor, equipes e regras de acesso.',
+    admin: 'manage',
+    support: 'none',
+    finance: 'none',
+    client: 'none',
+  },
+];
 
 const clone = <T>(value: T): T =>
   typeof structuredClone === 'function'
     ? structuredClone(value)
     : (JSON.parse(JSON.stringify(value)) as T);
+
+const DEFAULT_SETTINGS: Settings = {
+  company: {
+    name: 'Minha Empresa',
+    tradeName: 'CRM',
+    document: '',
+    phone: '',
+    email: '',
+    address: '',
+  },
+  ticketCategories: [...DEFAULT_TICKET_CATEGORIES],
+  serviceTypes: [...DEFAULT_SERVICE_TYPES],
+  density: 'comfortable',
+  rolePermissions: clone(DEFAULT_ROLE_PERMISSIONS),
+};
 
 const equal = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
@@ -108,10 +187,12 @@ function parseClientNotesAndContacts(rawNotes?: string, fallbackContactsJson?: s
   cleanNotes: string;
   repMeta: string;
   contacts: Contact[];
+  portalAccess?: ClientPortalAccess;
 } {
   let text = rawNotes || '';
   let repMeta = '';
   let contacts: Contact[] = safeJsonParse<Contact[]>(fallbackContactsJson, []);
+  let portalAccess: ClientPortalAccess | undefined = undefined;
 
   const repMatch = text.match(/\[REP_LEGAL:\s*(\{.*?\})\]/s);
   if (repMatch) {
@@ -127,26 +208,51 @@ function parseClientNotesAndContacts(rawNotes?: string, fallbackContactsJson?: s
     text = text.replace(/\[CONTACTS_JSON:\s*\[.*?\]\]\s*/s, '').trim();
   }
 
-  return { cleanNotes: text.trim(), repMeta, contacts };
+  const portalMatch = text.match(/\[PORTAL_ACCESS_JSON:\s*(\{.*?\})\]/s);
+  if (portalMatch) {
+    const parsedPortal = safeJsonParse<ClientPortalAccess | undefined>(portalMatch[1], undefined);
+    if (parsedPortal) {
+      const { password: _removedPassword, ...safePortal } = parsedPortal as ClientPortalAccess & {
+        password?: string;
+      };
+      portalAccess = safePortal;
+    }
+    text = text.replace(/\[PORTAL_ACCESS_JSON:\s*\{.*?\}\]\s*/s, '').trim();
+  }
+
+  return { cleanNotes: text.trim(), repMeta, contacts, portalAccess };
 }
 
-function encodeClientNotesWithContacts(cleanNotes: string, contacts: Contact[], existingRawNotes?: string): string {
-  const { repMeta } = parseClientNotesAndContacts(existingRawNotes);
+function encodeClientNotesWithContacts(
+  cleanNotes: string,
+  contacts: Contact[],
+  existingRawNotes?: string,
+  portalAccess?: ClientPortalAccess,
+): string {
+  const { repMeta, portalAccess: existingPortalAccess } = parseClientNotesAndContacts(existingRawNotes);
   const parts: string[] = [];
   const trimmed = (cleanNotes || '')
     .replace(/\[REP_LEGAL:\s*\{.*?\}\]\s*/s, '')
     .replace(/\[CONTACTS_JSON:\s*\[.*?\]\]\s*/s, '')
+    .replace(/\[PORTAL_ACCESS_JSON:\s*\{.*?\}\]\s*/s, '')
     .trim();
   if (trimmed) parts.push(trimmed);
   if (repMeta) parts.push(repMeta);
   if (Array.isArray(contacts) && contacts.length > 0) {
     parts.push(`[CONTACTS_JSON: ${JSON.stringify(contacts)}]`);
   }
+  const effectivePortalAccess = portalAccess || existingPortalAccess;
+  if (effectivePortalAccess) {
+    const { password: _ignoredPassword, ...safePortalAccess } =
+      effectivePortalAccess as ClientPortalAccess & { password?: string };
+    parts.push(`[PORTAL_ACCESS_JSON: ${JSON.stringify(safePortalAccess)}]`);
+  }
   return parts.join('\n\n');
 }
 
 function mapDocToClient(doc: any): Client {
-  const { cleanNotes, contacts } = parseClientNotesAndContacts(doc.notes, doc.contacts_json);
+  const { cleanNotes, contacts, portalAccess } = parseClientNotesAndContacts(doc.notes, doc.contacts_json);
+  const primaryEmail = doc.email || (contacts[0]?.email ?? '');
   return {
     id: doc.$id || doc.id,
     personType: doc.person_type === 'PF' ? 'PF' : 'PJ',
@@ -166,6 +272,10 @@ function mapDocToClient(doc: any): Client {
     notes: cleanNotes,
     createdAt: doc.created_at || doc.$createdAt || new Date().toISOString(),
     contacts: Array.isArray(contacts) ? contacts : [],
+    portalAccess: portalAccess || {
+      enabled: true,
+      email: primaryEmail || `${(doc.fantasy_name || doc.name || 'cliente').toLowerCase().replace(/\s+/g, '')}@exemplo.com`,
+    },
   };
 }
 
@@ -186,7 +296,7 @@ function mapClientToDoc(item: Client, existingNotes?: string): Record<string, an
     city: item.city || '',
     state: item.state || 'SP',
     is_active: item.status !== 'Inativo',
-    notes: encodeClientNotesWithContacts(item.notes, item.contacts, existingNotes),
+    notes: encodeClientNotesWithContacts(item.notes, item.contacts, existingNotes, item.portalAccess),
     created_at: item.createdAt || new Date().toISOString(),
   };
 }
@@ -318,8 +428,8 @@ function mapDocToServer(doc: any): Server {
     clientIds: safeJsonParse<string[]>(doc.client_ids_json, []),
     status: (['Disponível', 'Indisponível', 'Em atenção', 'Sem dados'].includes(doc.status)
       ? doc.status
-      : 'Disponível') as ServerStatus,
-    lastCheck: doc.last_check || doc.$updatedAt || new Date().toISOString(),
+      : 'Sem dados') as ServerStatus,
+    lastCheck: doc.last_check || '',
     registeredExtensions: Number(doc.registered_extensions) || 0,
     unavailableExtensions: Number(doc.unavailable_extensions) || 0,
     uptime: Number(doc.uptime) || 0,
@@ -336,8 +446,8 @@ function mapServerToDoc(item: Server): Record<string, any> {
     domain: item.domain.trim(),
     port: item.port ?? null,
     environment: item.environment || 'Produção',
-    status: item.status || 'Disponível',
-    last_check: item.lastCheck || new Date().toISOString(),
+    status: item.status || 'Sem dados',
+    last_check: item.lastCheck || null,
     registered_extensions: Number(item.registeredExtensions) || 0,
     unavailable_extensions: Number(item.unavailableExtensions) || 0,
     uptime: Number(item.uptime) || 0,
@@ -376,9 +486,67 @@ function mapServiceToDoc(item: Service): Record<string, any> {
   };
 }
 
+function parseDocumentNotesAndMeta(rawNotes?: string): {
+  cleanNotes: string;
+  storageMeta?: {
+    storageFileId?: string;
+    bucketId?: string;
+    sha256?: string;
+    signedAt?: string;
+    signatureHash?: string;
+    signerName?: string;
+  };
+} {
+  let text = rawNotes || '';
+  let storageMeta:
+    | {
+        storageFileId?: string;
+        bucketId?: string;
+        sha256?: string;
+        signedAt?: string;
+        signatureHash?: string;
+        signerName?: string;
+      }
+    | undefined = undefined;
+  const match = text.match(/\[STORAGE_META_JSON:\s*(\{.*?\})\]/s);
+  if (match) {
+    storageMeta = safeJsonParse(match[1], undefined);
+    text = text.replace(/\[STORAGE_META_JSON:\s*\{.*?\}\]\s*/s, '').trim();
+  }
+  return { cleanNotes: text.trim(), storageMeta };
+}
+
 function mapDocToDocumentRecord(doc: any): DocumentRecord {
-  return {
-    id: doc.$id || doc.id,
+  const id = doc.$id || doc.id;
+  const { cleanNotes, storageMeta } = parseDocumentNotesAndMeta(doc.notes);
+  const storageFileId = doc.storage_file_id || storageMeta?.storageFileId || id;
+  const bucketId = doc.bucket_id || storageMeta?.bucketId;
+  const sha256 = doc.sha256 || storageMeta?.sha256;
+  const signedAt = doc.signed_at || storageMeta?.signedAt;
+  const signatureHash = doc.signature_hash || storageMeta?.signatureHash;
+  const signerName = doc.signer_name || storageMeta?.signerName;
+
+  fileStore.registerRemoteMeta({
+    id,
+    tenantId: doc.tenant_id || getTenantId() || undefined,
+    storageFileId,
+    bucketId,
+    name: doc.name || 'Documento',
+    type: doc.type || 'application/pdf',
+    size: Number(doc.size) || 0,
+    sha256,
+    syncedRemote: Boolean(doc.storage_file_id || storageMeta?.storageFileId),
+  });
+
+  const record: DocumentRecord & {
+    storageFileId?: string;
+    bucketId?: string;
+    sha256?: string;
+    signedAt?: string;
+    signatureHash?: string;
+    signerName?: string;
+  } = {
+    id,
     clientId: doc.client_id || '',
     name: doc.name || 'Documento',
     type: doc.type || 'application/pdf',
@@ -386,7 +554,7 @@ function mapDocToDocumentRecord(doc: any): DocumentRecord {
     category: (doc.category || 'Contrato') as DocumentCategory,
     createdAt: doc.created_at || doc.$createdAt || new Date().toISOString(),
     responsibleId: doc.responsible_id || '',
-    notes: doc.notes || '',
+    notes: cleanNotes,
     shared: Boolean(doc.shared),
     ...(doc.number ? { number: doc.number } : {}),
     ...(doc.start_date ? { startDate: doc.start_date } : {}),
@@ -394,10 +562,43 @@ function mapDocToDocumentRecord(doc: any): DocumentRecord {
     ...(doc.status ? { status: doc.status } : {}),
     ...(doc.value !== null && doc.value !== undefined ? { value: Number(doc.value) } : {}),
     ...(doc.renewal ? { renewal: doc.renewal } : {}),
+    ...(storageFileId ? { storageFileId } : {}),
+    ...(bucketId ? { bucketId } : {}),
+    ...(sha256 ? { sha256 } : {}),
+    ...(signedAt ? { signedAt } : {}),
+    ...(signatureHash ? { signatureHash } : {}),
+    ...(signerName ? { signerName } : {}),
   };
+
+  return record;
 }
 
 function mapDocumentRecordToDoc(item: DocumentRecord): Record<string, any> {
+  const extItem = item as DocumentRecord & {
+    storageFileId?: string;
+    bucketId?: string;
+    sha256?: string;
+    signedAt?: string;
+    signatureHash?: string;
+    signerName?: string;
+  };
+  const fileMeta = fileStore.getMeta(item.id);
+  const { cleanNotes, storageMeta: prevMeta } = parseDocumentNotesAndMeta(item.notes);
+  const mergedMeta = {
+    storageFileId: extItem.storageFileId || fileMeta?.storageFileId || prevMeta?.storageFileId || item.id,
+    bucketId: extItem.bucketId || fileMeta?.bucketId || prevMeta?.bucketId,
+    sha256: extItem.sha256 || fileMeta?.sha256 || prevMeta?.sha256,
+    signedAt: extItem.signedAt || prevMeta?.signedAt,
+    signatureHash: extItem.signatureHash || prevMeta?.signatureHash,
+    signerName: extItem.signerName || prevMeta?.signerName,
+  };
+  const serializedNotes = [
+    cleanNotes,
+    `[STORAGE_META_JSON: ${JSON.stringify(mergedMeta)}]`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
   return {
     client_id: item.clientId,
     name: item.name.trim(),
@@ -406,7 +607,7 @@ function mapDocumentRecordToDoc(item: DocumentRecord): Record<string, any> {
     category: item.category || 'Contrato',
     created_at: item.createdAt || new Date().toISOString(),
     responsible_id: item.responsibleId || '',
-    notes: item.notes || '',
+    notes: serializedNotes,
     shared: Boolean(item.shared),
     number: item.number || null,
     start_date: item.startDate || null,
@@ -418,29 +619,63 @@ function mapDocumentRecordToDoc(item: DocumentRecord): Record<string, any> {
 }
 
 function mapDocToCharge(doc: any): Charge {
+  const rawAmount = doc.amount !== undefined ? doc.amount : (doc.value !== undefined ? doc.value : 0);
+  const rawPaidAt = doc.paid_at || doc.paid_date || null;
+  const rawMethod = doc.method || doc.payment_method || 'Pix';
+  const rawStatus = String(doc.status || 'Pendente').trim();
+
+  let normalizedStatus: ChargeStatus = 'Pendente';
+  const stLower = rawStatus.toLowerCase();
+  if (['pago', 'paid', 'received', 'confirmed', 'received_in_cash'].includes(stLower)) {
+    normalizedStatus = 'Pago';
+  } else if (['vencido', 'overdue'].includes(stLower)) {
+    normalizedStatus = 'Vencido';
+  } else if (['cancelado', 'cancelled', 'canceled', 'refunded', 'chargeback_requested'].includes(stLower)) {
+    normalizedStatus = 'Cancelado';
+  } else {
+    normalizedStatus = 'Pendente';
+  }
+
+  let normalizedMethod: Charge['method'] = 'Pix';
+  const mLower = String(rawMethod).toLowerCase();
+  if (mLower.includes('bol') || mLower.includes('slip')) {
+    normalizedMethod = 'Boleto';
+  } else if (mLower.includes('cart') || mLower.includes('card')) {
+    normalizedMethod = 'Cartão';
+  } else if (mLower.includes('transf') || mLower.includes('ted') || mLower.includes('doc')) {
+    normalizedMethod = 'Transferência';
+  } else {
+    normalizedMethod = 'Pix';
+  }
+
   return {
     id: doc.$id || doc.id,
     number: doc.number || 'COB-0001',
     clientId: doc.client_id || '',
     description: doc.description || '',
-    amount: Number(doc.amount) || 0,
+    amount: Number(rawAmount) || 0,
     dueDate: doc.due_date || new Date().toISOString().slice(0, 10),
-    ...(doc.paid_at ? { paidAt: doc.paid_at } : {}),
-    method: (['Pix', 'Boleto', 'Cartão', 'Transferência'].includes(doc.method) ? doc.method : 'Pix') as Charge['method'],
-    status: (['Pendente', 'Pago', 'Vencido', 'Cancelado'].includes(doc.status) ? doc.status : 'Pendente') as ChargeStatus,
+    ...(rawPaidAt ? { paidAt: rawPaidAt } : {}),
+    method: normalizedMethod,
+    status: normalizedStatus,
     reference: doc.reference || '',
   };
 }
 
 function mapChargeToDoc(item: Charge): Record<string, any> {
+  const numVal = Number(item.amount) || 0;
+  const paidDate = item.status === 'Pago' ? item.paidAt || localDateTime(new Date()).slice(0, 10) : null;
   return {
     number: item.number.trim(),
     client_id: item.clientId,
     description: item.description.trim(),
-    amount: Number(item.amount) || 0,
+    amount: numVal,
+    value: numVal,
     due_date: item.dueDate,
-    paid_at: item.status === 'Pago' ? item.paidAt || localDateTime(new Date()).slice(0, 10) : null,
+    paid_at: paidDate,
+    paid_date: paidDate,
     method: item.method || 'Pix',
+    payment_method: item.method || 'Pix',
     status: item.status || 'Pendente',
     reference: item.reference || '',
   };
@@ -606,9 +841,22 @@ export interface MockRepository {
 export function createMockRepository(_options: any = {}): MockRepository {
   let data: Database = createEmptyDatabase();
   let session: Session | null = null;
-  let explicitRoleOverride: { role: Role; clientId?: string } | null = null;
+  let explicitRoleOverride: { role: Role; clientId?: string } | null = (() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem('crm_explicit_role_override');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  })();
   let activeTenantRef: any = null;
   let activeAuthUserRef: any = null;
+  let contextGeneration = 0;
+  let activeContextKey = '';
+  let isTransitioningContext = false;
+  const tenantDataCache = new Map<string, Database>();
+  let lastLoadNotice: string | undefined = undefined;
   let rawClientNotesMap = new Map<string, string>();
   let realtimeUnsubscribe: (() => void) | null = null;
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -644,6 +892,10 @@ export function createMockRepository(_options: any = {}): MockRepository {
           ? parsed.serviceTypes
           : [...DEFAULT_SERVICE_TYPES],
       density: parsed.density === 'compact' ? 'compact' : 'comfortable',
+      rolePermissions:
+        Array.isArray(parsed.rolePermissions) && parsed.rolePermissions.length > 0
+          ? parsed.rolePermissions
+          : clone(DEFAULT_ROLE_PERMISSIONS),
     };
   };
 
@@ -658,10 +910,12 @@ export function createMockRepository(_options: any = {}): MockRepository {
           role: explicitRoleOverride.role,
           active: true,
         };
+      const storedPortalId =
+        typeof window !== 'undefined' ? localStorage.getItem('portal_client_id') : null;
       const chosenClient =
         explicitRoleOverride.clientId ||
-        clients.find((c) => c.status === 'Ativo')?.id ||
-        clients[0]?.id;
+        storedPortalId ||
+        undefined;
       return {
         role: explicitRoleOverride.role,
         userId: matchedRoleUser.id,
@@ -671,78 +925,202 @@ export function createMockRepository(_options: any = {}): MockRepository {
 
     const effectiveRole = normalizeUserRole(authUser?.role || 'admin');
     const userId = authUser?.id || users[0]?.id || 'usr_admin';
+
+    let resolvedClientId: string | undefined = undefined;
+    if (effectiveRole === 'client') {
+      const authEmail = (authUser?.email || '').trim().toLowerCase();
+      const authId = authUser?.clientId || authUser?.id;
+      const matchedClient =
+        clients.find(
+          (c) =>
+            c.id === authId ||
+            (authEmail &&
+              (c.email?.trim().toLowerCase() === authEmail ||
+                c.portalAccess?.email?.trim().toLowerCase() === authEmail ||
+                c.contacts?.some((ct) => ct.email?.trim().toLowerCase() === authEmail)))
+        );
+      resolvedClientId = matchedClient?.id || authId;
+
+      if (!resolvedClientId && typeof window !== 'undefined') {
+        const storedPortalId = localStorage.getItem('portal_client_id');
+        const storedPortalEmail = (localStorage.getItem('portal_client_email') || '').trim().toLowerCase();
+        if (storedPortalId) {
+          resolvedClientId = storedPortalId;
+        } else if (storedPortalEmail) {
+          const byStoredEmail = clients.find(
+            (c) =>
+              c.email?.trim().toLowerCase() === storedPortalEmail ||
+              c.portalAccess?.email?.trim().toLowerCase() === storedPortalEmail ||
+              c.contacts?.some((ct) => ct.email?.trim().toLowerCase() === storedPortalEmail)
+          );
+          if (byStoredEmail) resolvedClientId = byStoredEmail.id;
+          else resolvedClientId = `client-${storedPortalEmail}`;
+        }
+      }
+
+      if (!resolvedClientId && typeof window !== 'undefined') {
+        const storedPortalId = localStorage.getItem('portal_client_id');
+        const storedPortalEmail = localStorage.getItem('portal_client_email');
+        if (!storedPortalId && !storedPortalEmail && !authId && !authEmail) {
+          resolvedClientId = clients.find((c) => c.status === 'Ativo')?.id || clients[0]?.id;
+        }
+      }
+    }
+
     return {
       role: effectiveRole,
       userId,
-      ...(effectiveRole === 'client' && clients[0] ? { clientId: clients[0].id } : {}),
+      ...(effectiveRole === 'client' && resolvedClientId ? { clientId: resolvedClientId } : {}),
     };
   };
 
-  const loadFromAppwrite = async (): Promise<void> => {
-    const currentTenantId = activeTenantRef?.id || getTenantId();
-    if (!currentTenantId && !activeAuthUserRef) {
+  const getContextKey = (tenantObj = activeTenantRef, authUser = activeAuthUserRef): string => {
+    const tId = tenantObj?.id || getTenantId() || 'default';
+    const uId = authUser?.id || 'anon';
+    return `${uId}:${tId}`;
+  };
+
+  const loadFromAppwrite = async (
+    expectedGen = contextGeneration,
+    expectedKey = activeContextKey || getContextKey()
+  ): Promise<void> => {
+    const targetTenantId = activeTenantRef?.id || getTenantId();
+    if (!targetTenantId && !activeAuthUserRef) {
+      isTransitioningContext = false;
       return;
     }
 
-    // F08: Auto-paginação transparente para carregar registros completos sem truncamento arbitrário
-    const safeList = async (colId: string, maxItems = 1000) => {
+    interface SafeListResult {
+      docs: any[] | null;
+      total: number;
+      isPartial: boolean;
+      error: string | null;
+    }
+
+    // F17: Paginação completa por cursor sem truncar em 500/1000 itens e preservando estado válido em caso de erro
+    const safeList = async (colId: string, safetyCap = 20000): Promise<SafeListResult> => {
       try {
         const allDocs: any[] = [];
         const pageSize = 100;
         let cursor: string | undefined = undefined;
+        let reportedTotal = 0;
 
-        while (allDocs.length < maxItems) {
+        while (allDocs.length < safetyCap) {
           const queries = [Query.limit(pageSize)];
           if (cursor) {
             queries.push(Query.cursorAfter(cursor));
           }
+          if (colId !== 'users_hydra' && targetTenantId && targetTenantId !== 'all') {
+            queries.push(Query.equal('tenant_id', targetTenantId));
+          }
           const res = await databases.listDocuments(DATABASE_ID, colId, queries);
           const docs = res.documents || [];
+          reportedTotal = typeof res.total === 'number' ? res.total : allDocs.length + docs.length;
           allDocs.push(...docs);
 
-          if (docs.length < pageSize || allDocs.length >= res.total) {
+          if (docs.length < pageSize || allDocs.length >= reportedTotal) {
             break;
           }
           cursor = docs[docs.length - 1].$id;
         }
-        return allDocs;
-      } catch (err) {
+
+        const isPartial = reportedTotal > allDocs.length;
+
+        let filtered = allDocs;
+        if (colId !== 'users_hydra' && targetTenantId && targetTenantId !== 'all') {
+          filtered = allDocs.filter((d: any) => !d.tenant_id || d.tenant_id === currentTenantId || d.tenant_id === targetTenantId);
+        } else if (colId === 'users_hydra' && targetTenantId && targetTenantId !== 'all') {
+          filtered = allDocs.filter((d: any) => !d.default_tenant_id || d.default_tenant_id === targetTenantId);
+        }
+
+        return { docs: filtered, total: reportedTotal, isPartial, error: null };
+      } catch (err: any) {
         console.warn(`[AppwriteRepository] Aviso ao ler coleção "${colId}":`, err);
-        return [];
+        return {
+          docs: null,
+          total: 0,
+          isPartial: false,
+          error: err?.message || `Falha ao carregar ${colId}`,
+        };
       }
     };
 
     const [
-      rawClients,
-      rawTickets,
-      rawServers,
-      rawServices,
-      rawDocuments,
-      rawCharges,
-      rawInvoices,
-      rawEvents,
-      rawUsers,
-      rawActivities,
+      resClients,
+      resTickets,
+      resServers,
+      resServices,
+      resDocuments,
+      resCharges,
+      resInvoices,
+      resEvents,
+      resUsers,
+      resActivities,
     ] = await Promise.all([
-      safeList('clients', 1000),
-      safeList('support_tickets', 1000),
-      safeList('servers', 500),
-      safeList('services', 1000),
-      safeList('documents', 1000),
-      safeList('charges', 1000),
-      safeList('invoices', 1000),
-      safeList('events', 1000),
-      safeList('users_hydra', 500),
-      safeList('activities', 500),
+      safeList('clients'),
+      safeList('support_tickets'),
+      safeList('servers'),
+      safeList('services'),
+      safeList('documents'),
+      safeList('charges'),
+      safeList('invoices'),
+      safeList('events'),
+      safeList('users_hydra'),
+      safeList('activities'),
     ]);
 
-    rawClientNotesMap = new Map();
-    for (const rc of rawClients) {
-      if (rc.$id && rc.notes) rawClientNotesMap.set(rc.$id, rc.notes);
+    // F16: Descarta resposta atrasada se o usuário/tenant mudou durante o carregamento
+    const currentKeyNow = activeContextKey || getContextKey();
+    const currentTenantNow = activeTenantRef?.id || getTenantId();
+    if (
+      expectedGen !== contextGeneration ||
+      (expectedKey && currentKeyNow && expectedKey !== currentKeyNow) ||
+      (targetTenantId && currentTenantNow && targetTenantId !== currentTenantNow)
+    ) {
+      return;
     }
 
-    const clients = rawClients.map(mapDocToClient);
-    const users = rawUsers.map(mapDocToUser);
+    const previousSnapshot = tenantDataCache.get(expectedKey);
+    const allResults = [
+      resClients,
+      resTickets,
+      resServers,
+      resServices,
+      resDocuments,
+      resCharges,
+      resInvoices,
+      resEvents,
+      resUsers,
+      resActivities,
+    ];
+    const failedResults = allResults.filter((r) => r.error !== null);
+    const anyPartial = allResults.some((r) => r.isPartial);
+
+    if (failedResults.length > 0) {
+      lastLoadNotice = `Algumas coleções não puderam ser atualizadas (${failedResults.length} falha(s)). Exibindo últimos dados sincronizados.`;
+    } else if (anyPartial) {
+      lastLoadNotice = 'Dados carregados parcialmente devido ao volume elevado de registros.';
+    } else {
+      lastLoadNotice = undefined;
+    }
+
+    if (resClients.docs) {
+      rawClientNotesMap = new Map();
+      for (const rc of resClients.docs) {
+        if (rc.$id && rc.notes) rawClientNotesMap.set(rc.$id, rc.notes);
+      }
+    }
+
+    let clients = resClients.docs
+      ? resClients.docs.map(mapDocToClient)
+      : previousSnapshot?.clients
+      ? clone(previousSnapshot.clients)
+      : [];
+    let users = resUsers.docs
+      ? resUsers.docs.map(mapDocToUser)
+      : previousSnapshot?.users
+      ? clone(previousSnapshot.users)
+      : [];
 
     if (activeAuthUserRef?.id && !users.some((u) => u.id === activeAuthUserRef.id)) {
       users.unshift({
@@ -761,32 +1139,85 @@ export function createMockRepository(_options: any = {}): MockRepository {
         users.push({
           id: activeAuthUserRef?.id || 'usr_admin',
           name: activeAuthUserRef?.name || 'Administrador',
-          email: activeAuthUserRef?.email || 'admin@telefoniafacil.com.br',
+          email: activeAuthUserRef?.email || 'admin@empresa.com',
           role: 'admin',
           active: true,
         });
       }
     }
 
-    const tickets = rawTickets.map((doc, idx) => mapDocToTicket(doc, clients, idx));
-    const servers = rawServers.map(mapDocToServer);
-    const services = rawServices.map(mapDocToService);
-    const documents = rawDocuments.map(mapDocToDocumentRecord);
-    const charges = rawCharges.map(mapDocToCharge);
-    const invoices = rawInvoices.map(mapDocToInvoice);
-    const events = rawEvents.map(mapDocToEvent);
-    const activities = rawActivities.map(mapDocToActivity);
+    let tickets = resTickets.docs
+      ? resTickets.docs.map((doc, idx) => mapDocToTicket(doc, clients, idx))
+      : previousSnapshot?.tickets
+      ? clone(previousSnapshot.tickets)
+      : [];
+    let servers = resServers.docs
+      ? resServers.docs.map(mapDocToServer)
+      : previousSnapshot?.servers
+      ? clone(previousSnapshot.servers)
+      : [];
+    let services = resServices.docs
+      ? resServices.docs.map(mapDocToService)
+      : previousSnapshot?.services
+      ? clone(previousSnapshot.services)
+      : [];
+    let documents = resDocuments.docs
+      ? resDocuments.docs.map(mapDocToDocumentRecord)
+      : previousSnapshot?.documents
+      ? clone(previousSnapshot.documents)
+      : [];
+    let charges = resCharges.docs
+      ? resCharges.docs.map(mapDocToCharge)
+      : previousSnapshot?.charges
+      ? clone(previousSnapshot.charges)
+      : [];
+    let invoices = resInvoices.docs
+      ? resInvoices.docs.map(mapDocToInvoice)
+      : previousSnapshot?.invoices
+      ? clone(previousSnapshot.invoices)
+      : [];
+    let events = resEvents.docs
+      ? resEvents.docs.map(mapDocToEvent)
+      : previousSnapshot?.events
+      ? clone(previousSnapshot.events)
+      : [];
+    let activities = resActivities.docs
+      ? resActivities.docs.map(mapDocToActivity)
+      : previousSnapshot?.activities
+      ? clone(previousSnapshot.activities)
+      : [];
+
+    // Registra metadados básicos do portal sem gravar senhas em texto claro ou padrões estáticos
+    for (const c of clients) {
+      const portalEmail = c.portalAccess?.email || c.email;
+      if (portalEmail) {
+        savePortalClientCredentials({
+          id: c.id,
+          name: c.tradeName || c.name,
+          email: portalEmail,
+          enabled: c.portalAccess?.enabled !== false,
+        });
+      }
+    }
 
     let tenantDoc = activeTenantRef;
-    if (currentTenantId && (!tenantDoc || tenantDoc.id !== currentTenantId)) {
+    if (targetTenantId && (!tenantDoc || tenantDoc.id !== targetTenantId)) {
       try {
-        const fetched = await databases.getDocument(DATABASE_ID, 'tenants', currentTenantId);
+        const fetched = await databases.getDocument(DATABASE_ID, 'tenants', targetTenantId);
+        if (expectedGen !== contextGeneration) return;
         tenantDoc = { ...fetched, id: fetched.$id };
         activeTenantRef = tenantDoc;
       } catch {}
     }
 
-    const nextData: Database = {
+    const nextData: Database & {
+      __loadMeta?: {
+        isPartial: boolean;
+        loadError: string | null;
+        tenantId?: string | null;
+        contextGeneration: number;
+      };
+    } = {
       version: DATABASE_VERSION,
       seededAt: new Date().toISOString(),
       clients,
@@ -800,9 +1231,17 @@ export function createMockRepository(_options: any = {}): MockRepository {
       users,
       activities,
       settings: buildSettingsFromTenant(tenantDoc),
+      __loadMeta: {
+        isPartial: anyPartial,
+        loadError: failedResults.length > 0 ? lastLoadNotice || 'Erro ao atualizar dados.' : null,
+        tenantId: targetTenantId,
+        contextGeneration: expectedGen,
+      },
     };
 
     reconcileServers(nextData);
+    tenantDataCache.set(expectedKey, nextData);
+    isTransitioningContext = false;
     data = nextData;
     session = resolveEffectiveSession(users, clients, activeAuthUserRef);
     emit();
@@ -814,10 +1253,26 @@ export function createMockRepository(_options: any = {}): MockRepository {
       const channels = Object.values(COLLECTION_MAP).map(
         (col) => `databases.${DATABASE_ID}.collections.${col}.documents`
       );
-      realtimeUnsubscribe = appwriteClient.subscribe(channels, () => {
+      realtimeUnsubscribe = appwriteClient.subscribe(channels, (event: any) => {
+        const payload = event?.payload;
+        const activeTenantId = activeTenantRef?.id || getTenantId();
+        if (
+          payload &&
+          typeof payload === 'object' &&
+          payload.tenant_id &&
+          activeTenantId &&
+          activeTenantId !== 'all' &&
+          payload.tenant_id !== activeTenantId
+        ) {
+          return;
+        }
         if (refreshTimer) clearTimeout(refreshTimer);
+        const genAtSchedule = contextGeneration;
+        const keyAtSchedule = activeContextKey || getContextKey();
         refreshTimer = setTimeout(() => {
-          void loadFromAppwrite();
+          if (genAtSchedule === contextGeneration) {
+            void loadFromAppwrite(genAtSchedule, keyAtSchedule);
+          }
         }, 600);
       });
     } catch (err) {
@@ -848,7 +1303,10 @@ export function createMockRepository(_options: any = {}): MockRepository {
         DATABASE_ID,
         'activities',
         activity.id,
-        mapActivityToDoc(activity)
+        {
+          ...mapActivityToDoc(activity),
+          tenant_id: activeTenantRef?.id || getTenantId() || 'tenant_default',
+        }
       );
     } catch (err) {
       console.warn('[AppwriteRepository] Não foi possível gravar log de atividade:', err);
@@ -860,6 +1318,10 @@ export function createMockRepository(_options: any = {}): MockRepository {
     input: Collections[K],
     mode: 'create' | 'save' | 'update'
   ): Promise<Collections[K]> => {
+    fail(
+      !isTransitioningContext,
+      'Aguarde a conclusão da troca de organização antes de salvar alterações.'
+    );
     const collection = data[key] as Collections[K][];
     const existingIndex = collection.findIndex((item) => item.id === input.id);
     const old = existingIndex >= 0 ? collection[existingIndex] : undefined;
@@ -872,6 +1334,7 @@ export function createMockRepository(_options: any = {}): MockRepository {
 
     const item = clone(input);
     const timestamp = new Date().toISOString();
+    const appwriteCollection = COLLECTION_MAP[key];
 
     if (key === 'clients') {
       const c = item as Client;
@@ -899,17 +1362,71 @@ export function createMockRepository(_options: any = {}): MockRepository {
       }
     }
 
+    // F22: Merge atômico/idempotente de mensagens e histórico de tickets contra o estado mais recente do servidor
     if (key === 'tickets') {
       const ticket = item as Ticket;
-      const previous = old as Ticket | undefined;
+      let previous = old as Ticket | undefined;
+
+      if (old) {
+        try {
+          const remoteTicketDoc = await databases.getDocument(
+            DATABASE_ID,
+            appwriteCollection,
+            item.id
+          );
+          if (remoteTicketDoc) {
+            const remoteMapped = mapDocToTicket(remoteTicketDoc, data.clients, 0);
+            const mergedPrevMsgMap = new Map<string, TicketMessage>();
+            for (const m of previous?.messages ?? []) {
+              if (m && m.id) mergedPrevMsgMap.set(m.id, m);
+            }
+            for (const m of remoteMapped.messages ?? []) {
+              if (m && m.id) mergedPrevMsgMap.set(m.id, m);
+            }
+            const mergedPrevHistMap = new Map<string, HistoryEntry>();
+            for (const h of previous?.history ?? []) {
+              if (h && h.id) mergedPrevHistMap.set(h.id, h);
+            }
+            for (const h of remoteMapped.history ?? []) {
+              if (h && h.id) mergedPrevHistMap.set(h.id, h);
+            }
+            // Se outra aba alterou o status enquanto esta aba apenas enviava mensagem, preserva o status remoto mais recente
+            if (
+              previous &&
+              ticket.status === previous.status &&
+              remoteMapped.status !== previous.status
+            ) {
+              ticket.status = remoteMapped.status;
+            }
+            previous = {
+              ...remoteMapped,
+              messages: Array.from(mergedPrevMsgMap.values()),
+              history: Array.from(mergedPrevHistMap.values()),
+            };
+          }
+        } catch {}
+      }
 
       if (previous) {
-        const previousIds = new Set(previous.messages.map((m) => m.id));
-        ticket.messages = [
-          ...previous.messages,
-          ...ticket.messages.filter((m) => !previousIds.has(m.id)),
-        ];
+        const mergedMessagesMap = new Map<string, TicketMessage>();
+        for (const m of previous.messages) {
+          if (m && m.id) mergedMessagesMap.set(m.id, m);
+        }
+        for (const m of ticket.messages) {
+          const msgId = m.id || newId('msg');
+          m.id = msgId;
+          if (!mergedMessagesMap.has(msgId)) {
+            mergedMessagesMap.set(msgId, m);
+          }
+        }
+        ticket.messages = Array.from(mergedMessagesMap.values());
+      } else {
+        ticket.messages = (ticket.messages || []).map((m) => ({
+          ...m,
+          id: m.id || newId('msg'),
+        }));
       }
+
       ticket.updatedAt = timestamp;
       if (!previous) {
         ticket.createdAt = timestamp;
@@ -941,8 +1458,8 @@ export function createMockRepository(_options: any = {}): MockRepository {
       const oldMessageIds = new Set(previous?.messages.map((m) => m.id) ?? []);
       for (const message of ticket.messages) {
         if (!oldMessageIds.has(message.id)) {
-          message.author = actor();
-          message.createdAt = timestamp;
+          message.author = message.author || actor();
+          message.createdAt = message.createdAt || timestamp;
           if (session?.role === 'client') message.internal = false;
           addHistory(
             message.internal
@@ -952,11 +1469,55 @@ export function createMockRepository(_options: any = {}): MockRepository {
         }
       }
 
-      ticket.history = [...(previous?.history ?? []), ...entries];
+      const mergedHistMap = new Map<string, HistoryEntry>();
+      for (const h of previous?.history ?? []) {
+        if (h && h.id) mergedHistMap.set(h.id, h);
+      }
+      for (const h of entries) {
+        if (h && h.id) mergedHistMap.set(h.id, h);
+      }
+      ticket.history = Array.from(mergedHistMap.values());
+    }
+
+    // F22: Merge atômico/idempotente de incidentes em servidores contra o estado mais recente do Appwrite
+    if (key === 'servers' && old) {
+      const server = item as Server;
+      const oldServer = old as Server;
+      try {
+        const remoteServerDoc = await databases.getDocument(
+          DATABASE_ID,
+          appwriteCollection,
+          item.id
+        );
+        if (remoteServerDoc) {
+          const remoteIncidents = safeJsonParse<ServerIncident[]>(
+            remoteServerDoc.incidents_json,
+            []
+          );
+          const oldIncidentIds = new Set((oldServer.incidents || []).map((i) => i.id));
+          const currentIncidentMap = new Map<string, ServerIncident>();
+          for (const inc of server.incidents || []) {
+            const incId = inc.id || newId('inc');
+            currentIncidentMap.set(incId, { ...inc, id: incId });
+          }
+          // Preserva incidentes criados concorrentemente em outra aba que não estavam no snapshot antigo local
+          for (const rInc of remoteIncidents) {
+            if (!rInc || !rInc.id) continue;
+            if (!currentIncidentMap.has(rInc.id) && !oldIncidentIds.has(rInc.id)) {
+              currentIncidentMap.set(rInc.id, rInc);
+            } else if (currentIncidentMap.has(rInc.id)) {
+              const localInc = currentIncidentMap.get(rInc.id)!;
+              if (rInc.status === 'Resolvido' && localInc.status !== 'Resolvido') {
+                currentIncidentMap.set(rInc.id, { ...localInc, status: 'Resolvido' });
+              }
+            }
+          }
+          server.incidents = Array.from(currentIncidentMap.values());
+        }
+      } catch {}
     }
 
     // Map to Appwrite payload
-    const appwriteCollection = COLLECTION_MAP[key];
     let payload: Record<string, any> = {};
 
     switch (key) {
@@ -998,6 +1559,11 @@ export function createMockRepository(_options: any = {}): MockRepository {
         break;
     }
 
+    const targetTenant = activeTenantRef?.id || getTenantId() || 'tenant_default';
+    if (key !== 'users') {
+      payload.tenant_id = targetTenant;
+    }
+
     let savedDoc: any;
     if (old) {
       savedDoc = await databases.updateDocument(DATABASE_ID, appwriteCollection, item.id, payload);
@@ -1029,6 +1595,9 @@ export function createMockRepository(_options: any = {}): MockRepository {
     };
     reconcileServers(nextData);
     data = nextData;
+    if (activeContextKey) {
+      tenantDataCache.set(activeContextKey, nextData);
+    }
     emit();
 
     if (key !== 'activities') {
@@ -1055,17 +1624,38 @@ export function createMockRepository(_options: any = {}): MockRepository {
   const api: MockRepository = {
     async init() {
       ensureRealtimeSubscription();
-      await loadFromAppwrite();
+      const key = getContextKey();
+      activeContextKey = key;
+      await loadFromAppwrite(contextGeneration, key);
     },
     async syncWithContext(tenantObj?: any, authUser?: any) {
-      activeTenantRef = tenantObj || activeTenantRef;
-      activeAuthUserRef = authUser || activeAuthUserRef;
+      const nextTenant = tenantObj !== undefined ? tenantObj : activeTenantRef;
+      const nextUser = authUser !== undefined ? authUser : activeAuthUserRef;
+      const nextKey = getContextKey(nextTenant, nextUser);
+      const prevKey = activeContextKey;
+
+      activeTenantRef = nextTenant;
+      activeAuthUserRef = nextUser;
+
+      if (nextKey !== prevKey) {
+        contextGeneration += 1;
+        activeContextKey = nextKey;
+        isTransitioningContext = true;
+        lastLoadNotice = undefined;
+        const cached = tenantDataCache.get(nextKey);
+        data = cached ? clone(cached) : createEmptyDatabase();
+        data.settings = buildSettingsFromTenant(activeTenantRef);
+        session = resolveEffectiveSession(data.users, data.clients, activeAuthUserRef);
+        emit();
+      }
+
+      const genForCall = contextGeneration;
       ensureRealtimeSubscription();
-      await loadFromAppwrite();
+      await loadFromAppwrite(genForCall, nextKey);
     },
     getSnapshot: () => data,
     getSession: () => session,
-    getNotice: () => undefined,
+    getNotice: () => lastLoadNotice,
     subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -1090,13 +1680,18 @@ export function createMockRepository(_options: any = {}): MockRepository {
       );
     },
     remove: async (key, id) => {
+      fail(
+        !isTransitioningContext,
+        'Aguarde a conclusão da troca de organização antes de excluir registros.'
+      );
       const appwriteCollection = COLLECTION_MAP[key];
       try {
         await databases.deleteDocument(DATABASE_ID, appwriteCollection, id);
       } catch (err: any) {
         console.warn(`[AppwriteRepository] Aviso ao deletar ${key}/${id}:`, err);
-        // Tolerate 404 or missing documents so local/mock items can be removed cleanly
-        if (err?.code && err.code !== 404 && err.code !== 400) {
+        // F14: Apenas 404 autoritativo pode ser tratado como já ausente; todos os demais erros (400, 401, 403, 408, 500, rede) devem ser propagados
+        const status = err?.code ?? err?.status;
+        if (status !== 404) {
           throw err;
         }
       }
@@ -1107,27 +1702,52 @@ export function createMockRepository(_options: any = {}): MockRepository {
       };
       reconcileServers(nextData);
       data = nextData;
+      if (activeContextKey) {
+        tenantDataCache.set(activeContextKey, nextData);
+      }
       emit();
       void recordActivityInBackground(`Registro removido da base: ${key} #${id}`);
     },
     refresh: async () => {
-      await loadFromAppwrite();
+      await loadFromAppwrite(contextGeneration, activeContextKey || getContextKey());
     },
     reset: async () => {
-      await loadFromAppwrite();
-      fileStore.clear();
+      // F11: Sincronizar metadados da nuvem NUNCA deve apagar o fileStore local dos documentos anexados
+      await loadFromAppwrite(contextGeneration, activeContextKey || getContextKey());
     },
     login: async (role, clientId) => {
       explicitRoleOverride = { role, clientId };
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('crm_explicit_role_override', JSON.stringify({ role, clientId }));
+        if (role === 'client' && clientId) {
+          localStorage.setItem('portal_client_id', clientId);
+          const found = data.clients.find((c) => c.id === clientId);
+          if (found) {
+            localStorage.setItem('portal_client_name', found.tradeName || found.name);
+            if (found.email) localStorage.setItem('portal_client_email', found.email);
+          }
+        }
+      }
       session = resolveEffectiveSession(data.users, data.clients, activeAuthUserRef);
       emit();
     },
     logout: () => {
       explicitRoleOverride = null;
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('crm_explicit_role_override');
+        localStorage.removeItem('portal_client_id');
+        localStorage.removeItem('portal_client_email');
+        localStorage.removeItem('portal_client_name');
+        sessionStorage.removeItem('crm_portal_token');
+      }
       session = null;
       emit();
     },
     updateSettings: async (settings) => {
+      fail(
+        !isTransitioningContext,
+        'Aguarde a conclusão da troca de organização antes de salvar configurações.'
+      );
       const currentTenantId = activeTenantRef?.id || getTenantId();
       const nextSettings: Settings = {
         ...clone(settings),
@@ -1150,9 +1770,10 @@ export function createMockRepository(_options: any = {}): MockRepository {
           ticketCategories: nextSettings.ticketCategories,
           serviceTypes: nextSettings.serviceTypes,
           density: nextSettings.density,
+          rolePermissions: nextSettings.rolePermissions,
         });
 
-        await databases.updateDocument(DATABASE_ID, 'tenants', currentTenantId, {
+        const tenantPayload = {
           name: nextSettings.company.name.trim(),
           trade_name: (nextSettings.company.tradeName || nextSettings.company.name).trim(),
           document: nextSettings.company.document || '',
@@ -1160,8 +1781,27 @@ export function createMockRepository(_options: any = {}): MockRepository {
           email: nextSettings.company.email || '',
           address: nextSettings.company.address || '',
           settings_json: mergedSettingsJson,
-          updated_at: new Date().toISOString(),
+        };
+
+        // F13: Sem fallback silencioso ou supressão de erro; propaga falha se o servidor rejeitar
+        const authHeaders = await getAuthoritativeAuthHeaders();
+        const res = await fetch(`/api/admin/tenants/${encodeURIComponent(currentTenantId)}`, {
+          method: 'PUT',
+          headers: authHeaders,
+          credentials: 'include',
+          body: JSON.stringify(tenantPayload),
         });
+        const resJson = await res.json().catch(() => ({}));
+        if (!res.ok || !resJson?.success) {
+          const errMsg =
+            resJson?.error ||
+            resJson?.message ||
+            `Falha ao salvar configurações da empresa no servidor (HTTP ${res.status}).`;
+          const errObj = new Error(errMsg) as Error & { code?: number; status?: number };
+          errObj.code = res.status || 500;
+          errObj.status = res.status || 500;
+          throw errObj;
+        }
 
         if (activeTenantRef) {
           activeTenantRef = {
@@ -1181,6 +1821,9 @@ export function createMockRepository(_options: any = {}): MockRepository {
         ...data,
         settings: nextSettings,
       };
+      if (activeContextKey) {
+        tenantDataCache.set(activeContextKey, data);
+      }
       emit();
       void recordActivityInBackground('Configurações da empresa atualizadas no Appwrite.');
     },

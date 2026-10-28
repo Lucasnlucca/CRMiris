@@ -2,6 +2,7 @@ import type {
   Activity,
   AgendaEvent,
   Charge,
+  ChargeStatus,
   Client,
   Database,
   DocumentRecord,
@@ -74,6 +75,14 @@ export function createSeed(now = new Date()): Database {
     },
   ];
   const clientDefinitions = [
+    [
+      'Mundu Soluções',
+      'Mundu Soluções em Tecnologia Ltda.',
+      'São Paulo',
+      'SP',
+      'Carlos Eduardo Mundu',
+      'Tecnologia',
+    ],
     [
       'Aurora Comércio',
       'Aurora Comércio e Distribuição Ltda.',
@@ -216,63 +225,84 @@ export function createSeed(now = new Date()): Database {
   ];
   const clients: Client[] = clientDefinitions.map((definition, index) => {
     const [tradeName, name, city, state, contactName, segment] = definition;
-    const personType = index >= 18 ? 'PF' : 'PJ';
+    const isMundu = tradeName === 'Mundu Soluções' || name.toLowerCase().includes('mundu');
+    const personType = isMundu ? 'PJ' : (index >= 18 ? 'PF' : 'PJ');
     const documentBase =
       personType === 'PJ'
         ? `${String(72145000 + index * 173).padStart(8, '0')}0001`
         : String(681432100 + index * 139);
-    const id = `client-${String(index + 1).padStart(2, '0')}`;
+    const id = isMundu ? 'client-mundu' : `client-${String(index + 1).padStart(2, '0')}`;
     return {
       id,
       personType,
       name,
       tradeName,
-      document: demoDocument(documentBase, personType),
-      cep: `130${String(10 + index).padStart(2, '0')}-000`,
-      address: [
+      document: isMundu ? '33.456.789/0001-10' : demoDocument(documentBase, personType),
+      cep: isMundu ? '01310-100' : `130${String(10 + index).padStart(2, '0')}-000`,
+      address: isMundu ? 'Avenida Paulista' : [
         'Rua dos Jacarandás',
         'Avenida das Palmeiras',
         'Rua das Acácias',
         'Avenida Horizonte',
       ][index % 4],
-      number: String(120 + index * 14),
-      complement: index % 3 === 0 ? `Sala ${index + 1}` : '',
-      neighborhood: ['Centro', 'Jardim Primavera', 'Vila Nova'][index % 3],
-      city,
-      state,
-      phone: `(19) 3000-${String(1000 + index).padStart(4, '0')}`,
-      email: `contato${index + 1}@cliente.example`,
-      status: index >= 18 ? 'Inativo' : 'Ativo',
-      notes: `Cliente fictício do segmento ${segment.toLowerCase()}. Cadastro de demonstração para explorar a central de operações.`,
+      number: isMundu ? '1000' : String(120 + index * 14),
+      complement: isMundu ? 'Conjunto 101' : (index % 3 === 0 ? `Sala ${index + 1}` : ''),
+      neighborhood: isMundu ? 'Bela Vista' : ['Centro', 'Jardim Primavera', 'Vila Nova'][index % 3],
+      city: isMundu ? 'São Paulo' : city,
+      state: isMundu ? 'SP' : state,
+      phone: isMundu ? '(11) 3200-1000' : `(19) 3000-${String(1000 + index).padStart(4, '0')}`,
+      email: isMundu ? 'david@mundu' : `contato${index + 1}@cliente.example`,
+      status: 'Ativo',
+      notes: isMundu
+        ? 'Cliente corporativo de telecomunicações. Plano PABX Cloud Empresarial com 10 ramais ativos.'
+        : `Cliente fictício do segmento ${segment.toLowerCase()}. Cadastro de demonstração para explorar a central de operações.`,
       createdAt: relativeTime(-180 + index * 7, 10),
+      portalAccess: isMundu
+        ? {
+            enabled: true,
+            email: 'david@mundu',
+            password: 'cliente123',
+          }
+        : undefined,
       contacts: [
         {
-          id: `contact-${index + 1}`,
-          name: contactName,
-          role: personType === 'PJ' ? 'Responsável administrativo' : 'Titular',
-          phone: `(19) 99000-${String(1100 + index)}`,
-          email: `responsavel${index + 1}@cliente.example`,
+          id: isMundu ? 'contact-david-mundu' : `contact-${index + 1}`,
+          name: isMundu ? 'David Mundu' : contactName,
+          role: isMundu ? 'Diretor de Tecnologia' : (personType === 'PJ' ? 'Responsável administrativo' : 'Titular'),
+          phone: isMundu ? '(11) 98765-4321' : `(19) 99000-${String(1100 + index)}`,
+          email: isMundu ? 'david@mundu' : `responsavel${index + 1}@cliente.example`,
           primary: true,
         },
-        ...(index < 6
+        ...(isMundu
           ? [
               {
-                id: `contact-${index + 1}-2`,
-                name: [
-                  'Gustavo Ramos',
-                  'Márcia Vidal',
-                  'Aline Rocha',
-                  'Roberto Dias',
-                  'Paula Rezende',
-                  'Igor Viana',
-                ][index],
-                role: 'Contato técnico',
-                phone: `(19) 99001-${String(1200 + index)}`,
-                email: `tecnico${index + 1}@cliente.example`,
+                id: 'contact-carlos-mundu',
+                name: 'Carlos Eduardo Mundu',
+                role: 'Gerente Administrativo',
+                phone: '(11) 98765-1111',
+                email: 'carlos@mundu.com.br',
                 primary: false,
               },
             ]
-          : []),
+          : index < 6
+            ? [
+                {
+                  id: `contact-${index + 1}-2`,
+                  name: [
+                    'Gustavo Ramos',
+                    'Márcia Vidal',
+                    'Aline Rocha',
+                    'Roberto Dias',
+                    'Paula Rezende',
+                    'Igor Viana',
+                  ][index],
+                  role: 'Contato técnico',
+                  phone: `(19) 99001-${String(1200 + index)}`,
+                  email: `tecnico${index + 1}@cliente.example`,
+                  primary: false,
+                },
+              ]
+            : []),
       ],
     };
   });
@@ -349,7 +379,7 @@ export function createSeed(now = new Date()): Database {
     serverId:
       index === 2
         ? 'server-07'
-        : servers[[0, 1, 3, 0, 2, 3, 1, 0, 3, 2, 0, 1, 3, 0, 1, 3, 2, 0, 3, 1][index]].id,
+        : servers[[0, 1, 3, 0, 2, 3, 1, 0, 3, 2, 0, 1, 3, 0, 1, 3, 2, 0, 3, 1][index % 20] || 0].id,
     status: client.status === 'Inativo' ? 'Cancelado' : index === 13 ? 'Suspenso' : 'Ativo',
     extensions: [12, 20, 52, 8, 15, 6, 4, 10, 7, 3][index % 10],
     channels: [5, 8, 10, 3, 5][index % 5],
@@ -452,7 +482,13 @@ export function createSeed(now = new Date()): Database {
   ];
   const tickets: Ticket[] = ticketTitles.map((title, index) => {
     const client = clients[index % clients.length];
-    const status = ticketStatuses[index];
+    const isMundu = client.id === 'client-mundu';
+    const status: TicketStatus = isMundu ? 'Em andamento' : ticketStatuses[index];
+    const effectiveTitle = isMundu
+      ? (index === 0
+          ? 'Ajuste de ramais em nuvem e URA de atendimento'
+          : 'Configuração de fila de transbordo e gravação de chamadas')
+      : title;
     const ageDays = Math.max(1, 12 - Math.floor(index / 3));
     const createdAt = relativeTime(-ageDays, 8 + (index % 8), index % 2 ? 15 : 40);
     const updatedAt = new Date(
@@ -462,11 +498,15 @@ export function createSeed(now = new Date()): Database {
     const assignee = users[[1, 2, 5][index % 3]];
     const publicMessage = {
       id: `${id}-message-1`,
-      text: [
-        'Recebemos a solicitação e estamos verificando o cenário. Retornaremos com a atualização por aqui.',
-        'A configuração foi revisada. Você pode realizar um novo teste e nos confirmar o resultado?',
-        'Para continuar, poderia informar o ramal e o horário aproximado da ocorrência?',
-      ][index % 3],
+      text: isMundu
+        ? (index === 0
+            ? 'Olá David! Já ajustamos as rotas dos ramais no PABX Cloud. Você pode efetuar uma chamada de teste no ramal 104?'
+            : 'Fila de atendimento configurada com sucesso. O transbordo está programado para 20 segundos.')
+        : [
+            'Recebemos a solicitação e estamos verificando o cenário. Retornaremos com a atualização por aqui.',
+            'A configuração foi revisada. Você pode realizar um novo teste e nos confirmar o resultado?',
+            'Para continuar, poderia informar o ramal e o horário aproximado da ocorrência?',
+          ][index % 3],
       author: assignee.name,
       internal: false,
       createdAt: new Date(new Date(updatedAt).getTime() - 15 * 60000).toISOString(),
@@ -474,8 +514,10 @@ export function createSeed(now = new Date()): Database {
     return {
       id,
       number: 1041 + index,
-      title,
-      description: `Solicitação de ${client.tradeName}: ${title.toLowerCase()}. Este é um atendimento fictício. Registre mensagens, acompanhe o histórico e simule as etapas de resolução.`,
+      title: effectiveTitle,
+      description: isMundu
+        ? `Atendimento dedicado para Mundu Soluções: ${effectiveTitle}. Acompanhe pelo portal do cliente.`
+        : `Solicitação de ${client.tradeName}: ${title.toLowerCase()}. Este é um atendimento fictício. Registre mensagens, acompanhe o histórico e simule as etapas de resolução.`,
       clientId: client.id,
       category: categories[index === 13 || index === 27 ? 4 : index % 4],
       priority:
@@ -590,8 +632,10 @@ export function createSeed(now = new Date()): Database {
     };
   });
 
-  const charges: Charge[] = Array.from({ length: 40 }, (_, index) => {
-    const clientIndex = index % 20;
+  const charges: Charge[] = Array.from({ length: 42 }, (_, index) => {
+    const clientIndex = index % clients.length;
+    const client = clients[clientIndex];
+    const isMundu = client.id === 'client-mundu';
     const current = index >= 20;
     const isLate = current && clientIndex < 6;
     const cancelled = clientIndex >= 18;
@@ -602,23 +646,36 @@ export function createSeed(now = new Date()): Database {
           ? clientIndex - 6
           : 5 + clientIndex
       : -30 - (clientIndex % 5);
-    const dueDate = relativeDate(dueOffset);
-    const status = cancelled
+    const dueDate = relativeDate(isMundu ? (index === 0 ? 5 : -4) : dueOffset);
+    let status: ChargeStatus = cancelled
       ? 'Cancelado'
       : !current || clientIndex === 15
         ? 'Pago'
         : isLate
           ? 'Vencido'
           : 'Pendente';
+
+    if (isMundu) {
+      status = index === 0 ? 'Pendente' : index === 21 ? 'Vencido' : 'Pago';
+    }
+
+    const description = isMundu
+      ? (index === 0 ? 'Mensalidade PABX Cloud Empresarial • 10 Ramais' : 'Licenças Ramal Plus e Tráfego Telefônico')
+      : `Mensalidade ${services[clientIndex]?.name || 'Telefonia'}`;
+
+    const amount = isMundu
+      ? (index === 0 ? 850.0 : 320.0)
+      : (services[clientIndex]?.monthlyValue || 199.9) + (clientIndex < 6 ? 49.9 : 0);
+
     return {
       id: `charge-${String(index + 1).padStart(2, '0')}`,
       number: `FAT-${String(2301 + index)}`,
-      clientId: clients[clientIndex].id,
-      description: `Mensalidade ${services[clientIndex].name}`,
-      amount: services[clientIndex].monthlyValue + (clientIndex < 6 ? 49.9 : 0),
+      clientId: client.id,
+      description,
+      amount,
       dueDate,
       ...(status === 'Pago' ? { paidAt: relativeDate(Math.min(dueOffset - 1, 0)) } : {}),
-      method: (['Boleto', 'Pix', 'Cartão', 'Transferência'] as const)[index % 4],
+      method: isMundu ? (index === 0 ? 'Boleto' : 'Pix') : (['Boleto', 'Pix', 'Cartão', 'Transferência'] as const)[index % 4],
       status,
       reference: dueDate.slice(0, 7),
     };
@@ -626,9 +683,9 @@ export function createSeed(now = new Date()): Database {
   const invoices: Invoice[] = Array.from({ length: 24 }, (_, index) => ({
     id: `invoice-${String(index + 1).padStart(2, '0')}`,
     number: `NF-DEMO-${String(901 + index)}`,
-    clientId: clients[index % 20].id,
+    clientId: clients[index % clients.length].id,
     competence: relativeDate(index < 20 ? -30 : 0).slice(0, 7),
-    amount: charges[index].amount,
+    amount: charges[index]?.amount || 199.9,
     status: index >= 20 ? 'Pendente' : index === 18 || index === 19 ? 'Cancelada' : 'Emitida',
   }));
   const eventTitles = [

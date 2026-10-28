@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
 import { Bell, X, Check, CheckCheck, Trash2 } from 'lucide-react';
-import { databases } from '../lib/appwrite';
+import { databases, client, currentTenantId } from '../lib/appwrite';
 import { Query } from 'appwrite';
 import { useAuth } from '../context/AuthContext';
+import { useTenant } from '../context/TenantContext';
 
 const DATABASE_ID = import.meta.env.VITE_APPWRITE_DATABASE_ID || 'crm_db';
 
 interface Notification {
   id: string;
   user_id: string;
+  tenant_id?: string | null;
   title: string;
   message: string;
   type: string;
@@ -26,11 +28,15 @@ interface NotificationBellProps {
 
 export default function NotificationBell({ isCollapsed = false, onNavigate, currentPage }: NotificationBellProps) {
   const { user } = useAuth();
+  const { tenant } = useTenant();
+  const activeTenantId = tenant?.id || currentTenantId || null;
+
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [loading, setLoading] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const currentPageRef = useRef(currentPage);
+  const loadGenRef = useRef(0);
 
   useLayoutEffect(() => {
     currentPageRef.current = currentPage;
@@ -40,32 +46,59 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
   const hasUnread = unreadCount > 0;
 
   const loadNotifications = useCallback(async () => {
-    if (!user?.id) return;
+    if (!user?.id || !activeTenantId) {
+      setNotifications([]);
+      return;
+    }
 
+    const gen = ++loadGenRef.current;
     setLoading(true);
     try {
       const { documents } = await databases.listDocuments(
         DATABASE_ID,
         'notifications',
-        [Query.equal('user_id', user.id), Query.orderDesc('created_at'), Query.limit(20)]
+        [
+          Query.equal('user_id', user.id),
+          Query.equal('tenant_id', activeTenantId),
+          Query.orderDesc('created_at'),
+          Query.limit(25),
+        ]
       );
-      setNotifications(documents.map(d => ({
-        id: d.$id,
-        user_id: d.user_id,
-        title: d.title || '',
-        message: d.message,
-        type: d.type,
-        reference_id: d.reference_id || null,
-        reference_type: d.reference_type || null,
-        is_read: d.is_read,
-        created_at: d.created_at
-      })));
+
+      if (gen !== loadGenRef.current) return;
+
+      const scopedDocs = (documents || []).filter(
+        (d: any) => !d.tenant_id || d.tenant_id === activeTenantId
+      );
+
+      setNotifications(scopedDocs.map((d: any) => {
+        const refId = d.reference_id || (d.type?.includes(':') ? d.type.split(':')[1] : null);
+        const refType = d.reference_type || (d.type?.includes(':') ? d.type.split(':')[0] : (d.type?.startsWith('deal') ? 'deal' : null));
+        const hasSeparator = d.message?.includes(' · ');
+        const title = d.title || (hasSeparator ? d.message.split(' · ')[0] : (d.type?.includes('pipeline') || d.type?.startsWith('deal:') ? '💬 Mensagem no CRM' : 'Notificação'));
+        const displayMessage = hasSeparator ? d.message.split(' · ').slice(1).join(' · ') : (d.message || '');
+
+        return {
+          id: d.$id || d.id,
+          user_id: d.user_id,
+          tenant_id: d.tenant_id || activeTenantId,
+          title,
+          message: displayMessage,
+          type: d.type || 'info',
+          reference_id: refId,
+          reference_type: refType,
+          is_read: Boolean(d.is_read),
+          created_at: d.created_at || d.$createdAt
+        };
+      }));
     } catch (error) {
       console.error('Erro ao carregar notificacoes:', error);
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) {
+        setLoading(false);
+      }
     }
-  }, [user?.id]);
+  }, [user?.id, activeTenantId]);
 
   function playNotificationSound() {
     try {
@@ -76,18 +109,73 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
   }
 
   useEffect(() => {
-    if (!user?.id) return;
+    setNotifications([]);
+    if (!user?.id || !activeTenantId) return;
 
     loadNotifications();
 
+    let unsubscribe: (() => void) | undefined;
+    try {
+      unsubscribe = client.subscribe(
+        `databases.${DATABASE_ID}.collections.notifications.documents`,
+        (response: any) => {
+          const events: string[] = response.events || [];
+          const payload = response.payload;
+          if (!payload || payload.user_id !== user.id) return;
+          if (payload.tenant_id !== activeTenantId) return;
+
+          const docId = payload.$id || payload.id;
+
+          if (events.some((e) => e.includes('.create'))) {
+            playNotificationSound();
+            const refId = payload.reference_id || (payload.type?.includes(':') ? payload.type.split(':')[1] : null);
+            const refType = payload.reference_type || (payload.type?.includes(':') ? payload.type.split(':')[0] : (payload.type?.startsWith('deal') ? 'deal' : null));
+            const hasSeparator = payload.message?.includes(' · ');
+            const title = payload.title || (hasSeparator ? payload.message.split(' · ')[0] : (payload.type?.includes('pipeline') || payload.type?.startsWith('deal:') ? '💬 Mensagem no CRM' : 'Notificação'));
+            const displayMessage = hasSeparator ? payload.message.split(' · ').slice(1).join(' · ') : (payload.message || '');
+
+            setNotifications((prev) => {
+              if (prev.some((n) => n.id === docId)) return prev;
+              return [
+                {
+                  id: docId,
+                  user_id: payload.user_id,
+                  tenant_id: payload.tenant_id || activeTenantId,
+                  title,
+                  message: displayMessage,
+                  type: payload.type || 'info',
+                  reference_id: refId,
+                  reference_type: refType,
+                  is_read: Boolean(payload.is_read),
+                  created_at: payload.$createdAt || payload.created_at || new Date().toISOString(),
+                },
+                ...prev,
+              ];
+            });
+          } else if (events.some((e) => e.includes('.update'))) {
+            setNotifications((prev) =>
+              prev.map((n) =>
+                n.id === docId ? { ...n, is_read: payload.is_read ?? n.is_read } : n
+              )
+            );
+          } else if (events.some((e) => e.includes('.delete'))) {
+            setNotifications((prev) => prev.filter((n) => n.id !== docId));
+          }
+        }
+      );
+    } catch (err) {
+      console.warn('Erro ao assinar notificações em tempo real:', err);
+    }
+
     const pollInterval = setInterval(() => {
       loadNotifications();
-    }, 10000);
+    }, 12000);
 
     return () => {
+      unsubscribe?.();
       clearInterval(pollInterval);
     };
-  }, [user?.id, loadNotifications]);
+  }, [user?.id, activeTenantId, loadNotifications]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -101,8 +189,15 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
   }, []);
 
   async function markAsRead(notificationId: string) {
+    if (!activeTenantId) return;
     try {
-      await databases.updateDocument(DATABASE_ID, 'notifications', notificationId, { is_read: true });
+      const res = await databases.updateDocument(DATABASE_ID, 'notifications', notificationId, {
+        is_read: true,
+        tenant_id: activeTenantId,
+      });
+      if (res && (res as any).success === false) {
+        throw new Error((res as any).error || 'Falha ao marcar notificação como lida.');
+      }
 
       setNotifications((prev) =>
         prev.map((n) => (n.id === notificationId ? { ...n, is_read: true } : n))
@@ -113,21 +208,49 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
   }
 
   async function markAllAsRead() {
-    if (!user?.id) return;
+    if (!user?.id || !activeTenantId) return;
 
     try {
-      const unread = notifications.filter(n => !n.is_read);
-      await Promise.all(unread.map(n => databases.updateDocument(DATABASE_ID, 'notifications', n.id, { is_read: true })));
+      const unread = notifications.filter((n) => !n.is_read);
+      if (unread.length === 0) return;
 
-      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+      const results = await Promise.allSettled(
+        unread.map(async (n) => {
+          const res = await databases.updateDocument(DATABASE_ID, 'notifications', n.id, {
+            is_read: true,
+            tenant_id: activeTenantId,
+          });
+          if (res && (res as any).success === false) {
+            throw new Error((res as any).error || 'Falha ao atualizar notificação.');
+          }
+          return n.id;
+        })
+      );
+
+      const updatedIds = new Set<string>();
+      results.forEach((r) => {
+        if (r.status === 'fulfilled' && r.value) {
+          updatedIds.add(r.value);
+        }
+      });
+
+      if (updatedIds.size > 0) {
+        setNotifications((prev) =>
+          prev.map((n) => (updatedIds.has(n.id) ? { ...n, is_read: true } : n))
+        );
+      }
     } catch (error) {
       console.error('Erro ao marcar todas como lidas:', error);
     }
   }
 
   async function deleteNotification(notificationId: string) {
+    if (!activeTenantId) return;
     try {
-      await databases.deleteDocument(DATABASE_ID, 'notifications', notificationId);
+      const res = await databases.deleteDocument(DATABASE_ID, 'notifications', notificationId);
+      if (res && (res as any).success === false) {
+        throw new Error((res as any).error || 'Falha ao excluir notificação.');
+      }
       setNotifications((prev) => prev.filter((n) => n.id !== notificationId));
     } catch (error) {
       console.error('Erro ao deletar notificacao:', error);
@@ -135,11 +258,29 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
   }
 
   async function clearAllNotifications() {
-    if (!user?.id) return;
+    if (!user?.id || !activeTenantId) return;
 
     try {
-      await Promise.all(notifications.map(n => databases.deleteDocument(DATABASE_ID, 'notifications', n.id)));
-      setNotifications([]);
+      const results = await Promise.allSettled(
+        notifications.map(async (n) => {
+          const res = await databases.deleteDocument(DATABASE_ID, 'notifications', n.id);
+          if (res && (res as any).success === false) {
+            throw new Error((res as any).error || 'Falha ao excluir notificação.');
+          }
+          return n.id;
+        })
+      );
+
+      const deletedIds = new Set<string>();
+      results.forEach((r) => {
+        if (r.status === 'fulfilled' && r.value) {
+          deletedIds.add(r.value);
+        }
+      });
+
+      if (deletedIds.size > 0) {
+        setNotifications((prev) => prev.filter((n) => !deletedIds.has(n.id)));
+      }
     } catch (error) {
       console.error('Erro ao limpar notificacoes:', error);
     }
@@ -161,25 +302,22 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
   }
 
   function getNotificationIcon(type: string) {
-    switch (type) {
-      case 'whatsapp_message':
-        return 'bg-emerald-500';
-      case 'pipeline_assignment':
-        return 'bg-blue-500';
-      case 'activity':
-        return 'bg-amber-500';
-      case 'deal_completed':
-        return 'bg-green-500';
-      default:
-        return 'bg-gray-500';
-    }
+    if (type.includes('ticket')) return 'bg-cyan-500';
+    if (type.includes('contract')) return 'bg-violet-500';
+    if (type.includes('proposal')) return 'bg-emerald-500';
+    if (type.includes('activity')) return 'bg-amber-500';
+    if (type.includes('whatsapp')) return 'bg-emerald-500';
+    if (type.includes('won') || type.includes('completed')) return 'bg-green-500';
+    if (type.includes('assignment')) return 'bg-blue-500';
+    if (type.includes('mention')) return 'bg-purple-500';
+    return 'bg-indigo-500';
   }
 
   async function handleNotificationClick(notification: Notification) {
     await markAsRead(notification.id);
     setShowDropdown(false);
 
-    if (onNavigate && notification.reference_type) {
+    if (onNavigate) {
       let targetPage = '';
 
       switch (notification.reference_type) {
@@ -193,8 +331,21 @@ export default function NotificationBell({ isCollapsed = false, onNavigate, curr
         case 'activity':
           targetPage = 'crm-pipeline';
           break;
+        case 'ticket':
+          targetPage = 'tickets';
+          break;
+        case 'proposal':
+          targetPage = 'propostas';
+          break;
+        case 'contract':
+          targetPage = 'contratos-crm';
+          break;
         default:
-          targetPage = 'crm-pipeline';
+          if (notification.type?.includes('ticket')) targetPage = 'tickets';
+          else if (notification.type?.includes('contract')) targetPage = 'contratos-crm';
+          else if (notification.type?.includes('proposal')) targetPage = 'propostas';
+          else if (notification.type?.includes('client') || notification.type?.includes('contact')) targetPage = 'crm-contatos';
+          else targetPage = 'crm-pipeline';
       }
 
       onNavigate(targetPage, notification.reference_id);
