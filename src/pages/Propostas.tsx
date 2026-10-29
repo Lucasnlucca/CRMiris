@@ -628,7 +628,7 @@ function ProposalEditorModal({
           // 1. Criar todos os novos itens primeiro com ID idempotente gerado fora do retry (F06)
           for (let i = 0; i < lineItems.length; i++) {
             const li = lineItems[i];
-            const itemDocId = (li as any).$id || `prop_item_${targetProposalId}_${i}_${Date.now()}`;
+            const itemDocId = ID.unique();
             const created = await withRetry(async () => {
               try {
                 return await databases.createDocument(DATABASE_ID, "crm_proposal_items", itemDocId, {
@@ -715,7 +715,8 @@ function ProposalEditorModal({
               } catch {
                 // Procede com a restauração
               }
-              return await databases.createDocument(DATABASE_ID, "crm_proposal_items", oldDoc.$id || ID.unique(), {
+              const restoreId = (typeof oldDoc.$id === 'string' && oldDoc.$id.length <= 36) ? oldDoc.$id : ID.unique();
+              return await databases.createDocument(DATABASE_ID, "crm_proposal_items", restoreId, {
                 proposal_id: targetProposalId,
                 item_id: oldDoc.item_id ?? null,
                 name: oldDoc.name ?? "",
