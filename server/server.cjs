@@ -750,6 +750,49 @@ if (govConfig.status === 'INVALID') {
     }
 }
 
+// Ensure default storage buckets exist for CRM attachments and logos
+async function ensureStorageBuckets() {
+    if (!APPWRITE_PROJECT_ID || !APPWRITE_API_KEY) return;
+    try {
+        const { Storage, Permission, Role } = require('node-appwrite');
+        const adminClient = getAdminClient();
+        const adminStorage = new Storage(adminClient);
+        const bucketsToEnsure = [
+            { id: process.env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments', name: 'Anexos e Documentos CRM' },
+            { id: 'crm_logos', name: 'Logos do CRM' }
+        ];
+        for (const b of bucketsToEnsure) {
+            try {
+                await adminStorage.getBucket(b.id);
+            } catch (e) {
+                if (e.code === 404) {
+                    await adminStorage.createBucket(
+                        b.id,
+                        b.name,
+                        [
+                            Permission.read(Role.any()),
+                            Permission.create(Role.any()),
+                            Permission.update(Role.any()),
+                            Permission.delete(Role.any())
+                        ],
+                        false,
+                        true,
+                        300000000,
+                        [],
+                        'none',
+                        true,
+                        true
+                    );
+                    console.log(`📦 [Storage Boot] Bucket '${b.id}' provisionado automaticamente.`);
+                }
+            }
+        }
+    } catch {
+        // Silently ignore if network is unreachable during boot
+    }
+}
+ensureStorageBuckets().catch(() => {});
+
 // ============================================================================
 // HTTP SERVER (API + STATIC SPA FALLBACK) — S10 Top-Level Resilience
 // ============================================================================
