@@ -57,7 +57,21 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.resolve(__dirname, '../.env.local'));
 loadEnvFile(path.resolve(__dirname, '../.env'));
 
-const PORT = Number(process.env.PORT || 3000);
+// Filter out noisy SDK version mismatch warning
+const originalConsoleWarn = console.warn;
+console.warn = function (...args) {
+    if (typeof args[0] === 'string' && args[0].includes('The current SDK is built for Appwrite')) {
+        return;
+    }
+    originalConsoleWarn.apply(console, args);
+};
+
+// Internal API bridge port: use BRIDGE_PORT/API_PORT first. If PORT is set to public HTTP ports (80, 3000, 4173), fallback to 3001 so Nginx can bind to public ports.
+const PORT = Number(
+    process.env.BRIDGE_PORT ||
+    process.env.API_PORT ||
+    (process.env.PORT && !['80', '3000', '4173'].includes(String(process.env.PORT).trim()) ? process.env.PORT : 3001)
+);
 const DIST_DIR = path.resolve(__dirname, '../dist');
 
 const APPWRITE_ENDPOINT = process.env.VITE_APPWRITE_URL || process.env.VITE_APPWRITE_ENDPOINT || process.env.APPWRITE_ENDPOINT || 'https://bancosupa-appwrite.grtbdz.easypanel.host/v1';
