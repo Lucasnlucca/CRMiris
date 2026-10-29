@@ -16,7 +16,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { Client, Account, Databases, Teams, ID, Query } = require('node-appwrite');
+const { Client, Account, Databases, Teams, ID, Query, Permission, Role } = require('node-appwrite');
 const { WritePolicyEngine, CONTRACT_SIGNATURE_FORBIDDEN_FIELDS } = require('./writePolicyEngine.cjs');
 const { resolveGovernanceConfig } = require('./governanceConfig.cjs');
 const { GovernancePersistencePrototype } = require('./governancePersistencePrototype.cjs');
@@ -601,7 +601,32 @@ async function handleDataBridge(req, res) {
                 const finalDocId = documentId || ID.unique();
                 const writeStartMs = Date.now();
                 try {
-                    const created = await adminDatabases.createDocument(effectiveDatabaseId, collectionId, finalDocId, cleanData);
+                    let finalPermissions = Array.isArray(body.permissions) && body.permissions.length > 0
+                    ? [...body.permissions]
+                    : [];
+
+                if (finalPermissions.length === 0) {
+                    const effectiveTenant = authoritativeTenantId || cleanData.tenant_id;
+                    if (effectiveTenant) {
+                        finalPermissions = [
+                            Permission.read(Role.team(effectiveTenant)),
+                            Permission.update(Role.team(effectiveTenant)),
+                            Permission.delete(Role.team(effectiveTenant)),
+                            Permission.read(Role.team('superadmins')),
+                            Permission.update(Role.team('superadmins')),
+                            Permission.delete(Role.team('superadmins')),
+                            Permission.read(Role.users()),
+                            Permission.update(Role.users()),
+                        ];
+                    } else {
+                        finalPermissions = [
+                            Permission.read(Role.users()),
+                            Permission.update(Role.users()),
+                        ];
+                    }
+                }
+
+                const created = await adminDatabases.createDocument(effectiveDatabaseId, collectionId, finalDocId, cleanData, finalPermissions);
                     writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
                     return sendJson(res, 201, {
                         success: true,

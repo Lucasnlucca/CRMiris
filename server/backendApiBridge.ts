@@ -12,7 +12,7 @@
  * ============================================================================
  */
 
-import { Client, Account, Databases, Teams, ID, Query } from 'node-appwrite';
+import { Client, Account, Databases, Teams, ID, Query, Permission, Role } from 'node-appwrite';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { WritePolicyEngine, CONTRACT_SIGNATURE_FORBIDDEN_FIELDS } from './writePolicyEngine.ts';
 import {
@@ -27,11 +27,13 @@ export const writePolicyEngine = new WritePolicyEngine({
 });
 
 export interface BridgeRequestPayload {
+    action?: string;
     operation: 'list' | 'get' | 'create' | 'update' | 'delete';
     collectionId: string;
     documentId?: string;
     data?: Record<string, any>;
     queries?: string[];
+    permissions?: string[];
     targetTenantId?: string;
     targetDatabaseId?: string;
 }
@@ -515,7 +517,32 @@ export async function handleApiDataRequest(
                 const finalDocId = documentId || ID.unique();
                 const writeStartMs = Date.now();
                 try {
-                    const created = await adminDatabases.createDocument(effectiveDatabaseId, collectionId, finalDocId, cleanData);
+                    let finalPermissions = Array.isArray(body.permissions) && body.permissions.length > 0
+                    ? [...body.permissions]
+                    : [];
+
+                if (finalPermissions.length === 0) {
+                    const effectiveTenant = authoritativeTenantId || cleanData.tenant_id;
+                    if (effectiveTenant) {
+                        finalPermissions = [
+                            Permission.read(Role.team(effectiveTenant)),
+                            Permission.update(Role.team(effectiveTenant)),
+                            Permission.delete(Role.team(effectiveTenant)),
+                            Permission.read(Role.team('superadmins')),
+                            Permission.update(Role.team('superadmins')),
+                            Permission.delete(Role.team('superadmins')),
+                            Permission.read(Role.users()),
+                            Permission.update(Role.users()),
+                        ];
+                    } else {
+                        finalPermissions = [
+                            Permission.read(Role.users()),
+                            Permission.update(Role.users()),
+                        ];
+                    }
+                }
+
+                const created = await adminDatabases.createDocument(effectiveDatabaseId, collectionId, finalDocId, cleanData, finalPermissions);
                     writePolicyEngine.recordSuccess(Date.now() - writeStartMs, effectiveDatabaseId);
                     sendJson(res, 201, {
                         success: true,
