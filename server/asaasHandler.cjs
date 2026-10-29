@@ -359,41 +359,60 @@ async function handleAsaasRoutes(req, res, subPath, envConfig, sdkOverrides = {}
         }
 
         if (subPath === '/payments/create' && req.method === 'POST') {
-            const {
-                crmClientId,
-                customerName,
-                customerEmail,
-                customerDocument,
-                customerPhone,
-                asaasCustomerId,
-                value,
-                dueDate,
-                billingType,
-                description,
-                externalReference,
-                installmentCount
-            } = body;
+            const rawClientId = body.crmClientId || body.clientId;
+            let customerName = body.customerName || body.clientName || body.name || '';
+            let customerEmail = body.customerEmail || body.email || '';
+            let customerDocument = body.customerDocument || body.cpfCnpj || body.document || '';
+            let customerPhone = body.customerPhone || body.phone || '';
+            const asaasCustomerId = body.asaasCustomerId || body.customerId || '';
+            const rawValue = body.value !== undefined ? body.value : body.amount;
+            const rawDueDate = body.dueDate || body.due_date || body.vencimento;
+            const billingType = body.billingType || body.billing_type || 'BOLETO';
+            const description = body.description || body.descricao || 'Cobrança de Serviços';
+            const externalReference = body.externalReference || rawClientId || undefined;
+            const installmentCount = body.installmentCount || body.installments;
 
-            if (!value || !dueDate || !customerName) {
+            // Se customerName ou customerDocument não foram enviados, tenta resolver do banco de dados pelo rawClientId
+            if ((!customerName || !customerDocument) && rawClientId && db) {
+                try {
+                    const clientDoc = await db.getDocument(DATABASE_ID, 'clients', String(rawClientId));
+                    if (clientDoc) {
+                        if (!customerName) customerName = clientDoc.name || clientDoc.company || '';
+                        if (!customerEmail) customerEmail = clientDoc.email || '';
+                        if (!customerDocument) customerDocument = clientDoc.document || clientDoc.cpfCnpj || '';
+                        if (!customerPhone) customerPhone = clientDoc.phone || '';
+                    }
+                } catch {
+                    // Prossegue para validação caso o registro não exista
+                }
+            }
+
+            let cleanDueDate = rawDueDate ? String(rawDueDate).trim() : '';
+            if (/^\d{2}\/\d{2}\/\d{4}$/.test(cleanDueDate)) {
+                const [d, m, y] = cleanDueDate.split('/');
+                cleanDueDate = `${y}-${m}-${d}`;
+            }
+
+            if (!rawValue || !cleanDueDate || !customerName) {
                 return sendJson(res, 400, {
                     success: false,
                     error: 'Campos obrigatórios: customerName, value e dueDate.'
                 });
             }
 
-            if (crmClientId) {
-                await verifyClientBelongsToTenant(db, DATABASE_ID, String(crmClientId), tenantId);
+            if (rawClientId) {
+                await verifyClientBelongsToTenant(db, DATABASE_ID, String(rawClientId), tenantId);
             }
 
             const result = await createAsaasPaymentAndSync(db, DATABASE_ID, tenantId, {
-                crmClientId,
-                customerName,
-                customerEmail,
-                customerDocument,
-                customerPhone,
-                asaasCustomerId,
-                value: Number(value),
-                dueDate,
+                crmClientId: rawClientId ? String(rawClientId) : undefined,
+                customerName: String(customerName).trim(),
+                customerEmail: customerEmail ? String(customerEmail).trim() : undefined,
+                customerDocument: customerDocument ? String(customerDocument).trim() : undefined,
+                customerPhone: customerPhone ? String(customerPhone).trim() : undefined,
+                asaasCustomerId: asaasCustomerId ? String(asaasCustomerId).trim() : undefined,
+                value: Number(rawValue),
+                dueDate: cleanDueDate,
                 billingType: billingType || 'BOLETO',
                 description: description || 'Cobrança de Serviços',
                 externalReference,

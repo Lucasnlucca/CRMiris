@@ -1243,11 +1243,21 @@ export function ClientDetailPage() {
     }
     setCreatingPaymentBusy(true);
     try {
+      const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
       const res = await fetch('/api/asaas/payments/create', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          ...authHeaders,
+          'Content-Type': 'application/json',
+          'x-tenant-id': effectiveTenantId,
+        },
         body: JSON.stringify({
           clientId: client.id,
+          crmClientId: client.id,
+          customerName: client.name || (client as any)?.company || 'Cliente',
+          customerEmail: client.email || '',
+          customerDocument: client.document || (client as any)?.cpfCnpj || '',
+          customerPhone: client.phone || '',
           tenantId: effectiveTenantId,
           value: Number(newPaymentValue),
           dueDate: newPaymentDueDate,

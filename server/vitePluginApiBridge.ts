@@ -11,7 +11,7 @@
 
 import type { Plugin } from 'vite';
 import { loadEnv } from 'vite';
-import { Client, Databases } from 'node-appwrite';
+import { Client, Databases, Storage, Permission, Role, Compression } from 'node-appwrite';
 import fs from 'fs';
 import path from 'path';
 import { handleApiDataRequest, writePolicyEngine } from './backendApiBridge.ts';
@@ -63,6 +63,47 @@ export function vitePluginApiBridge(): Plugin {
                 } catch (e: any) {
                     console.warn('[VitePluginApiBridge] Governance adapter init warning:', e.message);
                 }
+            }
+
+            // Ensure storage buckets exist for CRM attachments and logos in dev mode
+            if (bridgeEnv.projectId && bridgeEnv.apiKey) {
+                try {
+                    const adminClient = new Client()
+                        .setEndpoint(bridgeEnv.endpoint)
+                        .setProject(bridgeEnv.projectId)
+                        .setKey(bridgeEnv.apiKey);
+                    const adminStorage = new Storage(adminClient);
+                    const bucketsToEnsure = [
+                        { id: env.VITE_APPWRITE_BUCKET_ID || 'crm_attachments', name: 'Anexos e Documentos CRM' },
+                        { id: 'crm_logos', name: 'Logos do CRM' }
+                    ];
+                    for (const b of bucketsToEnsure) {
+                        adminStorage.getBucket(b.id).catch(async (err: any) => {
+                            if (err?.code === 404) {
+                                try {
+                                    await adminStorage.createBucket(
+                                        b.id,
+                                        b.name,
+                                        [
+                                            Permission.read(Role.any()),
+                                            Permission.create(Role.any()),
+                                            Permission.update(Role.any()),
+                                            Permission.delete(Role.any())
+                                        ],
+                                        false,
+                                        true,
+                                        300000000,
+                                        [],
+                                        Compression.None,
+                                        true,
+                                        true
+                                    );
+                                    console.log(`📦 [Storage Boot] Bucket '${b.id}' provisionado automaticamente.`);
+                                } catch {}
+                            }
+                        });
+                    }
+                } catch {}
             }
 
             server.middlewares.use(async (req, res, next) => {

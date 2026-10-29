@@ -157,6 +157,8 @@ function ChargeForm({
         // Emissão oficial via Asaas
         const authHeaders = await getAuthoritativeAuthHeaders().catch(() => ({}));
         const targetTenantId = tenant?.id || 'tenant_default';
+        const selectedClient = data.clients.find((c) => c.id === form.clientId);
+
         const res = await fetch('/api/asaas/payments/create', {
           method: 'POST',
           headers: {
@@ -166,6 +168,11 @@ function ChargeForm({
           },
           body: JSON.stringify({
             clientId: form.clientId,
+            crmClientId: form.clientId,
+            customerName: selectedClient?.name || (selectedClient as any)?.company || 'Cliente',
+            customerEmail: selectedClient?.email || '',
+            customerDocument: selectedClient?.document || (selectedClient as any)?.cpfCnpj || '',
+            customerPhone: selectedClient?.phone || '',
             tenantId: targetTenantId,
             value: Number(form.amount),
             dueDate: form.dueDate,
