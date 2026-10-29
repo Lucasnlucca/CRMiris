@@ -486,7 +486,9 @@ async function handleDataBridge(req, res) {
         // S08: Hard protection against setting contract signature fields or 'signed' status via CRUD
         if (isContractCol && (operation === 'create' || operation === 'update') && data && typeof data === 'object') {
             for (const forbiddenField of CONTRACT_SIGNATURE_FORBIDDEN_FIELDS) {
-                if (Object.prototype.hasOwnProperty.call(data, forbiddenField) && data[forbiddenField] !== undefined) {
+                if (data[forbiddenField] === '' || data[forbiddenField] === null) {
+                    delete data[forbiddenField];
+                } else if (Object.prototype.hasOwnProperty.call(data, forbiddenField) && data[forbiddenField] !== undefined) {
                     return sendJson(res, 403, {
                         success: false,
                         code: 'FORBIDDEN_CONTRACT_SIGNATURE_FIELD',

@@ -393,7 +393,9 @@ export async function handleApiDataRequest(
 
         if (isContractCol && (operation === 'create' || operation === 'update') && data && typeof data === 'object') {
             for (const forbiddenField of CONTRACT_SIGNATURE_FORBIDDEN_FIELDS) {
-                if (Object.prototype.hasOwnProperty.call(data, forbiddenField) && data[forbiddenField] !== undefined) {
+                if (data[forbiddenField] === '' || data[forbiddenField] === null) {
+                    delete data[forbiddenField];
+                } else if (Object.prototype.hasOwnProperty.call(data, forbiddenField) && data[forbiddenField] !== undefined) {
                     sendJson(res, 403, {
                         code: 'FORBIDDEN_CONTRACT_SIGNATURE_FIELD',
                         error: `O campo de assinatura '${forbiddenField}' não pode ser gravado via CRUD. Utilize /api/contracts/sign.`

@@ -1701,7 +1701,6 @@ export default function Contratos() {
         clauses_json: safeClausesJson,
         notes: encodedNotes,
         status: 'pending_signature',
-        signature_token: signatureToken,
         created_at: new Date().toISOString(),
       };
 
